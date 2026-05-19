@@ -143,7 +143,7 @@ export default function Home() {
         </div>
         <p>
           The chat bubble (bottom-right) reads your live profile + market data and gives concrete next steps.
-          Needs <code className="text-foreground">ANTHROPIC_API_KEY</code> on the backend.
+          Needs <code className="text-foreground">GEMINI_API_KEY</code> on the backend.
         </p>
       </section>
     </div>

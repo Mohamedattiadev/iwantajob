@@ -70,7 +70,7 @@ export function ChatWidget() {
             <div>
               <div className="text-sm font-semibold">Career coach</div>
               <div className="text-[10px] text-muted-foreground font-mono">
-                {status?.available ? "online · grounded on your live data" : "offline — needs ANTHROPIC_API_KEY"}
+                {status?.available ? "online · grounded on your live data" : "offline — needs GEMINI_API_KEY"}
               </div>
             </div>
             <button onClick={() => setOpen(false)} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
@@ -80,7 +80,7 @@ export function ChatWidget() {
             <div className="px-4 py-3 text-xs flex items-start gap-2 bg-amber-500/10 border-b border-amber-500/20">
               <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
               <div>
-                Set <code className="bg-muted px-1 rounded">ANTHROPIC_API_KEY</code> in the backend env and restart{" "}
+                Set <code className="bg-muted px-1 rounded">GEMINI_API_KEY</code> in the backend env and restart{" "}
                 <code className="bg-muted px-1 rounded">jobscraper serve</code>.
               </div>
             </div>

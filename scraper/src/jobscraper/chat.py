@@ -1,4 +1,4 @@
-"""Anthropic-powered chat assistant. Streams not enabled for simplicity."""
+"""Gemini-powered chat assistant (Google AI Studio free tier)."""
 from __future__ import annotations
 
 import json
@@ -10,12 +10,15 @@ import httpx
 from .config import HTTP_TIMEOUT
 from .profile import load as load_profile
 
-API_URL = "https://api.anthropic.com/v1/messages"
-MODEL = "claude-haiku-4-5-20251001"  # fast + cheap; bump to sonnet for harder Qs
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+ENDPOINT = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    f"{MODEL}:generateContent"
+)
 
 
 def have_key() -> bool:
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
 
 
 def _system_prompt(market: dict[str, Any]) -> str:
@@ -38,48 +41,54 @@ Rules:
 
 
 def chat(messages: list[dict[str, str]], market_snapshot: dict[str, Any]) -> dict[str, Any]:
-    key = os.environ.get("ANTHROPIC_API_KEY")
+    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not key:
         return {
-            "error": "ANTHROPIC_API_KEY not set on the backend. "
-                     "Get a key at https://console.anthropic.com and restart the server with it.",
+            "error": "GEMINI_API_KEY not set on the backend. "
+                     "Get a free key at https://aistudio.google.com/apikey and restart the server with it.",
         }
 
-    # Convert any user/assistant turns into Anthropic format
-    msgs = [
-        {"role": m["role"], "content": m["content"]}
-        for m in messages
-        if m.get("role") in ("user", "assistant") and m.get("content")
-    ]
+    # Convert OpenAI-style messages → Gemini "contents" (role: user|model).
+    contents: list[dict[str, Any]] = []
+    for m in messages:
+        role = m.get("role")
+        text = m.get("content") or ""
+        if not text:
+            continue
+        if role == "user":
+            contents.append({"role": "user", "parts": [{"text": text}]})
+        elif role == "assistant":
+            contents.append({"role": "model", "parts": [{"text": text}]})
 
     payload = {
-        "model": MODEL,
-        "max_tokens": 700,
-        "system": _system_prompt(market_snapshot),
-        "messages": msgs,
+        "systemInstruction": {"parts": [{"text": _system_prompt(market_snapshot)}]},
+        "contents": contents,
+        "generationConfig": {
+            "temperature": 0.4,
+            "maxOutputTokens": 700,
+        },
     }
-    headers = {
-        "x-api-key": key,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
+
     try:
         with httpx.Client(timeout=HTTP_TIMEOUT) as c:
-            r = c.post(API_URL, json=payload, headers=headers)
+            r = c.post(ENDPOINT, params={"key": key}, json=payload)
             r.raise_for_status()
             data = r.json()
     except httpx.HTTPStatusError as e:
-        return {"error": f"Anthropic API error: {e.response.status_code} — {e.response.text[:200]}"}
+        return {"error": f"Gemini API error: {e.response.status_code} — {e.response.text[:300]}"}
     except httpx.HTTPError as e:
         return {"error": f"network error: {e}"}
 
     text = ""
-    for block in data.get("content", []):
-        if block.get("type") == "text":
-            text += block.get("text", "")
+    candidates = data.get("candidates") or []
+    if candidates:
+        parts = (candidates[0].get("content") or {}).get("parts") or []
+        for p in parts:
+            if "text" in p:
+                text += p["text"]
 
     return {
         "text": text,
-        "model": data.get("model"),
-        "usage": data.get("usage"),
+        "model": MODEL,
+        "usage": data.get("usageMetadata"),
     }

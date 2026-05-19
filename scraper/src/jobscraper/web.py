@@ -18,6 +18,15 @@ from . import cv as cv_mod
 from . import latex as latex_mod
 from . import profile as profile_mod
 from .db import Application
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatIn(BaseModel):
+    messages: list[ChatMessage]
 from sqlalchemy import func, select
 
 from .collectors import COLLECTORS, upsert_jobs
@@ -438,15 +447,13 @@ def create_app() -> FastAPI:
 
     # -------- Chat --------
 
-    class ChatIn(BaseModel):
-        messages: list[dict[str, str]]
-
     @app.get("/api/chat/status")
     def api_chat_status():
         return {"available": chat_mod.have_key()}
 
     @app.post("/api/chat")
     def api_chat(body: ChatIn):
+        msgs_dict = [{"role": m.role, "content": m.content} for m in body.messages]
         # Provide live market snapshot to the model so answers are grounded.
         with session_scope() as s:
             jobs = list(s.scalars(select(Job)))
@@ -464,7 +471,7 @@ def create_app() -> FastAPI:
             "real_junior_jobs": len(real),
             "top_skills": counts.most_common(20),
         }
-        return chat_mod.chat(body.messages, snapshot)
+        return chat_mod.chat(msgs_dict, snapshot)
 
     @app.get("/api/health")
     def health():
