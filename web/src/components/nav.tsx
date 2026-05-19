@@ -10,6 +10,7 @@ const links = [
   { href: "/learn", n: "02", label: "Learn" },
   { href: "/jobs",  n: "03", label: "Jobs" },
   { href: "/apply", n: "04", label: "Apply" },
+  { href: "/draw",  n: "05", label: "Draw" },
 ];
 
 export function Nav() {
@@ -70,6 +71,13 @@ export function Nav() {
         </ul>
 
         <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }))}
+            className="hidden md:inline-flex items-center gap-1.5 rounded-md border border-foreground/15 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors font-mono"
+            aria-label="Command palette"
+          >
+            <span className="text-xs">⌘</span>K
+          </button>
           <ThemeToggle />
         </div>
       </div>

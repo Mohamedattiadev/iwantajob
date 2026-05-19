@@ -22,6 +22,9 @@ export function ChatWidget() {
 
   useEffect(() => {
     try { const raw = localStorage.getItem(STORE); if (raw) setMsgs(JSON.parse(raw)); } catch {}
+    const onOpen = () => setOpen(true);
+    window.addEventListener("open-chat", onOpen);
+    return () => window.removeEventListener("open-chat", onOpen);
   }, []);
   useEffect(() => {
     try { localStorage.setItem(STORE, JSON.stringify(msgs)); } catch {}

@@ -15,6 +15,7 @@ from typing import Any
 
 from . import chat as chat_mod
 from . import cv as cv_mod
+from . import drawings as drawings_mod
 from . import latex as latex_mod
 from . import profile as profile_mod
 from .db import Application
@@ -51,6 +52,10 @@ class ApplyIn(BaseModel):
 class ApplyUpdate(BaseModel):
     status: str | None = None
     notes: str | None = None
+
+
+class DrawingIn(BaseModel):
+    data: dict[str, Any]
 from sqlalchemy import func, select
 
 from .collectors import COLLECTORS, upsert_jobs
@@ -477,6 +482,28 @@ def create_app() -> FastAPI:
             "top_skills": counts.most_common(20),
         }
         return chat_mod.chat(msgs_dict, snapshot)
+
+    # -------- Drawings --------
+
+    @app.get("/api/drawings")
+    def api_drawings_list():
+        return drawings_mod.list_all()
+
+    @app.get("/api/drawings/{name}")
+    def api_drawing_get(name: str):
+        data = drawings_mod.load(name)
+        if data is None:
+            return {"slug": name, "title": name, "elements": [], "appState": {}, "files": {}}
+        return data
+
+    @app.put("/api/drawings/{name}")
+    def api_drawing_put(name: str, body: DrawingIn):
+        drawings_mod.save(name, body.data)
+        return {"ok": True}
+
+    @app.delete("/api/drawings/{name}", status_code=204)
+    def api_drawing_delete(name: str):
+        drawings_mod.delete(name)
 
     @app.get("/api/health")
     def health():

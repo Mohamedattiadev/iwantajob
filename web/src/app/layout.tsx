@@ -6,6 +6,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ChatWidget } from "@/components/chat-widget";
 import { OnboardingGate } from "@/components/onboarding-gate";
+import { CommandPalette } from "@/components/command-palette";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -45,6 +46,7 @@ export default function RootLayout({
             <Nav />
             <main className="flex-1 max-w-6xl w-full mx-auto px-6 sm:px-8 py-12 sm:py-16">{children}</main>
             <ChatWidget />
+            <CommandPalette />
           </OnboardingGate>
           <Toaster richColors closeButton position="bottom-right" />
         </ThemeProvider>

@@ -3,7 +3,7 @@
 import useSWR from "swr";
 import Link from "next/link";
 import { useMemo } from "react";
-import { ArrowRight, FileText, GraduationCap, Briefcase, Send, Sparkles, BadgeCheck } from "lucide-react";
+import { ArrowRight, FileText, GraduationCap, Briefcase, Send, Sparkles, BadgeCheck, Pencil } from "lucide-react";
 import { CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrapeButton } from "@/components/scrape-button";
@@ -78,7 +78,7 @@ export default function Home() {
           title="Where to go next"
           subtitle="Four areas. One bubble for chat."
         />
-        <Bento>
+        <Bento className="anim-in-stagger">
           <FeatureCard
             n="01" icon={<FileText className="h-5 w-5" />}
             title="CV builder"
@@ -113,19 +113,32 @@ export default function Home() {
             glow="amber"
             className="lg:col-span-2"
           />
-          <MagicCard glow="rose" className="lg:col-span-2 glass">
-            <CardContent className="p-5 h-full flex flex-col gap-2.5">
-              <Sparkles className="h-5 w-5 text-rose-400" />
-              <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground">chat</div>
-              <div className="text-lg font-semibold tracking-tight">Career coach</div>
-              <p className="text-sm text-muted-foreground leading-relaxed">
-                Bottom-right bubble. Reads live data, suggests next moves.
-              </p>
-              <div className="mt-auto text-[10px] text-muted-foreground font-mono">
-                powered by <Gradient>Gemini 2.5</Gradient>
-              </div>
-            </CardContent>
-          </MagicCard>
+          <FeatureCard
+            n="05" icon={<Pencil className="h-5 w-5" />}
+            title="Sketchpad"
+            desc="Excalidraw embedded. Draw system designs, save to backend."
+            href="/draw" cta="Open canvas"
+            glow="rose"
+            className="lg:col-span-3"
+          />
+          <button
+            onClick={() => window.dispatchEvent(new Event("open-chat"))}
+            className="lg:col-span-3 text-left group"
+          >
+            <MagicCard glow="violet" className="h-full glass press hover:-translate-y-0.5 transition-transform">
+              <CardContent className="p-5 sm:p-6 h-full flex flex-col gap-3">
+                <Sparkles className="h-5 w-5 text-violet-400" />
+                <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground mt-1">06 · chat</div>
+                <div className="font-serif text-2xl sm:text-3xl leading-tight tracking-tight">Career coach</div>
+                <p className="text-sm text-muted-foreground leading-relaxed line-clamp-2">
+                  Reads live data, suggests next moves. Press <kbd className="font-mono text-[10px] px-1.5 py-0.5 rounded border border-foreground/20 bg-foreground/5">⌘K</kbd> anytime.
+                </p>
+                <div className="mt-auto pt-2 text-sm inline-flex items-center gap-1 text-foreground group-hover:gap-2 transition-all">
+                  Open coach <ArrowRight className="h-4 w-4" />
+                </div>
+              </CardContent>
+            </MagicCard>
+          </button>
         </Bento>
       </section>
 
@@ -212,7 +225,7 @@ function FeatureCard({
 }) {
   return (
     <Link href={href} className={`block group ${className ?? ""}`}>
-      <MagicCard glow={glow} className="h-full glass">
+      <MagicCard glow={glow} className="h-full glass press hover:-translate-y-0.5 transition-transform">
         <CardContent className="p-5 sm:p-6 h-full flex flex-col gap-3">
           <div className="flex items-start justify-between">
             <div className="h-9 w-9 rounded-lg bg-foreground/5 grid place-items-center ring-1 ring-foreground/10">{icon}</div>
