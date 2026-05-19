@@ -2,6 +2,27 @@
 
 Personal job-market launchpad for a junior software student.
 
+## Quick start
+
+```bash
+./run            # starts backend + frontend
+./run status     # see what's up
+./run logs       # tail logs
+./run down       # stop everything
+./run restart    # restart both
+./run open       # open dashboard in browser
+```
+
+Put keys in `./.env` (already gitignored):
+
+```
+ADZUNA_APP_ID=...
+ADZUNA_APP_KEY=...
+GEMINI_API_KEY=...      # free at https://aistudio.google.com/apikey
+RAPIDAPI_KEY=...        # optional: legal LinkedIn aggregation via JSearch
+```
+
+
 **What it does:** scrapes real junior jobs from 6 legal sources, ghost-filters them, maps required skills against your CV, runs a per-skill learning notebook, tracks applications, generates ATS-clean CVs (Markdown / HTML / LaTeX PDF), and answers questions via a Claude-powered chat.
 
 ## Architecture

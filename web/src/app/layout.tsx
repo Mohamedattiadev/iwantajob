@@ -18,8 +18,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "jobscraper",
-  description: "Personal job-market dashboard.",
+  title: "IWANTAJOB",
+  description: "Personal job-market launchpad.",
 };
 
 export default function RootLayout({

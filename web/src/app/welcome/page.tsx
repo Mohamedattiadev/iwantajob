@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { API, type Profile } from "@/lib/api";
 import { useOnboarded } from "@/lib/onboarding";
+import { Aurora, Gradient } from "@/components/eye-candy";
 
 type Step = 0 | 1 | 2 | 3;
 
@@ -68,12 +69,13 @@ export default function Welcome() {
   };
 
   return (
-    <div className="min-h-[80vh] flex items-center justify-center">
+    <div className="relative min-h-[80vh] flex items-center justify-center">
+      <Aurora />
       <div className="w-full max-w-3xl space-y-8">
         <div className="text-center">
-          <Badge variant="outline" className="mb-3 text-xs font-mono">welcome</Badge>
-          <h1 className="text-4xl sm:text-5xl font-semibold tracking-tight">
-            Let's set up your launchpad.
+          <Badge variant="outline" className="mb-3 text-xs font-mono">welcome to IWANTAJOB</Badge>
+          <h1 className="text-4xl sm:text-6xl font-semibold tracking-tight leading-[1.05]">
+            Let's set up your <Gradient>launchpad</Gradient>.
           </h1>
           <p className="text-muted-foreground mt-3">Takes 2 minutes. Skip anytime.</p>
         </div>

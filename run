@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# IWANTAJOB runner. Usage:
+#   ./run            # alias for ./run up
+#   ./run up         # start backend + frontend in background, tail nothing
+#   ./run down       # stop both
+#   ./run restart    # down + up
+#   ./run logs       # tail both logs
+#   ./run status     # show what's running
+
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+
+BACK_LOG="/tmp/iwantajob-backend.log"
+FRONT_LOG="/tmp/iwantajob-frontend.log"
+BACK_PIDFILE="/tmp/iwantajob-backend.pid"
+FRONT_PIDFILE="/tmp/iwantajob-frontend.pid"
+
+# Load .env if present (KEY=value lines, no quotes needed)
+if [ -f "$ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$ROOT/.env"
+  set +a
+fi
+
+color() { printf "\033[%sm%s\033[0m" "$1" "$2"; }
+ok()    { color "32" "✓ $*"; echo; }
+err()   { color "31" "✗ $*"; echo; }
+info()  { color "36" "› $*"; echo; }
+
+_running() {
+  local pidfile="$1"
+  [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null
+}
+
+start_backend() {
+  if _running "$BACK_PIDFILE"; then ok "backend already up (pid $(cat $BACK_PIDFILE))"; return; fi
+  info "starting backend on :8000"
+  if [ ! -x "$ROOT/scraper/.venv/bin/jobscraper" ]; then
+    err "venv not found at scraper/.venv. Run: cd scraper && python -m venv .venv && .venv/bin/pip install -e ."
+    exit 1
+  fi
+  ( cd "$ROOT/scraper" && setsid .venv/bin/jobscraper serve --host 127.0.0.1 --port 8000 \
+      > "$BACK_LOG" 2>&1 < /dev/null & echo $! > "$BACK_PIDFILE" )
+  sleep 2
+  if curl -sf http://127.0.0.1:8000/api/health > /dev/null; then
+    ok "backend  http://127.0.0.1:8000"
+  else
+    err "backend failed to start. See $BACK_LOG"
+    tail -n 30 "$BACK_LOG" || true
+    exit 1
+  fi
+}
+
+start_frontend() {
+  if _running "$FRONT_PIDFILE"; then ok "frontend already up (pid $(cat $FRONT_PIDFILE))"; return; fi
+  info "starting frontend on :3000"
+  if [ ! -d "$ROOT/web/node_modules" ]; then
+    info "installing web deps (first run)…"
+    ( cd "$ROOT/web" && npm install --silent )
+  fi
+  ( cd "$ROOT/web" && setsid npm run dev > "$FRONT_LOG" 2>&1 < /dev/null & echo $! > "$FRONT_PIDFILE" )
+  # Wait up to 30s for the dev server to bind
+  for i in $(seq 1 30); do
+    if curl -sf http://127.0.0.1:3000 > /dev/null; then
+      ok "frontend http://127.0.0.1:3000"; return
+    fi
+    sleep 1
+  done
+  err "frontend slow to start. Check $FRONT_LOG"
+}
+
+stop_one() {
+  local name="$1" pidfile="$2"
+  if _running "$pidfile"; then
+    local pid; pid=$(cat "$pidfile")
+    kill -TERM -- -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+    sleep 1
+    kill -KILL -- -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+    rm -f "$pidfile"
+    ok "$name stopped"
+  else
+    info "$name not running"
+  fi
+}
+
+stop_all() {
+  stop_one backend  "$BACK_PIDFILE"
+  stop_one frontend "$FRONT_PIDFILE"
+  # Belt and suspenders — kill any stray
+  pkill -f "jobscraper serve" 2>/dev/null || true
+  pkill -f "next dev"        2>/dev/null || true
+}
+
+status() {
+  if _running "$BACK_PIDFILE";  then ok "backend  pid $(cat $BACK_PIDFILE)  http://127.0.0.1:8000"; else err "backend down"; fi
+  if _running "$FRONT_PIDFILE"; then ok "frontend pid $(cat $FRONT_PIDFILE) http://127.0.0.1:3000"; else err "frontend down"; fi
+  # Show env presence (not values)
+  for k in ADZUNA_APP_ID ADZUNA_APP_KEY GEMINI_API_KEY RAPIDAPI_KEY; do
+    if [ -n "${!k:-}" ]; then ok "$k set"; else err "$k missing"; fi
+  done
+}
+
+cmd="${1:-up}"
+case "$cmd" in
+  up|start)    start_backend; start_frontend; status ;;
+  down|stop)   stop_all ;;
+  restart)     stop_all; start_backend; start_frontend; status ;;
+  status)      status ;;
+  logs)        tail -n 50 -f "$BACK_LOG" "$FRONT_LOG" ;;
+  logs:back)   tail -n 100 -f "$BACK_LOG" ;;
+  logs:front)  tail -n 100 -f "$FRONT_LOG" ;;
+  open)        xdg-open http://127.0.0.1:3000 >/dev/null 2>&1 || open http://127.0.0.1:3000 ;;
+  *)           echo "Usage: ./run [up|down|restart|status|logs|logs:back|logs:front|open]"; exit 1 ;;
+esac

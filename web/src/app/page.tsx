@@ -4,10 +4,18 @@ import useSWR from "swr";
 import Link from "next/link";
 import { useMemo } from "react";
 import { ArrowRight, FileText, GraduationCap, Briefcase, Send, Sparkles } from "lucide-react";
-import { Card, CardContent } from "@/components/ui/card";
+import { CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrapeButton } from "@/components/scrape-button";
+import {
+  Aurora,
+  GridBg,
+  MagicCard,
+  Gradient,
+  AnimatedNumber,
+  Bento,
+} from "@/components/eye-candy";
 import { fetcher, type Stats, type JobsResponse, type Profile, type Application } from "@/lib/api";
 import { useProficiency } from "@/lib/proficiency";
 
@@ -38,113 +46,137 @@ export default function Home() {
   const cvName = profile.data?.personal?.name;
 
   return (
-    <div className="space-y-12">
+    <div className="relative space-y-12">
+      <Aurora />
+      <GridBg className="opacity-50" />
+
       {/* Hero */}
-      <section className="pt-2">
+      <section className="pt-4">
         <Badge variant="outline" className="mb-4 text-xs font-mono">launchpad</Badge>
-        <h1 className="text-4xl sm:text-5xl font-semibold tracking-tight leading-[1.05]">
-          {cvName ? `Hi, ${cvName.split(" ")[0]}.` : "From theory to hired."}
+        <h1 className="text-4xl sm:text-6xl font-semibold tracking-tight leading-[1.05]">
+          {cvName ? (
+            <>Hi, <Gradient>{cvName.split(" ")[0]}.</Gradient></>
+          ) : (
+            <>From theory to <Gradient>hired</Gradient>.</>
+          )}
         </h1>
         <p className="mt-4 text-lg text-muted-foreground max-w-2xl">
           Real jobs, ghost-filtered. Mapped against the skills you actually have.
         </p>
         <div className="mt-6 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-muted-foreground font-mono">
-          <Spec label="jobs" value={stats.data?.total} />
-          <Spec label="real" value={stats.data?.real} />
-          <Spec label="ready ≥70%" value={readyJobs.length} loading={jobsQ.isLoading} />
-          <Spec label="rated" value={skillsRated} />
-          <Spec label="applied" value={apps.data?.length} />
+          <Spec label="jobs"        value={stats.data?.total} />
+          <Spec label="real"        value={stats.data?.real} />
+          <Spec label="ready ≥70%"  value={readyJobs.length} loading={jobsQ.isLoading} />
+          <Spec label="rated"       value={skillsRated} />
+          <Spec label="applied"     value={apps.data?.length} />
         </div>
         <div className="mt-7"><ScrapeButton /></div>
       </section>
 
-      {/* 4-card grid */}
-      <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* Bento grid — 4 feature cards in asymmetric layout */}
+      <Bento>
         <FeatureCard
           eyebrow="01 · CV"
           icon={<FileText className="h-6 w-6" />}
           title="CV builder"
-          desc={cvName ? `Profile: ${cvName} · ${Object.keys(profile.data?.skills ?? {}).length} skills` : "Upload your PDF. Auto-extract. Generate ATS-clean exports."}
+          desc={cvName ? `Profile: ${cvName} · ${Object.keys(profile.data?.skills ?? {}).length} skills` : "Upload PDF. Auto-extract. Export ATS-clean."}
           href="/cv"
           cta="Open builder"
-        />
-        <FeatureCard
-          eyebrow="02 · Learn"
-          icon={<GraduationCap className="h-6 w-6" />}
-          title="Learning notebooks"
-          desc={`Rate ${stats.data?.top_skills?.length ?? 0}+ skills 0–5. Each skill = real markdown notebook with curated resources.`}
-          href="/learn"
-          cta={skillsRated ? `Continue (${skillsRated} rated)` : "Start rating"}
+          glow="indigo"
+          className="lg:col-span-3"
         />
         <FeatureCard
           eyebrow="03 · Jobs"
           icon={<Briefcase className="h-6 w-6" />}
           title="Job finder"
-          desc={`${stats.data?.real ?? 0} real listings, match-scored against your stack. Ghost listings filtered.`}
+          desc={`${stats.data?.real ?? 0} real listings, match-scored. Ghosts filtered.`}
           href="/jobs"
           cta="See matches"
+          glow="emerald"
           highlight={readyJobs.length > 0 ? `${readyJobs.length} ready` : undefined}
+          className="lg:col-span-3"
+        />
+        <FeatureCard
+          eyebrow="02 · Learn"
+          icon={<GraduationCap className="h-6 w-6" />}
+          title="Notebooks"
+          desc={`${stats.data?.top_skills?.length ?? 0}+ skills with curated markdown notebooks.`}
+          href="/learn"
+          cta={skillsRated ? `Continue (${skillsRated} rated)` : "Start rating"}
+          glow="violet"
+          className="lg:col-span-2"
         />
         <FeatureCard
           eyebrow="04 · Apply"
           icon={<Send className="h-6 w-6" />}
-          title="Application tracker"
-          desc={apps.data?.length ? `Tracking ${apps.data.length} applications. Status pipeline, auto-dedupe.` : "Mark applied with one click. Never apply twice."}
+          title="Pipeline"
+          desc={apps.data?.length ? `Tracking ${apps.data.length}. Status flow + dedupe.` : "One click apply. Never twice."}
           href="/apply"
           cta="View pipeline"
+          glow="amber"
+          className="lg:col-span-2"
         />
-      </section>
+        <MagicCard glow="rose" className="lg:col-span-2 glass">
+          <CardContent className="p-6 h-full flex flex-col gap-3">
+            <Sparkles className="h-6 w-6 text-rose-400" />
+            <div className="text-xs font-mono text-muted-foreground">live chat</div>
+            <div className="text-xl font-semibold tracking-tight">Career coach</div>
+            <p className="text-sm text-muted-foreground">
+              The bubble (bottom-right) reads your live data and gives concrete next steps.
+            </p>
+            <div className="mt-auto text-xs text-muted-foreground font-mono">
+              powered by <Gradient>Gemini 2.5</Gradient>
+            </div>
+          </CardContent>
+        </MagicCard>
+      </Bento>
 
       {/* Ready to apply */}
       <section>
         <SectionHeading
           eyebrow="ready to apply"
-          title={readyJobs.length === 0 ? "No matches yet" : `Top ${Math.min(5, readyJobs.length)} matches`}
-          subtitle={ready && skillsRated === 0 ? "Rate your skills on Learn to unlock matches." : "≥70% of required skills at Comfortable+."}
+          title={readyJobs.length === 0 ? "No matches yet" : `Top ${Math.min(6, readyJobs.length)} matches`}
+          subtitle={ready && skillsRated === 0 ? "Rate your skills on Learn to unlock matches." : "≥70% required skills at Comfortable+."}
           link={{ href: "/jobs?min_score=70", label: "see all" }}
         />
         {jobsQ.isLoading || !ready ? (
           <div className="space-y-2">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-xl" />)}</div>
         ) : readyJobs.length === 0 ? (
-          <Card><CardContent className="py-10 text-center text-sm text-muted-foreground">
-            {skillsRated === 0 ? "Set proficiency on /learn first." : "No match. Keep learning."}
-          </CardContent></Card>
+          <MagicCard glow="indigo" className="glass">
+            <CardContent className="py-10 text-center text-sm text-muted-foreground">
+              {skillsRated === 0 ? "Set proficiency on /learn first." : "No match. Keep learning."}
+            </CardContent>
+          </MagicCard>
         ) : (
           <ul className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {readyJobs.slice(0, 6).map(({ j, fit }) => (
               <li key={j.id}>
-                <a
-                  href={j.source_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-4 px-4 py-3 rounded-xl border bg-card hover:bg-accent/50 transition-colors"
-                >
-                  <div className="w-14 text-center shrink-0">
-                    <div className="text-lg font-semibold tabular-nums">{Math.round(fit * 100)}%</div>
-                    <div className="text-[10px] text-muted-foreground font-mono">match</div>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium line-clamp-1">{j.title}</div>
-                    <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
-                      {j.company ?? "?"} · {j.source} · {j.posted_at?.slice(0, 10) ?? "—"}
+                <MagicCard glow="emerald">
+                  <a
+                    href={j.source_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="glass flex items-center gap-4 px-4 py-3 rounded-2xl hover:bg-accent/40 transition-colors"
+                  >
+                    <div className="w-14 text-center shrink-0">
+                      <div className="text-lg font-semibold tabular-nums">
+                        <AnimatedNumber value={Math.round(fit * 100)} />%
+                      </div>
+                      <div className="text-[10px] text-muted-foreground font-mono">match</div>
                     </div>
-                  </div>
-                  <ArrowRight className="h-4 w-4 text-muted-foreground" />
-                </a>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium line-clamp-1">{j.title}</div>
+                      <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
+                        {j.company ?? "?"} · {j.source} · {j.posted_at?.slice(0, 10) ?? "—"}
+                      </div>
+                    </div>
+                    <ArrowRight className="h-4 w-4 text-muted-foreground" />
+                  </a>
+                </MagicCard>
               </li>
             ))}
           </ul>
         )}
-      </section>
-
-      <section className="border-t pt-6 text-sm text-muted-foreground max-w-3xl">
-        <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-foreground mb-2">
-          <Sparkles className="h-3.5 w-3.5" />Tip
-        </div>
-        <p>
-          The chat bubble (bottom-right) reads your live profile + market data and gives concrete next steps.
-          Needs <code className="text-foreground">GEMINI_API_KEY</code> on the backend.
-        </p>
       </section>
     </div>
   );
@@ -158,6 +190,8 @@ function FeatureCard({
   href,
   cta,
   highlight,
+  glow,
+  className,
 }: {
   eyebrow: string;
   icon: React.ReactNode;
@@ -166,10 +200,12 @@ function FeatureCard({
   href: string;
   cta: string;
   highlight?: string;
+  glow: "indigo" | "emerald" | "amber" | "rose" | "violet";
+  className?: string;
 }) {
   return (
-    <Link href={href} className="block group">
-      <Card className="h-full hover:border-foreground/30 transition-colors">
+    <Link href={href} className={`block group ${className ?? ""}`}>
+      <MagicCard glow={glow} className="h-full glass hover:border-foreground/30 transition-colors">
         <CardContent className="p-6 h-full flex flex-col gap-3">
           <div className="flex items-start justify-between">
             <div className="h-10 w-10 rounded-lg bg-foreground/5 grid place-items-center">{icon}</div>
@@ -182,7 +218,7 @@ function FeatureCard({
             {cta} <ArrowRight className="h-4 w-4" />
           </div>
         </CardContent>
-      </Card>
+      </MagicCard>
     </Link>
   );
 }
@@ -190,7 +226,9 @@ function FeatureCard({
 function Spec({ label, value, loading }: { label: string; value: number | undefined; loading?: boolean }) {
   return (
     <span className="inline-flex items-baseline gap-1.5">
-      <span className="text-foreground font-semibold tabular-nums">{loading ? "…" : (value ?? 0)}</span>
+      <span className="text-foreground font-semibold tabular-nums">
+        {loading ? "…" : <AnimatedNumber value={value ?? 0} />}
+      </span>
       <span>{label}</span>
     </span>
   );

@@ -18,8 +18,8 @@ export function Nav() {
     <nav className="border-b border-foreground/10 glass-nav sticky top-0 z-40">
       <div className="max-w-5xl mx-auto px-6 h-16 flex items-center gap-8">
         <Link href="/" className="font-bold tracking-tight flex items-center gap-2">
-          <span className="h-6 w-6 rounded bg-foreground text-background grid place-items-center text-xs font-mono">js</span>
-          jobscraper
+          <span className="h-7 w-7 rounded-md bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 grid place-items-center text-[10px] font-mono font-bold text-white shadow-lg shadow-indigo-500/30">IW</span>
+          <span className="text-sm sm:text-base">IWANTAJOB</span>
         </Link>
         <div className="flex items-center gap-1">
           {links.map((l) => {
