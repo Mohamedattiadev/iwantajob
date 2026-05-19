@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
 import "./globals.css";
 import { Nav } from "@/components/nav";
 import { Toaster } from "@/components/ui/sonner";
@@ -17,6 +17,12 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const serif = Instrument_Serif({
+  variable: "--font-serif",
+  weight: "400",
+  subsets: ["latin"],
+});
+
 export const metadata: Metadata = {
   title: "IWANTAJOB",
   description: "Personal job-market launchpad.",
@@ -31,13 +37,13 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} ${serif.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
           <OnboardingGate>
             <Nav />
-            <main className="flex-1 max-w-5xl w-full mx-auto px-6 py-10">{children}</main>
+            <main className="flex-1 max-w-6xl w-full mx-auto px-6 sm:px-8 py-12 sm:py-16">{children}</main>
             <ChatWidget />
           </OnboardingGate>
           <Toaster richColors closeButton position="bottom-right" />

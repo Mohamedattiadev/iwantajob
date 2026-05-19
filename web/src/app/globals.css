@@ -125,11 +125,12 @@
   body {
     @apply text-foreground;
     background:
-      radial-gradient(60rem 40rem at 10% -10%, oklch(0.55 0.22 264 / 0.18), transparent 60%),
-      radial-gradient(50rem 30rem at 100% 10%, oklch(0.68 0.17 162 / 0.14), transparent 60%),
-      radial-gradient(40rem 30rem at 50% 110%, oklch(0.58 0.18 295 / 0.12), transparent 60%),
+      radial-gradient(70rem 40rem at 0% -20%, oklch(0.55 0.22 264 / 0.22), transparent 55%),
+      radial-gradient(60rem 30rem at 100% 0%, oklch(0.68 0.17 162 / 0.14), transparent 55%),
+      radial-gradient(40rem 30rem at 50% 110%, oklch(0.58 0.18 295 / 0.10), transparent 55%),
       var(--background);
     background-attachment: fixed;
+    font-feature-settings: "ss01", "ss02", "cv01", "cv11";
   }
   html {
     @apply font-sans;
@@ -139,23 +140,42 @@
 @layer utilities {
   /* Frosted glass surface */
   .glass {
-    background: color-mix(in oklch, var(--card) 55%, transparent);
-    backdrop-filter: blur(18px) saturate(140%);
-    -webkit-backdrop-filter: blur(18px) saturate(140%);
-    border: 1px solid color-mix(in oklch, var(--foreground) 8%, transparent);
+    background: color-mix(in oklch, var(--card) 70%, transparent);
+    backdrop-filter: blur(20px) saturate(150%);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    border: 1px solid color-mix(in oklch, var(--foreground) 10%, transparent);
     box-shadow:
-      0 1px 0 0 color-mix(in oklch, var(--foreground) 6%, transparent) inset,
-      0 10px 40px -10px color-mix(in oklch, black 30%, transparent);
+      0 1px 0 0 color-mix(in oklch, var(--foreground) 8%, transparent) inset,
+      0 1px 2px 0 color-mix(in oklch, black 25%, transparent),
+      0 24px 60px -24px color-mix(in oklch, black 50%, transparent);
   }
   .glass-strong {
-    background: color-mix(in oklch, var(--card) 75%, transparent);
-    backdrop-filter: blur(24px) saturate(160%);
-    -webkit-backdrop-filter: blur(24px) saturate(160%);
-    border: 1px solid color-mix(in oklch, var(--foreground) 10%, transparent);
+    background: color-mix(in oklch, var(--card) 85%, transparent);
+    backdrop-filter: blur(28px) saturate(180%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid color-mix(in oklch, var(--foreground) 14%, transparent);
   }
   .glass-nav {
-    background: color-mix(in oklch, var(--background) 60%, transparent);
-    backdrop-filter: blur(20px) saturate(160%);
-    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    background: color-mix(in oklch, var(--background) 70%, transparent);
+    backdrop-filter: blur(22px) saturate(170%);
+    -webkit-backdrop-filter: blur(22px) saturate(170%);
   }
+  .font-serif {
+    font-family: var(--font-serif), Georgia, "Times New Roman", serif;
+    font-feature-settings: "ss01", "ss02";
+  }
+  .text-balance { text-wrap: balance; }
+  .text-pretty  { text-wrap: pretty; }
+
+  /* Subtle fade-in on mount */
+  .anim-in {
+    animation: animIn 600ms cubic-bezier(.16,.84,.44,1) both;
+  }
+  @keyframes animIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Hairline divider */
+  .hr-soft { border-top: 1px solid color-mix(in oklch, var(--foreground) 8%, transparent); }
 }

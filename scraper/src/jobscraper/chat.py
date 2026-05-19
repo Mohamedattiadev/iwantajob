@@ -10,7 +10,7 @@ import httpx
 from .config import HTTP_TIMEOUT
 from .profile import load as load_profile
 
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 ENDPOINT = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{MODEL}:generateContent"
@@ -65,7 +65,9 @@ def chat(messages: list[dict[str, str]], market_snapshot: dict[str, Any]) -> dic
         "contents": contents,
         "generationConfig": {
             "temperature": 0.4,
-            "maxOutputTokens": 700,
+            "maxOutputTokens": 600,
+            # Disable thinking phase (Gemini 2.5) — 5–10x faster, fine for chat.
+            "thinkingConfig": {"thinkingBudget": 0},
         },
     }
 

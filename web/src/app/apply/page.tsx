@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useApplications } from "@/lib/applications";
 import type { Application } from "@/lib/api";
+import { PageHeader } from "@/components/page-header";
 
 const STATUS_TONE: Record<Application["status"], string> = {
   applied: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
@@ -28,15 +29,11 @@ export default function ApplyPage() {
 
   return (
     <div className="space-y-8">
-      <header>
-        <Badge variant="outline" className="mb-3 text-xs font-mono">step 04 · apply</Badge>
-        <h1 className="text-4xl sm:text-5xl font-semibold tracking-tight">
-          Application history.
-        </h1>
-        <p className="text-sm text-muted-foreground mt-3 max-w-2xl">
-          Every job you mark as applied lives here. The Jobs page dedupes against this list — never apply twice.
-        </p>
-      </header>
+      <PageHeader
+        eyebrow="04 · apply"
+        title={<>Application <em className="font-serif text-muted-foreground not-italic">history.</em></>}
+        subtitle="Every job you mark applied lives here. Jobs page dedupes against this list — never apply twice."
+      />
 
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         <Stat label="Total" value={applications.length} />

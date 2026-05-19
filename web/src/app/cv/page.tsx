@@ -12,6 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { API, fetcher, type Profile } from "@/lib/api";
 import { LEVELS } from "@/lib/proficiency";
+import { PageHeader } from "@/components/page-header";
 
 export default function CvPage() {
   const { data, mutate, isLoading } = useSWR<Profile>("/api/profile", fetcher);
@@ -98,15 +99,11 @@ export default function CvPage() {
 
   return (
     <div className="space-y-10">
-      <header>
-        <Badge variant="outline" className="mb-3 text-xs font-mono">step 01 · cv</Badge>
-        <h1 className="text-4xl sm:text-5xl font-semibold tracking-tight leading-[1.05]">
-          Your CV, built live.
-        </h1>
-        <p className="text-sm text-muted-foreground mt-3 max-w-2xl">
-          Upload an existing PDF to bootstrap. Edit. As you rate skills on Learn, the CV updates automatically. Export ATS-clean markdown or HTML.
-        </p>
-      </header>
+      <PageHeader
+        eyebrow="01 · cv"
+        title={<>Your CV, <em className="font-serif text-muted-foreground not-italic">built live.</em></>}
+        subtitle="Upload PDF to bootstrap. Edit anything. As you rate skills on Learn, the CV updates automatically. Export ATS-clean MD / HTML / LaTeX."
+      />
 
       {/* Upload + actions */}
       <Card>
@@ -198,29 +195,102 @@ export default function CvPage() {
           </CardContent></Card>
         </div>
 
-        {/* Preview */}
+        {/* Preview pane with tabs */}
         <div className="lg:sticky lg:top-20 lg:self-start space-y-3">
-          <Card><CardContent className="p-5">
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-xs font-mono uppercase tracking-wider text-muted-foreground inline-flex items-center gap-2">
-                <FileText className="h-3.5 w-3.5" /> CV preview (ATS-clean)
-              </div>
-              <div className="flex gap-2">
-                <a href={`${API}/api/cv/markdown?min_level=${minLevel}`} download="cv.md">
-                  <Button variant="outline" size="sm"><Download className="h-3.5 w-3.5 mr-1.5" />.md</Button>
-                </a>
-                <a href={`${API}/api/cv/html?min_level=${minLevel}`} target="_blank" rel="noopener noreferrer">
-                  <Button variant="outline" size="sm"><ExternalLink className="h-3.5 w-3.5 mr-1.5" />.html</Button>
-                </a>
-              </div>
-            </div>
-            <pre className="text-xs leading-relaxed font-mono whitespace-pre-wrap max-h-[70vh] overflow-auto p-3 rounded bg-muted/40 border">{mdPreview}</pre>
-            <p className="text-[10px] text-muted-foreground mt-2">
-              ATS = Applicant Tracking System. This format is plain text + headings → parses cleanly by every ATS.
-            </p>
-          </CardContent></Card>
+          <CVPreview minLevel={minLevel} mdPreview={mdPreview} bust={data?.personal?.name ?? ""} />
         </div>
       </div>
+    </div>
+  );
+}
+
+function CVPreview({
+  minLevel,
+  mdPreview,
+  bust,
+}: {
+  minLevel: number;
+  mdPreview: string;
+  bust: string;
+}) {
+  const [tab, setTab] = useState<"page" | "md" | "tex">("page");
+  const v = encodeURIComponent(bust + ":" + minLevel);
+
+  return (
+    <Card><CardContent className="p-0">
+      <div className="px-5 pt-5 pb-3 flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground inline-flex items-center gap-2">
+          <FileText className="h-3.5 w-3.5" /> Live preview
+        </div>
+        <div className="inline-flex items-center rounded-md border bg-card p-0.5">
+          {(["page", "md", "tex"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`h-7 px-3 rounded-sm text-xs uppercase font-mono tracking-wider ${
+                tab === t ? "bg-accent" : "text-muted-foreground hover:bg-accent/50"
+              }`}
+            >
+              {t === "page" ? "page" : t}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {tab === "page" && (
+        <div className="px-3 pb-3">
+          <div className="rounded-lg overflow-hidden border bg-white">
+            <iframe
+              key={v}
+              src={`${API}/api/cv/html?min_level=${minLevel}&v=${v}`}
+              className="w-full h-[78vh] bg-white"
+              title="CV preview"
+              sandbox=""
+            />
+          </div>
+        </div>
+      )}
+
+      {tab === "md" && (
+        <div className="px-5 pb-5">
+          <pre className="text-xs leading-relaxed font-mono whitespace-pre-wrap max-h-[78vh] overflow-auto p-4 rounded-lg bg-muted/40 border">{mdPreview}</pre>
+        </div>
+      )}
+
+      {tab === "tex" && (
+        <LatexPane minLevel={minLevel} bust={v} />
+      )}
+
+      <div className="px-5 pb-5 pt-2 hr-soft flex flex-wrap gap-2">
+        <a href={`${API}/api/cv/markdown?min_level=${minLevel}`} download="cv.md">
+          <Button variant="outline" size="sm"><Download className="h-3.5 w-3.5 mr-1.5" />.md</Button>
+        </a>
+        <a href={`${API}/api/cv/tex?min_level=${minLevel}`} download="cv.tex">
+          <Button variant="outline" size="sm"><Download className="h-3.5 w-3.5 mr-1.5" />.tex</Button>
+        </a>
+        <a href={`${API}/api/cv/html?min_level=${minLevel}`} target="_blank" rel="noopener noreferrer">
+          <Button variant="outline" size="sm"><ExternalLink className="h-3.5 w-3.5 mr-1.5" />.html (print → PDF)</Button>
+        </a>
+        <a href={`${API}/api/cv/pdf?min_level=${minLevel}`} target="_blank" rel="noopener noreferrer">
+          <Button size="sm"><Download className="h-3.5 w-3.5 mr-1.5" />.pdf (LaTeX)</Button>
+        </a>
+      </div>
+      <p className="px-5 pb-5 text-[10px] text-muted-foreground">
+        ATS = Applicant Tracking System. The HTML and LaTeX templates are single-column, no images — every ATS parses them.
+        .pdf needs pdflatex installed on backend; otherwise use .html → browser Print → Save as PDF.
+      </p>
+    </CardContent></Card>
+  );
+}
+
+function LatexPane({ minLevel, bust }: { minLevel: number; bust: string }) {
+  const [tex, setTex] = useState("");
+  useEffect(() => {
+    fetch(`${API}/api/cv/tex?min_level=${minLevel}&v=${bust}`).then(r => r.text()).then(setTex).catch(() => {});
+  }, [minLevel, bust]);
+  return (
+    <div className="px-5 pb-5">
+      <pre className="text-xs leading-relaxed font-mono whitespace-pre-wrap max-h-[78vh] overflow-auto p-4 rounded-lg bg-muted/40 border">{tex}</pre>
     </div>
   );
 }

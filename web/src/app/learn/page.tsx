@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrapeButton } from "@/components/scrape-button";
+import { PageHeader } from "@/components/page-header";
 import { ProficiencyControl } from "@/components/proficiency";
 import { useProficiency, LEVELS } from "@/lib/proficiency";
 import { fetcher, type LearnResponse, type LearnRow } from "@/lib/api";
@@ -53,21 +54,12 @@ export default function LearnPage() {
 
   return (
     <div className="space-y-14">
-      {/* Hero */}
-      <section className="pt-6 max-w-3xl">
-        <Badge variant="outline" className="mb-5 text-xs font-mono">step 02 · learn</Badge>
-        <h1 className="text-4xl sm:text-5xl font-semibold tracking-tight leading-[1.1]">
-          One skill at a time.
-        </h1>
-        <p className="mt-5 text-lg text-muted-foreground">
-          Built from{" "}
-          <span className="text-foreground font-medium">{data?.total_real ?? 0}</span>{" "}
-          real junior jobs. Rate honestly. We show the highest-ROI gaps first.
-        </p>
-        <div className="mt-7 flex items-center gap-3">
-          <ScrapeButton />
-        </div>
-      </section>
+      <PageHeader
+        eyebrow="02 · learn"
+        title={<>One skill <em className="font-serif text-muted-foreground not-italic">at a time.</em></>}
+        subtitle={<>Built from <span className="text-foreground font-medium">{data?.total_real ?? 0}</span> real junior jobs. Rate honestly. Highest-ROI gaps first.</>}
+        action={<ScrapeButton />}
+      />
 
       {/* Progress */}
       <section className="space-y-3">

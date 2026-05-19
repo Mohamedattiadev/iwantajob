@@ -22,6 +22,7 @@ import {
   CollapsibleContent,
 } from "@/components/ui/collapsible";
 import { ScrapeButton } from "@/components/scrape-button";
+import { PageHeader } from "@/components/page-header";
 import { fetcher, type JobsResponse } from "@/lib/api";
 import { useApplications } from "@/lib/applications";
 import { CheckCircle2 } from "lucide-react";
@@ -72,18 +73,12 @@ function JobsPageInner() {
 
   return (
     <div className="space-y-8">
-      <section className="pt-6 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
-        <div>
-          <Badge variant="outline" className="mb-4 text-xs font-mono">step 03 · jobs</Badge>
-          <h1 className="text-4xl sm:text-5xl font-semibold tracking-tight leading-[1.1]">
-            {data?.total ?? 0} <span className="text-muted-foreground">matches</span>
-          </h1>
-          <p className="text-sm text-muted-foreground mt-3">
-            Ghost-filtered junior listings. Click any row to open the posting.
-          </p>
-        </div>
-        <ScrapeButton />
-      </section>
+      <PageHeader
+        eyebrow="03 · jobs"
+        title={<><span className="tabular-nums">{data?.total ?? 0}</span> <span className="text-muted-foreground italic">matches</span></>}
+        subtitle="Ghost-filtered junior listings. Click any row to open and mark applied."
+        action={<ScrapeButton />}
+      />
 
       {/* Search bar */}
       <div className="space-y-3">

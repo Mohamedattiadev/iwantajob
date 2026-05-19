@@ -71,11 +71,11 @@ export default function Welcome() {
   return (
     <div className="relative min-h-[80vh] flex items-center justify-center">
       <Aurora />
-      <div className="w-full max-w-3xl space-y-8">
+      <div className="w-full max-w-3xl space-y-10 anim-in">
         <div className="text-center">
-          <Badge variant="outline" className="mb-3 text-xs font-mono">welcome to IWANTAJOB</Badge>
-          <h1 className="text-4xl sm:text-6xl font-semibold tracking-tight leading-[1.05]">
-            Let's set up your <Gradient>launchpad</Gradient>.
+          <Badge variant="outline" className="mb-4 text-[10px] font-mono uppercase tracking-[0.14em]">welcome to IWANTAJOB</Badge>
+          <h1 className="font-serif text-5xl sm:text-7xl font-normal tracking-tight leading-[0.95] text-balance">
+            Let&apos;s set up your <Gradient>launchpad</Gradient>.
           </h1>
           <p className="text-muted-foreground mt-3">Takes 2 minutes. Skip anytime.</p>
         </div>

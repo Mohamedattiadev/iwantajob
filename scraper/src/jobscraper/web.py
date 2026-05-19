@@ -27,6 +27,30 @@ class ChatMessage(BaseModel):
 
 class ChatIn(BaseModel):
     messages: list[ChatMessage]
+
+
+class NoteIn(BaseModel):
+    content: str
+
+
+class ProfileIn(BaseModel):
+    data: dict[str, Any]
+
+
+class SkillRate(BaseModel):
+    skill: str
+    level: int
+
+
+class ApplyIn(BaseModel):
+    job_id: int
+    status: str | None = "applied"
+    notes: str | None = ""
+
+
+class ApplyUpdate(BaseModel):
+    status: str | None = None
+    notes: str | None = None
 from sqlalchemy import func, select
 
 from .collectors import COLLECTORS, upsert_jobs
@@ -274,9 +298,6 @@ def create_app() -> FastAPI:
             "content": notes_mod.load_note(skill, category),
         }
 
-    class NoteIn(BaseModel):
-        content: str
-
     @app.put("/api/notes/{skill}")
     def api_put_note(skill: str, body: NoteIn):
         notes_mod.save_note(skill, body.content)
@@ -296,9 +317,6 @@ def create_app() -> FastAPI:
     @app.get("/api/profile")
     def api_profile_get():
         return profile_mod.load()
-
-    class ProfileIn(BaseModel):
-        data: dict[str, Any]
 
     @app.put("/api/profile")
     def api_profile_put(body: ProfileIn):
@@ -343,10 +361,6 @@ def create_app() -> FastAPI:
                     merged[k] = v
         profile_mod.save(merged)
         return {"profile": merged, "meta": parsed.get("_meta", {})}
-
-    class SkillRate(BaseModel):
-        skill: str
-        level: int
 
     @app.put("/api/profile/skills")
     def api_set_skill(body: SkillRate):
@@ -403,11 +417,6 @@ def create_app() -> FastAPI:
             for a, j in rows
         ]
 
-    class ApplyIn(BaseModel):
-        job_id: int
-        status: str | None = "applied"
-        notes: str | None = ""
-
     @app.post("/api/applications", status_code=201)
     def api_apply(body: ApplyIn):
         with session_scope() as s:
@@ -421,10 +430,6 @@ def create_app() -> FastAPI:
             s.add(a)
             s.flush()
             return {"id": a.id, "duplicated": False}
-
-    class ApplyUpdate(BaseModel):
-        status: str | None = None
-        notes: str | None = None
 
     @app.patch("/api/applications/{app_id}")
     def api_apply_update(app_id: int, body: ApplyUpdate):
