@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Learn — jobscraper{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-1">Learning plan</h1>
+<p class="text-sm text-slate-500 mb-6">
+  Built from <span class="font-mono">{{ total_real }}</span> real junior/unknown jobs.
+  Check boxes save to your browser only (localStorage).
+</p>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+  <div class="bg-white rounded-xl shadow p-5 lg:col-span-2">
+    <h2 class="font-semibold mb-3">Top gaps — start here</h2>
+    <ul class="divide-y" id="todo-list">
+      {% for skill, n, cat in gaps %}
+      <li class="py-3 flex items-center gap-3" data-skill="{{ skill }}">
+        <input type="checkbox" class="w-5 h-5 accent-indigo-600 todo-check"
+               data-key="learn:{{ skill }}">
+        <div class="flex-1">
+          <div class="font-medium todo-label">{{ skill }}</div>
+          <div class="text-xs text-slate-500">{{ cat }} · {{ n }} jobs · {{ pct(n) }} of real jobs</div>
+        </div>
+        <a href="/jobs?skill={{ skill }}" class="text-xs text-indigo-600 hover:underline">jobs →</a>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="bg-white rounded-xl shadow p-5">
+    <h2 class="font-semibold mb-3">Already on your CV</h2>
+    <ul class="text-sm space-y-1">
+      {% for skill, n, cat in have[:15] %}
+        <li class="flex justify-between">
+          <span><span class="text-emerald-600 mr-1">✓</span>{{ skill }} <span class="text-xs text-slate-400">{{ cat }}</span></span>
+          <a href="/jobs?skill={{ skill }}" class="font-mono text-xs text-indigo-500 hover:underline">{{ n }}</a>
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+
+<h2 class="font-semibold mb-3">All gaps by category</h2>
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+  {% for cat in ordered_cats %}
+  <div class="bg-white rounded-xl shadow p-4">
+    <h3 class="font-medium mb-2 capitalize">{{ cat }}</h3>
+    <ul class="text-sm space-y-1">
+      {% for skill, n in by_cat[cat][:10] %}
+      <li class="flex justify-between">
+        <a href="/jobs?skill={{ skill }}" class="hover:underline">{{ skill }}</a>
+        <span class="font-mono text-xs text-slate-500">{{ n }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endfor %}
+</div>
+
+<script>
+document.querySelectorAll('.todo-check').forEach(cb => {
+  const key = cb.dataset.key;
+  const li = cb.closest('li');
+  const label = li.querySelector('.todo-label');
+  const saved = localStorage.getItem(key) === '1';
+  cb.checked = saved;
+  if (saved) label.classList.add('line-through', 'text-slate-400');
+  cb.addEventListener('change', () => {
+    localStorage.setItem(key, cb.checked ? '1' : '0');
+    label.classList.toggle('line-through', cb.checked);
+    label.classList.toggle('text-slate-400', cb.checked);
+  });
+});
+</script>
+{% endblock %}

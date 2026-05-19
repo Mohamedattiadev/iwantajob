@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Node
+node_modules/
+.next/
+out/
+.turbo/
+
+# Data — never commit DB, notes, profile, scraped jobs
+data/
+scraper/data/
+web/.env.local
+.env
+.env.local
+
+# Secrets
+*.key
+*.pem
+
+# CV PDF — personal
+Mohamed Attia_CV_ENG.pdf
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Build
+dist/
+build/

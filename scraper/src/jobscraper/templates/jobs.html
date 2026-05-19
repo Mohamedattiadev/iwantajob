@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Jobs — jobscraper{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-4">Jobs ({{ total_match }})</h1>
+
+<form method="get" class="bg-white rounded-xl shadow p-4 mb-6 grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
+  <div class="md:col-span-2">
+    <label class="block text-xs text-slate-500">Search</label>
+    <input name="q" value="{{ q }}" placeholder="title, company, description"
+           class="w-full border rounded px-3 py-2 text-sm">
+  </div>
+  <div>
+    <label class="block text-xs text-slate-500">Source</label>
+    <select name="source" class="w-full border rounded px-3 py-2 text-sm">
+      <option value="">all</option>
+      {% for s in sources %}<option value="{{ s }}" {% if s==source %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select>
+  </div>
+  <div>
+    <label class="block text-xs text-slate-500">Seniority</label>
+    <select name="seniority" class="w-full border rounded px-3 py-2 text-sm">
+      <option value="junior_or_unknown" {% if seniority=='junior_or_unknown' %}selected{% endif %}>junior / intern / unknown</option>
+      <option value="junior" {% if seniority=='junior' %}selected{% endif %}>junior</option>
+      <option value="intern" {% if seniority=='intern' %}selected{% endif %}>intern</option>
+      <option value="mid" {% if seniority=='mid' %}selected{% endif %}>mid</option>
+      <option value="senior" {% if seniority=='senior' %}selected{% endif %}>senior</option>
+      <option value="all" {% if seniority=='all' %}selected{% endif %}>all</option>
+    </select>
+  </div>
+  <div>
+    <label class="block text-xs text-slate-500">Min score</label>
+    <input type="number" name="min_score" value="{{ min_score }}" min="0" max="100"
+           class="w-full border rounded px-3 py-2 text-sm">
+  </div>
+  <div>
+    <label class="block text-xs text-slate-500">Skill</label>
+    <select name="skill" class="w-full border rounded px-3 py-2 text-sm">
+      <option value="">any</option>
+      {% for s in skills %}<option value="{{ s }}" {% if s==skill %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="md:col-span-6 flex gap-2">
+    <button class="bg-indigo-600 text-white rounded px-4 py-2 text-sm hover:bg-indigo-700">Apply</button>
+    <a href="/jobs" class="text-sm text-slate-500 hover:underline self-center">reset</a>
+  </div>
+</form>
+
+<div class="bg-white rounded-xl shadow overflow-hidden">
+  <table class="w-full text-sm">
+    <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
+      <tr>
+        <th class="p-3 text-left">Score</th>
+        <th class="p-3 text-left">Src</th>
+        <th class="p-3 text-left">Date</th>
+        <th class="p-3 text-left">Company</th>
+        <th class="p-3 text-left">Title</th>
+        <th class="p-3 text-left">Seniority</th>
+        <th class="p-3 text-left">Skills</th>
+        <th class="p-3"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for j in rows %}
+      {% set sc = scores.get(j.id, 0) %}
+      <tr class="border-t hover:bg-slate-50">
+        <td class="p-3">
+          <span class="font-mono font-bold
+            {% if sc >= 80 %}text-emerald-600{% elif sc >= 60 %}text-amber-600{% else %}text-slate-500{% endif %}">
+            {{ sc }}
+          </span>
+        </td>
+        <td class="p-3"><span class="bg-slate-200 px-2 py-0.5 rounded text-xs">{{ j.source }}</span></td>
+        <td class="p-3 text-xs text-slate-500">{{ j.posted_at.date() if j.posted_at else '—' }}</td>
+        <td class="p-3 font-medium">{{ (j.company or '—')[:40] }}</td>
+        <td class="p-3">{{ (j.title or '')[:80] }}</td>
+        <td class="p-3 text-xs">{{ j.seniority or '?' }}</td>
+        <td class="p-3">
+          <div class="flex flex-wrap gap-1 max-w-md">
+            {% for sk in j.skills[:6] %}
+              <a href="/jobs?skill={{ sk.skill }}" class="bg-indigo-50 text-indigo-700 hover:bg-indigo-100 px-2 py-0.5 rounded text-xs">{{ sk.skill }}</a>
+            {% endfor %}
+          </div>
+        </td>
+        <td class="p-3">
+          <a href="{{ j.source_url }}" target="_blank" rel="noopener"
+             class="text-indigo-600 hover:underline text-xs whitespace-nowrap">Open ↗</a>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not rows %}
+      <tr><td colspan="8" class="p-8 text-center text-slate-400">No matches.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+<p class="text-xs text-slate-500 mt-2">Showing {{ rows|length }} of {{ total_match }}.</p>
+{% endblock %}

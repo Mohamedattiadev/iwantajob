@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Overview — jobscraper{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-1">Job market overview</h1>
+<p class="text-sm text-slate-500 mb-6">Generated {{ now }}</p>
+
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+  <div class="bg-white rounded-xl shadow p-5">
+    <div class="text-slate-500 text-sm">Total jobs scraped</div>
+    <div class="text-3xl font-bold">{{ total }}</div>
+  </div>
+  <div class="bg-white rounded-xl shadow p-5">
+    <div class="text-slate-500 text-sm">Junior / unknown</div>
+    <div class="text-3xl font-bold">{{ target }}</div>
+  </div>
+  <div class="bg-white rounded-xl shadow p-5">
+    <div class="text-slate-500 text-sm">Real (passes ghost filter)</div>
+    <div class="text-3xl font-bold text-emerald-600">{{ real }}</div>
+  </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+  <div class="bg-white rounded-xl shadow p-5 lg:col-span-2">
+    <h2 class="font-semibold mb-3">Top skills (real jobs)</h2>
+    <canvas id="skillsChart" height="120"></canvas>
+  </div>
+  <div class="bg-white rounded-xl shadow p-5">
+    <h2 class="font-semibold mb-3">Sources</h2>
+    <ul class="text-sm space-y-1">
+      {% for src, n in by_source %}
+        <li class="flex justify-between"><span>{{ src }}</span><span class="font-mono">{{ n }}</span></li>
+      {% endfor %}
+    </ul>
+    <h2 class="font-semibold mt-5 mb-3">Seniority (target)</h2>
+    <ul class="text-sm space-y-1">
+      {% for lvl, n in by_sen %}
+        <li class="flex justify-between"><span>{{ lvl }}</span><span class="font-mono">{{ n }}</span></li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+
+<div class="bg-white rounded-xl shadow p-5">
+  <div class="flex justify-between items-center mb-3">
+    <h2 class="font-semibold">Your biggest gaps (skills not on CV)</h2>
+    <a href="/learn" class="text-sm text-indigo-600 hover:underline">Open learning plan →</a>
+  </div>
+  <div class="flex flex-wrap gap-2">
+    {% for s, n, c in gaps %}
+      <a href="/jobs?skill={{ s }}" class="bg-amber-100 text-amber-900 hover:bg-amber-200 rounded px-3 py-1 text-sm">
+        {{ s }} <span class="text-amber-700 font-mono text-xs">{{ n }}</span>
+      </a>
+    {% endfor %}
+  </div>
+</div>
+
+<script>
+  const labels = {{ top|map(attribute=0)|list|tojson }};
+  const data = {{ top|map(attribute=1)|list|tojson }};
+  new Chart(document.getElementById('skillsChart'), {
+    type: 'bar',
+    data: { labels, datasets: [{ label: 'jobs', data, backgroundColor: '#4f46e5' }] },
+    options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+  });
+</script>
+{% endblock %}

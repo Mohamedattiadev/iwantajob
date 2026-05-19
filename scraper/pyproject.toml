@@ -1,0 +1,37 @@
+[project]
+name = "jobscraper"
+version = "0.1.0"
+description = "Personal job-market scraper to drive a learning roadmap."
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "selectolax>=0.3.21",
+    "sqlalchemy>=2.0",
+    "pydantic>=2.6",
+    "typer>=0.12",
+    "rich>=13.7",
+    "feedparser>=6.0",
+    "python-dateutil>=2.9",
+    "tenacity>=8.2",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "jinja2>=3.1",
+    "pypdf>=4.0",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.4"]
+
+[project.scripts]
+jobscraper = "jobscraper.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+jobscraper = ["templates/*.html", "static/*"]
