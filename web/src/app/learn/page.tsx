@@ -92,7 +92,13 @@ export default function LearnPage() {
             {focus.map((row, i) => {
               const lvl = prof[row.skill] ?? 0;
               return (
-                <Card key={row.skill} className="border-foreground/15 hover:border-foreground/30 transition-colors">
+                <Card
+                  key={row.skill}
+                  accentColor={i === 0 ? "violet" : i === 1 ? "emerald" : "amber"}
+                  showAccentLine
+                  showCornerGlow
+                  className="hover:-translate-y-0.5 transition-transform"
+                >
                   <CardContent className="p-5 space-y-3">
                     <div className="text-xs font-mono text-muted-foreground">#{i + 1}</div>
                     <Link

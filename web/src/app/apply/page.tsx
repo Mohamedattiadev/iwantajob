@@ -36,11 +36,11 @@ export default function ApplyPage() {
       />
 
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-        <Stat label="Total" value={applications.length} />
-        <Stat label="Applied" value={counts.applied ?? 0} />
-        <Stat label="Interviewing" value={counts.interviewing ?? 0} />
-        <Stat label="Offer" value={counts.offer ?? 0} accent="emerald" />
-        <Stat label="Rejected" value={counts.rejected ?? 0} />
+        <Stat label="Total" value={applications.length} color="slate" />
+        <Stat label="Applied" value={counts.applied ?? 0} color="sky" />
+        <Stat label="Interviewing" value={counts.interviewing ?? 0} color="amber" />
+        <Stat label="Offer" value={counts.offer ?? 0} color="emerald" />
+        <Stat label="Rejected" value={counts.rejected ?? 0} color="rose" />
       </div>
 
       {isLoading ? (
@@ -55,7 +55,17 @@ export default function ApplyPage() {
         <ul className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           {applications.map((a) => (
             <li key={a.id}>
-              <Card><CardContent className="p-4 space-y-2">
+              <Card
+                accentColor={
+                  a.status === "offer" ? "emerald"
+                  : a.status === "interviewing" ? "amber"
+                  : a.status === "rejected" ? "rose"
+                  : a.status === "ghost" ? "slate"
+                  : "sky"
+                }
+                showAccentLine
+              >
+                <CardContent className="p-4 space-y-2">
                 <div className="flex items-start gap-3">
                   <div className="flex-1 min-w-0">
                     <div className="font-medium line-clamp-1">{a.job.title}</div>
@@ -93,11 +103,25 @@ export default function ApplyPage() {
   );
 }
 
-function Stat({ label, value, accent }: { label: string; value: number; accent?: "emerald" }) {
+function Stat({ label, value, color = "slate" }: {
+  label: string;
+  value: number;
+  color?: "violet" | "emerald" | "amber" | "sky" | "slate" | "rose";
+}) {
+  const accents: Record<string, string> = {
+    violet: "text-violet-500",
+    emerald: "text-emerald-500",
+    amber: "text-amber-500",
+    sky: "text-sky-500",
+    slate: "text-foreground",
+    rose: "text-rose-500",
+  };
   return (
-    <Card><CardContent className="p-4">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`text-2xl font-bold tabular-nums mt-1 ${accent === "emerald" ? "text-emerald-500" : ""}`}>{value}</div>
-    </CardContent></Card>
+    <Card accentColor={color} showAccentLine showCornerGlow>
+      <CardContent className="py-3">
+        <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground">{label}</div>
+        <div className={`font-serif text-3xl tabular-nums mt-2 ${accents[color]}`}>{value}</div>
+      </CardContent>
+    </Card>
   );
 }

@@ -45,7 +45,7 @@ export function MagicCard({
 }: {
   children: React.ReactNode;
   className?: string;
-  glow?: "indigo" | "emerald" | "amber" | "rose" | "violet";
+  glow?: "indigo" | "emerald" | "amber" | "rose" | "violet" | "sky" | "slate";
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
@@ -56,6 +56,8 @@ export function MagicCard({
     amber:   "oklch(0.78 0.16 70 / 0.4)",
     rose:    "oklch(0.72 0.2 16 / 0.4)",
     violet:  "oklch(0.7 0.18 295 / 0.4)",
+    sky:     "oklch(0.7 0.15 230 / 0.4)",
+    slate:   "oklch(0.65 0.03 240 / 0.3)",
   };
 
   return (

@@ -83,7 +83,7 @@ export default function Welcome() {
         <Steps current={step} />
 
         {step === 0 && (
-          <Card><CardContent className="p-8 space-y-5">
+          <Card accentColor="violet" showAccentLine showCornerGlow><CardContent className="p-8 space-y-5">
             <Sparkles className="h-8 w-8 text-indigo-400" />
             <h2 className="text-2xl font-semibold">Hi. I'll do 3 things for you.</h2>
             <ul className="space-y-2 text-sm text-muted-foreground list-disc pl-5">
@@ -96,7 +96,7 @@ export default function Welcome() {
         )}
 
         {step === 1 && (
-          <Card><CardContent className="p-8 space-y-5">
+          <Card accentColor="sky" showAccentLine showCornerGlow><CardContent className="p-8 space-y-5">
             <h2 className="text-2xl font-semibold">Step 1 — Upload your CV</h2>
             <p className="text-sm text-muted-foreground">PDF works best. I parse name, contact, GitHub, education, and detect skills automatically. You can edit anything afterwards.</p>
             <input
@@ -117,7 +117,7 @@ export default function Welcome() {
         )}
 
         {step === 2 && (
-          <Card><CardContent className="p-8 space-y-5">
+          <Card accentColor="amber" showAccentLine showCornerGlow><CardContent className="p-8 space-y-5">
             <h2 className="text-2xl font-semibold">Step 2 — Tell me what you want</h2>
             {profile && (
               <div className="text-xs text-muted-foreground bg-muted/40 rounded p-3">
@@ -145,7 +145,7 @@ export default function Welcome() {
         )}
 
         {step === 3 && (
-          <Card><CardContent className="p-8 space-y-5">
+          <Card accentColor="emerald" showAccentLine showCornerGlow><CardContent className="p-8 space-y-5">
             <CheckCircle2 className="h-10 w-10 text-emerald-500" />
             <h2 className="text-2xl font-semibold">You're set.</h2>
             <p className="text-sm text-muted-foreground">Your launchpad has four areas:</p>

@@ -106,7 +106,7 @@ export default function CvPage() {
       />
 
       {/* Upload + actions */}
-      <Card>
+      <Card accentColor="violet" showAccentLine showCornerGlow>
         <CardContent className="p-5 flex flex-wrap items-center gap-3">
           <input
             ref={fileRef}
@@ -141,7 +141,7 @@ export default function CvPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Edit form */}
         <div className="space-y-5">
-          <Card><CardContent className="p-5 space-y-3">
+          <Card accentColor="sky" showAccentLine><CardContent className="p-5 space-y-3">
             <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground">Personal</div>
             <Field label="Name"><Input value={draft.personal.name} onChange={(e) => updatePersonal("name", e.target.value)} /></Field>
             <Field label="Email"><Input value={draft.personal.email} onChange={(e) => updatePersonal("email", e.target.value)} /></Field>
@@ -172,7 +172,7 @@ export default function CvPage() {
             onChange={(v) => update("education", v)}
           />
 
-          <Card><CardContent className="p-5 space-y-3">
+          <Card accentColor="emerald" showAccentLine showCornerGlow><CardContent className="p-5 space-y-3">
             <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground">Skills</div>
             {skillsList.length === 0 ? (
               <p className="text-sm text-muted-foreground">Rate skills in Learn — they appear here automatically.</p>
@@ -221,7 +221,7 @@ function CVPreview({
   }, []);
 
   return (
-    <Card><CardContent className="p-0">
+    <Card accentColor="violet" showAccentLine showCornerGlow><CardContent className="p-0">
       <div className="px-5 pt-5 pb-3 flex items-center justify-between gap-3 flex-wrap">
         <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground inline-flex items-center gap-2">
           <FileText className="h-3.5 w-3.5" /> Live preview
@@ -328,7 +328,7 @@ function ListEditor({
   placeholder: string;
 }) {
   return (
-    <Card><CardContent className="p-5 space-y-3">
+    <Card accentColor="amber" showAccentLine><CardContent className="p-5 space-y-3">
       <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground">{title}</div>
       {items.map((it, i) => (
         <div key={i} className="flex gap-2">

@@ -4,7 +4,7 @@ import useSWR from "swr";
 import Link from "next/link";
 import { useMemo } from "react";
 import { ArrowRight, FileText, GraduationCap, Briefcase, Send, Sparkles, BadgeCheck, Pencil } from "lucide-react";
-import { CardContent } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrapeButton } from "@/components/scrape-button";
 import { Aurora, GridBg, MagicCard, Gradient, AnimatedNumber, Bento } from "@/components/eye-candy";
@@ -87,7 +87,7 @@ export default function Home() {
             title="CV builder"
             desc={cvName ? `${cvName} · ${Object.keys(profile.data?.skills ?? {}).length} skills` : "Upload PDF → parse → export ATS-clean."}
             href="/cv" cta="Open builder"
-            glow="indigo"
+            glow="violet"
             className="lg:col-span-3"
           />
           <FeatureCard
@@ -223,12 +223,12 @@ function FeatureCard({
   href: string;
   cta: string;
   highlight?: string;
-  glow: "indigo" | "emerald" | "amber" | "rose" | "violet";
+  glow: "violet" | "emerald" | "amber" | "sky" | "slate" | "rose";
   className?: string;
 }) {
   return (
     <Link href={href} className={`block group ${className ?? ""}`}>
-      <MagicCard glow={glow} className="h-full glass press hover:-translate-y-0.5 transition-transform">
+      <Card accentColor={glow as "violet"|"emerald"|"amber"|"sky"|"slate"|"rose"} showAccentLine showCornerGlow className="h-full press hover:-translate-y-0.5 transition-transform">
         <CardContent className="p-5 sm:p-6 h-full flex flex-col gap-3">
           <div className="flex items-start justify-between">
             <div className="h-9 w-9 rounded-lg bg-foreground/5 grid place-items-center ring-1 ring-foreground/10">{icon}</div>
@@ -245,7 +245,7 @@ function FeatureCard({
             {cta} <ArrowRight className="h-4 w-4" />
           </div>
         </CardContent>
-      </MagicCard>
+      </Card>
     </Link>
   );
 }
