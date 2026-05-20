@@ -50,24 +50,24 @@
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --background: oklch(0.97 0.006 264.376);
+  --foreground: oklch(0.10 0.015 264.376);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: oklch(0.10 0.015 264.376);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.10 0.015 264.376);
+  --primary: oklch(0.545 0.24 264.376);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.945 0.010 264.376);
+  --secondary-foreground: oklch(0.18 0.04 264.376);
+  --muted: oklch(0.945 0.010 264.376);
+  --muted-foreground: oklch(0.38 0.035 264.376);
+  --accent: oklch(0.94 0.014 264.376);
+  --accent-foreground: oklch(0.35 0.14 264.376);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --border: oklch(0.90 0.014 264.376);
+  --input: oklch(0.90 0.014 264.376);
+  --ring: oklch(0.545 0.24 264.376);
   --chart-1: oklch(0.55 0.22 264);  /* indigo */
   --chart-2: oklch(0.68 0.17 162);  /* emerald */
   --chart-3: oklch(0.74 0.16 70);   /* amber */
@@ -85,24 +85,24 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
+  --background: oklch(0.07 0.022 264.376);
+  --foreground: oklch(0.97 0 0);
+  --card: oklch(0.10 0.018 264.376);
+  --card-foreground: oklch(0.97 0 0);
+  --popover: oklch(0.10 0.018 264.376);
+  --popover-foreground: oklch(0.97 0 0);
+  --primary: oklch(0.655 0.22 264.376);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.14 0.015 264.376);
+  --secondary-foreground: oklch(0.97 0 0);
+  --muted: oklch(0.14 0.015 264.376);
+  --muted-foreground: oklch(0.58 0.025 264.376);
+  --accent: oklch(0.16 0.02 264.376);
+  --accent-foreground: oklch(0.85 0.05 264.376);
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  --border: oklch(1 0 0 / 9%);
+  --input: oklch(1 0 0 / 10%);
+  --ring: oklch(0.655 0.22 264.376);
   --chart-1: oklch(0.7 0.2 264);
   --chart-2: oklch(0.78 0.16 162);
   --chart-3: oklch(0.82 0.15 70);
@@ -145,17 +145,15 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply text-foreground;
-    background:
-      radial-gradient(70rem 40rem at 0% -20%, oklch(0.55 0.22 264 / 0.22), transparent 55%),
-      radial-gradient(60rem 30rem at 100% 0%, oklch(0.68 0.17 162 / 0.14), transparent 55%),
-      radial-gradient(40rem 30rem at 50% 110%, oklch(0.58 0.18 295 / 0.10), transparent 55%),
-      var(--background);
-    background-attachment: fixed;
-    font-feature-settings: "ss01";
+    @apply bg-background text-foreground;
   }
   html {
     @apply font-sans;
+    scroll-behavior: smooth;
+    transition: color 0.2s ease, background-color 0.2s ease;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    letter-spacing: -0.025em;
   }
 }
 
@@ -201,6 +199,14 @@
 
   /* Hairline divider */
   .hr-soft { border-top: 1px solid color-mix(in oklch, var(--foreground) 8%, transparent); }
+
+  .dot-grid {
+    background-image: radial-gradient(circle, oklch(0 0 0 / 0.07) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+  .dark .dot-grid {
+    background-image: radial-gradient(circle, oklch(1 0 0 / 0.06) 1px, transparent 1px);
+  }
 
   /* Scroll-reveal: applied via IntersectionObserver in JS or simple stagger */
   .anim-in-stagger > * {
