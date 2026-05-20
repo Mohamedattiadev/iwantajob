@@ -186,7 +186,7 @@ def _split_bullets(raw: str) -> tuple[str, list[str]]:
     return parts[0], parts[1:]
 
 
-TEMPLATES = ("classic", "compact", "modern", "elegant")
+TEMPLATES = ("classic", "compact", "modern", "elegant", "sidebar", "minimal", "executive", "tech", "academic")
 DEFAULT_TEMPLATE = "classic"
 
 
@@ -467,6 +467,39 @@ _TEMPLATE_CSS: dict[str, str] = {
         a    { color: #5a3a8c; text-decoration: none; }
         strong { color: #1a1a1a; font-weight: 700; }
         em   { color: #555; font-style: italic; }
+    """,
+    "sidebar": """
+        body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+               max-width: 800px; margin: 36px auto; padding: 0 28px;
+               color: #0f172a; line-height: 1.55; font-size: 13.5px; }
+        h1   { font-size: 30px; margin: 0 0 4px; letter-spacing: -0.015em; font-weight: 800; color: #0ea5e9; }
+        h1 + p { color: #475569; font-size: 13px; margin: 0 0 22px; padding-bottom: 12px;
+                 border-bottom: 1px solid #e2e8f0; }
+        h2   { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.16em;
+               color: #0ea5e9; margin: 22px 0 8px; font-weight: 700;
+               border-left: 3px solid #0ea5e9; padding-left: 10px; }
+        p    { margin: 5px 0; }
+        ul   { margin: 5px 0 12px 18px; padding: 0; list-style: none; }
+        li   { margin: 3px 0; position: relative; padding-left: 14px; }
+        li::before { content: "›"; color: #0ea5e9; position: absolute; left: 0; font-weight: 700; }
+        a    { color: #0284c7; text-decoration: none; }
+        strong { color: #0f172a; }
+        em   { color: #475569; font-style: normal; }
+    """,
+    "minimal": """
+        body { font-family: "Times New Roman", Times, serif;
+               max-width: 720px; margin: 40px auto; padding: 0 28px;
+               color: #000; line-height: 1.5; font-size: 14px; }
+        h1   { font-size: 26px; margin: 0 0 2px; font-weight: 700; }
+        h1 + p { color: #333; font-size: 12.5px; margin: 0 0 18px; }
+        h2   { font-size: 13px; text-transform: uppercase; letter-spacing: 0.10em;
+               color: #000; margin: 18px 0 6px; border-bottom: 1px solid #000; padding-bottom: 2px; }
+        p    { margin: 4px 0; }
+        ul   { margin: 4px 0 10px 20px; padding: 0; }
+        li   { margin: 2px 0; }
+        a    { color: #000; text-decoration: underline; }
+        strong { color: #000; }
+        em   { color: #333; font-style: italic; }
     """,
 }
 

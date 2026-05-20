@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # IWANTAJOB runner. Usage:
-#   ./run            # alias for ./run up
-#   ./run up         # start backend + frontend in background, tail nothing
-#   ./run down       # stop both
-#   ./run restart    # down + up
-#   ./run logs       # tail both logs
-#   ./run status     # show what's running
+#   ./run              # start backend + frontend in FOREGROUND, stream logs (Ctrl-C stops both)
+#   ./run up           # alias
+#   ./run up --bg      # start in background (old behavior)
+#   ./run down         # stop both
+#   ./run restart      # down + up --bg
+#   ./run logs         # tail backgrounded logs
+#   ./run status       # show what's running + env presence
+#   ./run open         # open the frontend in browser
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -16,7 +18,6 @@ FRONT_LOG="/tmp/iwantajob-frontend.log"
 BACK_PIDFILE="/tmp/iwantajob-backend.pid"
 FRONT_PIDFILE="/tmp/iwantajob-frontend.pid"
 
-# Load .env if present (KEY=value lines, no quotes needed)
 if [ -f "$ROOT/.env" ]; then
   set -a
   # shellcheck disable=SC1091
@@ -34,41 +35,56 @@ _running() {
   [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null
 }
 
-start_backend() {
-  if _running "$BACK_PIDFILE"; then ok "backend already up (pid $(cat $BACK_PIDFILE))"; return; fi
-  info "starting backend on :8000"
+_check_venv() {
   if [ ! -x "$ROOT/scraper/.venv/bin/jobscraper" ]; then
-    err "venv not found at scraper/.venv. Run: cd scraper && python -m venv .venv && .venv/bin/pip install -e ."
-    exit 1
-  fi
-  ( cd "$ROOT/scraper" && setsid .venv/bin/jobscraper serve --host 127.0.0.1 --port 8000 \
-      > "$BACK_LOG" 2>&1 < /dev/null & echo $! > "$BACK_PIDFILE" )
-  sleep 2
-  if curl -sf http://127.0.0.1:8000/api/health > /dev/null; then
-    ok "backend  http://127.0.0.1:8000"
-  else
-    err "backend failed to start. See $BACK_LOG"
-    tail -n 30 "$BACK_LOG" || true
+    err "venv missing at scraper/.venv. Setup: cd scraper && python -m venv .venv && .venv/bin/pip install -e ."
     exit 1
   fi
 }
 
-start_frontend() {
+start_backend_bg() {
+  if _running "$BACK_PIDFILE"; then ok "backend already up (pid $(cat $BACK_PIDFILE))"; return; fi
+  _check_venv
+  info "starting backend on :8000 (bg)"
+  ( cd "$ROOT/scraper" && setsid .venv/bin/jobscraper serve --host 127.0.0.1 --port 8000 \
+      > "$BACK_LOG" 2>&1 < /dev/null & echo $! > "$BACK_PIDFILE" )
+  for i in $(seq 1 15); do
+    if curl -sf http://127.0.0.1:8000/api/health > /dev/null; then
+      ok "backend  http://127.0.0.1:8000"; return
+    fi
+    if ! _running "$BACK_PIDFILE"; then
+      err "backend crashed during startup. Last 40 lines of $BACK_LOG:"
+      tail -n 40 "$BACK_LOG" || true
+      exit 1
+    fi
+    sleep 1
+  done
+  err "backend slow / unhealthy. Tail $BACK_LOG:"
+  tail -n 40 "$BACK_LOG" || true
+  exit 1
+}
+
+start_frontend_bg() {
   if _running "$FRONT_PIDFILE"; then ok "frontend already up (pid $(cat $FRONT_PIDFILE))"; return; fi
-  info "starting frontend on :3000"
+  info "starting frontend on :3000 (bg)"
   if [ ! -d "$ROOT/web/node_modules" ]; then
     info "installing web deps (first run)…"
     ( cd "$ROOT/web" && npm install --silent )
   fi
   ( cd "$ROOT/web" && setsid npm run dev > "$FRONT_LOG" 2>&1 < /dev/null & echo $! > "$FRONT_PIDFILE" )
-  # Wait up to 30s for the dev server to bind
-  for i in $(seq 1 30); do
+  for i in $(seq 1 45); do
     if curl -sf http://127.0.0.1:3000 > /dev/null; then
       ok "frontend http://127.0.0.1:3000"; return
     fi
+    if ! _running "$FRONT_PIDFILE"; then
+      err "frontend crashed during startup. Last 40 lines of $FRONT_LOG:"
+      tail -n 40 "$FRONT_LOG" || true
+      exit 1
+    fi
     sleep 1
   done
-  err "frontend slow to start. Check $FRONT_LOG"
+  err "frontend slow to bind. Tail $FRONT_LOG:"
+  tail -n 40 "$FRONT_LOG" || true
 }
 
 stop_one() {
@@ -88,7 +104,6 @@ stop_one() {
 stop_all() {
   stop_one backend  "$BACK_PIDFILE"
   stop_one frontend "$FRONT_PIDFILE"
-  # Belt and suspenders — kill any stray
   pkill -f "jobscraper serve" 2>/dev/null || true
   pkill -f "next dev"        2>/dev/null || true
 }
@@ -96,21 +111,85 @@ stop_all() {
 status() {
   if _running "$BACK_PIDFILE";  then ok "backend  pid $(cat $BACK_PIDFILE)  http://127.0.0.1:8000"; else err "backend down"; fi
   if _running "$FRONT_PIDFILE"; then ok "frontend pid $(cat $FRONT_PIDFILE) http://127.0.0.1:3000"; else err "frontend down"; fi
-  # Show env presence (not values)
-  for k in ADZUNA_APP_ID ADZUNA_APP_KEY GEMINI_API_KEY RAPIDAPI_KEY; do
+  for k in ADZUNA_APP_ID ADZUNA_APP_KEY GEMINI_API_KEY RAPIDAPI_KEY TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID; do
     if [ -n "${!k:-}" ]; then ok "$k set"; else err "$k missing"; fi
   done
 }
 
+# Foreground: run both, stream prefixed logs, Ctrl-C kills both cleanly.
+# Uses temp FIFOs so we can sed-prefix each stream and interleave to stdout.
+run_foreground() {
+  stop_all >/dev/null 2>&1 || true
+  _check_venv
+  if [ ! -d "$ROOT/web/node_modules" ]; then
+    info "installing web deps (first run)…"
+    ( cd "$ROOT/web" && npm install --silent )
+  fi
+
+  info "starting backend + frontend (foreground, Ctrl-C to stop)"
+  : > "$BACK_LOG"; : > "$FRONT_LOG"
+
+  # Launch both, tee output to files AND to prefixed stdout.
+  ( cd "$ROOT/scraper" && exec .venv/bin/jobscraper serve --host 127.0.0.1 --port 8000 ) \
+      > >(tee -a "$BACK_LOG"  | sed -u "s/^/$(printf '\033[35m[back] \033[0m')/") 2>&1 &
+  BACK_PID=$!
+  echo $BACK_PID > "$BACK_PIDFILE"
+
+  ( cd "$ROOT/web" && exec npm run dev ) \
+      > >(tee -a "$FRONT_LOG" | sed -u "s/^/$(printf '\033[36m[front]\033[0m')/") 2>&1 &
+  FRONT_PID=$!
+  echo $FRONT_PID > "$FRONT_PIDFILE"
+
+  cleanup() {
+    echo
+    info "stopping..."
+    kill -TERM "$BACK_PID"  2>/dev/null || true
+    kill -TERM "$FRONT_PID" 2>/dev/null || true
+    sleep 1
+    kill -KILL "$BACK_PID"  2>/dev/null || true
+    kill -KILL "$FRONT_PID" 2>/dev/null || true
+    pkill -f "jobscraper serve" 2>/dev/null || true
+    pkill -f "next dev"         2>/dev/null || true
+    rm -f "$BACK_PIDFILE" "$FRONT_PIDFILE"
+    ok "stopped"
+    exit 0
+  }
+  trap cleanup INT TERM
+
+  # Heads-up once backend health passes.
+  ( for i in $(seq 1 20); do
+      if curl -sf http://127.0.0.1:8000/api/health > /dev/null; then
+        printf "\033[32m✓ backend  http://127.0.0.1:8000\033[0m\n"; break
+      fi
+      sleep 1
+    done
+    for i in $(seq 1 45); do
+      if curl -sf http://127.0.0.1:3000 > /dev/null; then
+        printf "\033[32m✓ frontend http://127.0.0.1:3000\033[0m\n"; break
+      fi
+      sleep 1
+    done ) &
+
+  wait $BACK_PID $FRONT_PID
+  cleanup
+}
+
 cmd="${1:-up}"
+sub="${2:-}"
 case "$cmd" in
-  up|start)    start_backend; start_frontend; status ;;
+  up|start)
+    if [ "$sub" = "--bg" ] || [ "$sub" = "-d" ]; then
+      start_backend_bg; start_frontend_bg; status
+    else
+      run_foreground
+    fi
+    ;;
   down|stop)   stop_all ;;
-  restart)     stop_all; start_backend; start_frontend; status ;;
+  restart)     stop_all; start_backend_bg; start_frontend_bg; status ;;
   status)      status ;;
   logs)        tail -n 50 -f "$BACK_LOG" "$FRONT_LOG" ;;
   logs:back)   tail -n 100 -f "$BACK_LOG" ;;
   logs:front)  tail -n 100 -f "$FRONT_LOG" ;;
   open)        xdg-open http://127.0.0.1:3000 >/dev/null 2>&1 || open http://127.0.0.1:3000 ;;
-  *)           echo "Usage: ./run [up|down|restart|status|logs|logs:back|logs:front|open]"; exit 1 ;;
+  *)           echo "Usage: ./run [up [--bg]|down|restart|status|logs|logs:back|logs:front|open]"; exit 1 ;;
 esac

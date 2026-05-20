@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { ArrowRight, Search, Target, Plus, Trash2, Pin, PinOff, Check, ListChecks } from "lucide-react";
+import { ArrowRight, Search, Plus, Trash2, Check, ChevronDown, Target, Sparkles, X } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,9 +16,11 @@ import { ProficiencyControl } from "@/components/proficiency";
 import { Pagination } from "@/components/pagination";
 import { useProficiency, LEVELS } from "@/lib/proficiency";
 import { useUserPlans } from "@/lib/plans";
-import { fetcher, type LearnResponse, type LearnRow } from "@/lib/api";
+import { fetcher, API, type LearnResponse, type LearnRow } from "@/lib/api";
+import { toast } from "sonner";
 
 const PAGE_SIZE = 12;
+const TOP_N = 5;
 
 export default function LearnPage() {
   const { data, isLoading } = useSWR<LearnResponse>("/api/learn", fetcher);
@@ -26,11 +28,39 @@ export default function LearnPage() {
   const plans = useUserPlans();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+  const [focus, setFocus] = useState("");
+  const [goal, setGoal] = useState<string>("");
+  const [goalDraft, setGoalDraft] = useState("");
+  const [aiRanked, setAiRanked] = useState<{ skill: string; why: string }[] | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
 
-  // Plan composer
-  const [newTitle, setNewTitle] = useState("");
-  const [newSkill, setNewSkill] = useState("");
-  const [newTarget, setNewTarget] = useState("");
+  // Load goal from backend on mount (replaces localStorage).
+  const { data: goalData } = useSWR<{ goal: string }>("/api/profile/goal", fetcher);
+  useEffect(() => {
+    if (goalData?.goal && !goal) {
+      setGoal(goalData.goal);
+      setGoalDraft(goalData.goal);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [goalData?.goal]);
+
+  // Rehydrate AI rerank cache on mount so navigating away + back keeps results.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = localStorage.getItem("learn:aiRanked");
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as { goal: string; ranked: { skill: string; why: string }[] };
+      if (parsed?.ranked?.length && parsed.goal) {
+        setAiRanked(parsed.ranked);
+        if (!goal) {
+          setGoal(parsed.goal);
+          setGoalDraft(parsed.goal);
+        }
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const all: (LearnRow & { onCv: boolean })[] = useMemo(() => {
     if (!data) return [];
@@ -47,14 +77,65 @@ export default function LearnPage() {
       .sort((a, b) => priority(b) - priority(a));
   }, [all, prof]);
 
+  const top = ranked.slice(0, TOP_N);
+
+  const rerankByGoal = async (g: string) => {
+    if (!g.trim() || all.length === 0) return;
+    setAiLoading(true);
+    try {
+      const candidates = ranked.slice(0, 40).map((r) => r.skill);
+      const r = await fetch(`${API}/api/learn/rerank`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goal: g, candidates }),
+      });
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      const rankedRes = d.ranked || [];
+      setAiRanked(rankedRes);
+      setGoal(g);
+      try { localStorage.setItem("learn:aiRanked", JSON.stringify({ goal: g, ranked: rankedRes })); } catch {}
+      // Persist goal to backend.
+      fetch(`${API}/api/profile/goal`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goal: g }),
+      }).catch(() => {});
+      toast.success(`Top 5 reranked for "${g}"`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Rerank failed");
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const clearGoal = () => {
+    setGoal(""); setGoalDraft(""); setAiRanked(null);
+    try { localStorage.removeItem("learn:aiRanked"); } catch {}
+    fetch(`${API}/api/profile/goal`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "" }),
+    }).catch(() => {});
+  };
+
+  // If goal-ranked, use those skills (in that order); else market priority.
+  const displayTop = useMemo(() => {
+    if (!aiRanked) return top;
+    const byName = new Map(all.map((r) => [r.skill.toLowerCase(), r]));
+    return aiRanked
+      .map((x) => byName.get(x.skill.toLowerCase()))
+      .filter((r): r is (LearnRow & { onCv: boolean }) => !!r)
+      .slice(0, TOP_N);
+  }, [aiRanked, top, all]);
+  const whyOf = (skill: string) =>
+    aiRanked?.find((x) => x.skill.toLowerCase() === skill.toLowerCase())?.why;
+
   const filtered = useMemo(() => {
     if (!search) return ranked;
     const q = search.toLowerCase();
     return ranked.filter((r) => r.skill.toLowerCase().includes(q));
   }, [ranked, search]);
-
   const visible = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  const suggested = ranked.slice(0, 3);
 
   const overallPct = all.length
     ? (Object.entries(prof).reduce((sum, [, lvl]) => sum + lvl, 0) /
@@ -62,276 +143,266 @@ export default function LearnPage() {
       100
     : 0;
 
-  const addPlan = () => {
-    if (!newTitle.trim()) return;
-    plans.add({ title: newTitle.trim(), skill: newSkill.trim() || undefined, target: newTarget.trim() || undefined });
-    setNewTitle(""); setNewSkill(""); setNewTarget("");
-  };
-
-  const pinned = plans.items.filter((p) => p.pinned && !p.done);
-  const open = plans.items.filter((p) => !p.pinned && !p.done);
+  const activePlans = plans.items.filter((p) => !p.done);
   const completed = plans.items.filter((p) => p.done);
 
-  // Reset to page 1 when filter changes
+  const addFocus = () => {
+    if (!focus.trim()) return;
+    plans.add({ title: focus.trim() });
+    setFocus("");
+  };
+
   const onSearch = (v: string) => { setSearch(v); setPage(1); };
 
   return (
-    <div className="space-y-14">
+    <div className="space-y-10 max-w-4xl mx-auto">
       <PageHeader
-        eyebrow="02 · learn"
-        title={<>One skill <em className="font-serif text-muted-foreground not-italic">at a time.</em></>}
-        subtitle={<>Built from <span className="text-foreground font-medium">{data?.total_real ?? 0}</span> real junior jobs. Rate honestly. Highest-ROI gaps first.</>}
+        eyebrow="learn"
+        title={<>What to learn <em className="font-serif text-muted-foreground not-italic">next.</em></>}
+        subtitle={<>Ranked by what {data?.total_real ?? 0} real junior jobs want. Pick one. Rate yourself. Move on.</>}
         action={<ScrapeButton />}
       />
 
-      {/* Progress */}
-      <section className="space-y-3">
+      {/* Overall readiness */}
+      <section className="space-y-2">
         <div className="flex items-baseline justify-between">
-          <h2 className="text-xs font-mono uppercase tracking-wider text-muted-foreground">Overall readiness</h2>
-          <span className="text-sm text-muted-foreground tabular-nums">{overallPct.toFixed(0)}%</span>
+          <span className="text-xs uppercase tracking-wider text-muted-foreground">Readiness</span>
+          <span className="text-sm tabular-nums">{overallPct.toFixed(0)}%</span>
         </div>
         <Progress value={overallPct} className="h-1.5" />
       </section>
 
-      {/* Focus this week — user-editable plan */}
-      <section>
-        <SectionHeading
-          eyebrow="00"
-          title="Focus this week"
-          subtitle="Your plan: add what you actually want to master. Suggestions below are based on the job market."
-        />
-
-        {/* Plan composer */}
-        <Card accentColor="violet" showAccentLine showCornerGlow className="mb-5">
-          <CardContent className="p-5 space-y-3">
-            <div className="grid grid-cols-1 md:grid-cols-[1fr_180px_180px_auto] gap-2">
-              <Input
-                placeholder="What do you want to do? (e.g. Build a FastAPI auth flow)"
-                value={newTitle}
-                onChange={(e) => setNewTitle(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") addPlan(); }}
-              />
-              <Input
-                placeholder="Skill (optional)"
-                value={newSkill}
-                onChange={(e) => setNewSkill(e.target.value)}
-              />
-              <Input
-                placeholder="Target (e.g. by Fri)"
-                value={newTarget}
-                onChange={(e) => setNewTarget(e.target.value)}
-              />
-              <Button onClick={addPlan} disabled={!newTitle.trim()}>
-                <Plus className="h-4 w-4 mr-1.5" />Add
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Pinned + open plans */}
-        {plans.ready && plans.items.length > 0 && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-5">
-            {[...pinned, ...open].map((p) => (
-              <PlanItemCard
-                key={p.id}
-                title={p.title}
-                skill={p.skill}
-                target={p.target}
-                pinned={p.pinned}
-                done={p.done}
-                onPin={() => plans.update(p.id, { pinned: !p.pinned })}
-                onDone={() => plans.update(p.id, { done: !p.done })}
-                onRemove={() => plans.remove(p.id)}
-              />
+      {/* This week's focus — composer card */}
+      <section className="space-y-3">
+        <div className="flex items-baseline justify-between">
+          <h2 className="text-lg font-semibold">This week I will&hellip;</h2>
+          {plans.ready && activePlans.length > 0 && (
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {activePlans.length} active · {completed.length} done
+            </span>
+          )}
+        </div>
+        <div className="group relative rounded-xl border border-border/60 bg-card focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/15 transition">
+          <input
+            placeholder="e.g. finish FastAPI auth tutorial"
+            value={focus}
+            onChange={(e) => setFocus(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addFocus(); }}
+            className="w-full bg-transparent h-12 pl-4 pr-28 text-sm outline-none placeholder:text-muted-foreground/70"
+          />
+          <Button
+            onClick={addFocus}
+            disabled={!focus.trim()}
+            size="sm"
+            className="absolute right-2 top-1/2 -translate-y-1/2 h-8 gap-1"
+          >
+            <Plus className="h-3.5 w-3.5" /> Add
+          </Button>
+        </div>
+        {plans.ready && activePlans.length > 0 && (
+          <ul className="space-y-1.5">
+            {activePlans.map((p) => (
+              <li key={p.id} className="flex items-center gap-3 px-3 py-2 rounded-lg border bg-card hover:bg-accent/30 transition-colors">
+                <button
+                  onClick={() => plans.update(p.id, { done: true })}
+                  className="h-5 w-5 rounded-md border-2 border-foreground/30 hover:border-emerald-500 grid place-items-center shrink-0"
+                  aria-label="Done"
+                />
+                <span className="flex-1 text-sm">{p.title}</span>
+                {p.skill && (
+                  <Link href={`/learn/${encodeURIComponent(p.skill)}`} className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground hover:text-primary">
+                    {p.skill}
+                  </Link>
+                )}
+                <button onClick={() => plans.remove(p.id)} className="text-muted-foreground hover:text-rose-500">
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </li>
             ))}
-          </div>
-        )}
-
-        {/* Suggested from market */}
-        {suggested.length > 0 && (
-          <div>
-            <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground mb-3 flex items-center gap-2">
-              <Target className="h-3 w-3" /> Suggested — highest priority gaps
-            </div>
-            {isLoading || !ready ? (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                {Array.from({ length: 3 }).map((_, i) => (<Skeleton key={i} className="h-32 rounded-xl" />))}
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                {suggested.map((row, i) => {
-                  const lvl = prof[row.skill] ?? 0;
-                  return (
-                    <Card
-                      key={row.skill}
-                      accentColor={i === 0 ? "violet" : i === 1 ? "emerald" : "amber"}
-                      showAccentLine
-                      showCornerGlow
-                      className="hover:-translate-y-0.5 transition-transform"
-                    >
-                      <CardContent className="p-5 space-y-3">
-                        <div className="flex items-center justify-between">
-                          <div className="text-xs font-mono text-muted-foreground">#{i + 1}</div>
-                          <button
-                            onClick={() => plans.add({ title: `Master ${row.skill}`, skill: row.skill })}
-                            className="text-[10px] font-mono uppercase tracking-wider text-primary hover:underline inline-flex items-center gap-1"
-                            title="Add to my plan"
-                          >
-                            <Plus className="h-3 w-3" /> plan
-                          </button>
-                        </div>
-                        <Link
-                          href={`/learn/${encodeURIComponent(row.skill)}`}
-                          className="block text-2xl font-semibold tracking-tight hover:underline"
-                        >
-                          {row.skill}
-                        </Link>
-                        <div className="text-xs text-muted-foreground">
-                          {row.category} · {row.count} jobs · {row.pct}%
-                        </div>
-                        <ProficiencyControl value={lvl} onChange={(v) => set(row.skill, v)} size="sm" />
-                        <div className="flex items-center gap-3 text-xs">
-                          <Link
-                            href={`/learn/${encodeURIComponent(row.skill)}`}
-                            className="text-primary hover:underline inline-flex items-center gap-1"
-                          >
-                            open notebook <ArrowRight className="h-3 w-3" />
-                          </Link>
-                          <Link
-                            href={`/jobs?skill=${encodeURIComponent(row.skill)}`}
-                            className="text-muted-foreground hover:text-foreground"
-                          >
-                            jobs →
-                          </Link>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Completed collapsed */}
-        {completed.length > 0 && (
-          <details className="mt-5 group">
-            <summary className="cursor-pointer text-xs font-mono uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground inline-flex items-center gap-2">
-              <Check className="h-3 w-3" /> {completed.length} completed
-            </summary>
-            <ul className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
-              {completed.map((p) => (
-                <li key={p.id} className="flex items-center gap-2 text-sm text-muted-foreground px-3 py-2 rounded-md bg-muted/30">
-                  <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
-                  <span className="line-through flex-1 min-w-0 truncate">{p.title}</span>
-                  <button onClick={() => plans.update(p.id, { done: false })} className="text-[10px] hover:text-foreground">restore</button>
-                  <button onClick={() => plans.remove(p.id)} className="text-muted-foreground hover:text-rose-500"><Trash2 className="h-3.5 w-3.5" /></button>
-                </li>
-              ))}
-            </ul>
-          </details>
+          </ul>
         )}
       </section>
 
-      {/* All gaps list with pagination */}
-      <section>
-        <SectionHeading
-          eyebrow="01"
-          title="All gaps"
-          subtitle="Click any row for resources, notes, and a milestone checklist."
-        />
-        <div className="relative max-w-md mb-4">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+      {/* Goal-driven rerank input */}
+      <section className="space-y-2">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <Target className="h-4 w-4 text-primary" /> Your goal
+        </h2>
+        <p className="text-xs text-muted-foreground">
+          Tell the assistant what you&rsquo;re aiming for. It reranks Top 5 by relevance to that goal — not just raw market frequency.
+        </p>
+        <div className="flex gap-2">
           <Input
-            placeholder="Search skill"
-            value={search}
-            onChange={(e) => onSearch(e.target.value)}
-            className="pl-8"
+            placeholder="e.g. AI engineer, backend developer, devops, ML researcher"
+            value={goalDraft}
+            onChange={(e) => setGoalDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") rerankByGoal(goalDraft); }}
           />
+          <Button onClick={() => rerankByGoal(goalDraft)} disabled={!goalDraft.trim() || aiLoading || all.length === 0}>
+            <Sparkles className="h-4 w-4 mr-1.5" />
+            {aiLoading ? "Ranking..." : "Rank for goal"}
+          </Button>
+          {goal && (
+            <Button variant="ghost" size="icon" onClick={clearGoal} title="Clear goal">
+              <X className="h-4 w-4" />
+            </Button>
+          )}
         </div>
+        {goal && !aiLoading && (
+          <div className="text-xs text-primary flex items-center gap-1.5">
+            <Sparkles className="h-3 w-3" /> Top 5 ranked for: <b>{goal}</b>
+          </div>
+        )}
+      </section>
 
+      {/* Top priority skills — the meat */}
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold">Top {TOP_N} skills to learn</h2>
+          <p className="text-sm text-muted-foreground">
+            {aiRanked
+              ? "AI-ranked for your goal above. Rate each — list updates."
+              : "Ranked by market demand × your gap. Set a goal above for goal-specific ranking."}
+          </p>
+        </div>
         {isLoading || !ready ? (
           <div className="space-y-2">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-12 w-full rounded-lg" />
-            ))}
+            {Array.from({ length: TOP_N }).map((_, i) => (<Skeleton key={i} className="h-20 rounded-xl" />))}
           </div>
-        ) : filtered.length === 0 ? (
-          <div className="py-10 text-center text-sm text-muted-foreground">No skills match.</div>
+        ) : displayTop.length === 0 ? (
+          <div className="py-10 text-center text-sm text-muted-foreground">All caught up. Scrape more jobs or check advanced below.</div>
         ) : (
-          <>
-            <ul className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {visible.map((row) => {
-                const lvl = prof[row.skill] ?? 0;
-                const priority = row.count * (5 - lvl);
-                return (
-                  <li key={row.skill}>
-                    <Link
-                      href={`/learn/${encodeURIComponent(row.skill)}`}
-                      className="group block px-4 py-3 rounded-xl border bg-card hover:bg-accent/40 transition-colors h-full"
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-medium group-hover:underline">{row.skill}</span>
-                            <Badge variant="outline" className="text-[10px] capitalize">{row.category}</Badge>
-                            {row.onCv && <Badge variant="secondary" className="text-[10px]">on CV</Badge>}
-                          </div>
-                          <div className="text-xs text-muted-foreground mt-1">
-                            {row.count} jobs · priority <span className="font-mono">{priority}</span>
-                          </div>
-                          <div
-                            className="mt-2"
-                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                          >
-                            <ProficiencyControl value={lvl} onChange={(v) => set(row.skill, v)} size="sm" />
-                          </div>
-                        </div>
-                        <ArrowRight className="h-4 w-4 text-muted-foreground mt-0.5 group-hover:translate-x-1 transition-transform shrink-0" />
+          <ol className="space-y-2">
+            {displayTop.map((row, i) => {
+              const lvl = prof[row.skill] ?? 0;
+              const why = whyOf(row.skill);
+              return (
+                <li key={row.skill} className="px-4 py-3 rounded-xl border bg-card hover:bg-accent/30 transition-colors">
+                  <div className="flex items-start gap-3">
+                    <div className="text-2xl font-mono text-muted-foreground tabular-nums w-8 shrink-0">{i + 1}</div>
+                    <div className="flex-1 min-w-0 space-y-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Link href={`/learn/${encodeURIComponent(row.skill)}`} className="text-lg font-semibold hover:underline">{row.skill}</Link>
+                        <Badge variant="outline" className="text-[10px] capitalize">{row.category}</Badge>
+                        <span className="text-xs text-muted-foreground">{row.count} jobs ({row.pct}%)</span>
                       </div>
-                    </Link>
-                  </li>
-                );
-              })}
-            </ul>
-
-            <div className="mt-6">
-              <Pagination
-                page={page}
-                pageSize={PAGE_SIZE}
-                totalShown={filtered.length}
-                total={filtered.length}
-                onChange={(p) => { setPage(p); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-              />
-            </div>
-          </>
+                      {why && (
+                        <div className="text-xs text-primary/80 italic flex items-start gap-1">
+                          <Sparkles className="h-3 w-3 mt-0.5 shrink-0" /> {why}
+                        </div>
+                      )}
+                      <ProficiencyControl value={lvl} onChange={(v) => set(row.skill, v)} size="sm" />
+                      <div className="flex items-center gap-3 text-xs">
+                        <Link href={`/learn/${encodeURIComponent(row.skill)}`} className="text-primary hover:underline inline-flex items-center gap-1">
+                          notes <ArrowRight className="h-3 w-3" />
+                        </Link>
+                        <Link href={`/jobs?skill=${encodeURIComponent(row.skill)}`} className="text-muted-foreground hover:text-foreground">
+                          see jobs
+                        </Link>
+                        <button
+                          onClick={() => plans.add({ title: `Master ${row.skill}`, skill: row.skill })}
+                          className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 ml-auto"
+                        >
+                          <Plus className="h-3 w-3" /> add to plan
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
         )}
       </section>
 
-      {/* Levels — upgraded card grid */}
-      <section>
-        <SectionHeading
-          eyebrow="02"
-          title="Proficiency levels"
-          subtitle="Tap a number above on any skill to set your level."
-        />
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          {LEVELS.map((l) => (
-            <div
-              key={l.value}
-              className="rounded-xl border bg-card p-4 flex flex-col items-start gap-2 hover:shadow-md hover:-translate-y-0.5 transition-all"
-            >
-              <span className={`inline-grid place-items-center w-9 h-9 rounded-lg font-mono font-bold text-sm ${l.color} ring-1 ring-foreground/10`}>
-                {l.short}
-              </span>
-              <div className="text-sm font-semibold">{l.label}</div>
-              <div className="text-[10px] text-muted-foreground leading-relaxed">
-                {LEVEL_DESC[l.value]}
-              </div>
+      {/* Completed plans (collapsed) */}
+      {completed.length > 0 && (
+        <details className="group">
+          <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
+            <Check className="h-3.5 w-3.5" /> {completed.length} completed
+          </summary>
+          <ul className="mt-3 space-y-1.5">
+            {completed.map((p) => (
+              <li key={p.id} className="flex items-center gap-2 text-sm text-muted-foreground px-3 py-2 rounded-md bg-muted/30">
+                <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
+                <span className="line-through flex-1 truncate">{p.title}</span>
+                <button onClick={() => plans.update(p.id, { done: false })} className="text-[10px] hover:text-foreground">restore</button>
+                <button onClick={() => plans.remove(p.id)} className="text-muted-foreground hover:text-rose-500"><Trash2 className="h-3.5 w-3.5" /></button>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      {/* Advanced: full gap list + level reference */}
+      <details className="group">
+        <summary className="cursor-pointer text-sm font-semibold text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5">
+          <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+          Advanced — all skills & level reference
+        </summary>
+
+        <div className="mt-6 space-y-8">
+          {/* All gaps */}
+          <section>
+            <h3 className="text-base font-semibold mb-3">All gaps ({filtered.length})</h3>
+            <div className="relative max-w-md mb-4">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input placeholder="Search skill" value={search} onChange={(e) => onSearch(e.target.value)} className="pl-8" />
             </div>
-          ))}
+            {filtered.length === 0 ? (
+              <div className="py-6 text-center text-sm text-muted-foreground">No skills match.</div>
+            ) : (
+              <>
+                <ul className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {visible.map((row) => {
+                    const lvl = prof[row.skill] ?? 0;
+                    return (
+                      <li key={row.skill}>
+                        <Link href={`/learn/${encodeURIComponent(row.skill)}`}
+                          className="group block px-4 py-3 rounded-xl border bg-card hover:bg-accent/40 transition-colors h-full">
+                          <div className="flex items-start gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-medium group-hover:underline">{row.skill}</span>
+                                {row.onCv && <Badge variant="secondary" className="text-[10px]">on CV</Badge>}
+                              </div>
+                              <div className="text-xs text-muted-foreground mt-1">{row.count} jobs · lvl {lvl}/5</div>
+                              <div className="mt-2" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                                <ProficiencyControl value={lvl} onChange={(v) => set(row.skill, v)} size="sm" />
+                              </div>
+                            </div>
+                            <ArrowRight className="h-4 w-4 text-muted-foreground mt-0.5 group-hover:translate-x-1 transition-transform shrink-0" />
+                          </div>
+                        </Link>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <div className="mt-4">
+                  <Pagination page={page} pageSize={PAGE_SIZE} totalShown={filtered.length} total={filtered.length}
+                    onChange={(p) => { setPage(p); window.scrollTo({ top: 0, behavior: "smooth" }); }} />
+                </div>
+              </>
+            )}
+          </section>
+
+          {/* Level reference */}
+          <section>
+            <h3 className="text-base font-semibold mb-3">Proficiency levels</h3>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+              {LEVELS.map((l) => (
+                <div key={l.value} className="rounded-lg border bg-card p-3">
+                  <span className={`inline-grid place-items-center w-7 h-7 rounded-md font-mono font-bold text-xs ${l.color} ring-1 ring-foreground/10 mb-2`}>
+                    {l.short}
+                  </span>
+                  <div className="text-xs font-semibold">{l.label}</div>
+                  <div className="text-[10px] text-muted-foreground mt-1">{LEVEL_DESC[l.value]}</div>
+                </div>
+              ))}
+            </div>
+          </section>
         </div>
-      </section>
+      </details>
     </div>
   );
 }
@@ -344,63 +415,3 @@ const LEVEL_DESC: Record<number, string> = {
   4: "Ship production work",
   5: "Teach others, deep grasp",
 };
-
-function SectionHeading({ eyebrow, title, subtitle }: { eyebrow: string; title: string; subtitle: string }) {
-  return (
-    <div className="mb-5">
-      <div className="text-xs font-mono text-muted-foreground mb-1">{eyebrow}</div>
-      <h2 className="text-2xl font-semibold tracking-tight">{title}</h2>
-      <p className="text-sm text-muted-foreground mt-1">{subtitle}</p>
-    </div>
-  );
-}
-
-function PlanItemCard({
-  title, skill, target, pinned, done, onPin, onDone, onRemove,
-}: {
-  title: string;
-  skill?: string;
-  target?: string;
-  pinned: boolean;
-  done: boolean;
-  onPin: () => void;
-  onDone: () => void;
-  onRemove: () => void;
-}) {
-  return (
-    <div className={`group relative rounded-xl border bg-card p-4 transition-colors ${pinned ? "ring-1 ring-primary/40 bg-primary/[0.03]" : ""}`}>
-      <div className="flex items-start gap-3">
-        <button
-          onClick={onDone}
-          className={`mt-0.5 h-5 w-5 rounded-md border-2 grid place-items-center shrink-0 transition-colors ${
-            done ? "bg-emerald-500 border-emerald-500" : "border-foreground/30 hover:border-primary"
-          }`}
-          aria-label={done ? "Mark not done" : "Mark done"}
-        >
-          {done && <Check className="h-3 w-3 text-white" strokeWidth={3} />}
-        </button>
-        <div className="flex-1 min-w-0">
-          <div className={`text-sm font-medium ${done ? "line-through text-muted-foreground" : ""}`}>{title}</div>
-          {(skill || target) && (
-            <div className="text-xs text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-              {skill && (
-                <Link href={`/learn/${encodeURIComponent(skill)}`} className="hover:text-foreground underline-offset-2 hover:underline inline-flex items-center gap-1">
-                  <ListChecks className="h-3 w-3" /> {skill}
-                </Link>
-              )}
-              {target && <span className="text-[11px] px-1.5 py-0.5 rounded bg-foreground/5">{target}</span>}
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
-          <button onClick={onPin} title={pinned ? "Unpin" : "Pin"} className="h-7 w-7 rounded-md hover:bg-accent grid place-items-center">
-            {pinned ? <PinOff className="h-3.5 w-3.5 text-primary" /> : <Pin className="h-3.5 w-3.5 text-muted-foreground" />}
-          </button>
-          <button onClick={onRemove} title="Remove" className="h-7 w-7 rounded-md hover:bg-rose-500/10 hover:text-rose-500 grid place-items-center text-muted-foreground">
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}

@@ -40,6 +40,7 @@ export type JobItem = {
   salary_max: number | null;
   currency: string | null;
   score: number;
+  is_intern?: boolean;
   skills: { skill: string; category: string }[];
   description_excerpt: string;
 };

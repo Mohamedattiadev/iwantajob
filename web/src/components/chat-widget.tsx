@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { MessageCircle, Send, X, AlertTriangle } from "lucide-react";
+import { MessageCircle, Send, X, AlertTriangle, Maximize2 } from "lucide-react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { API, fetcher } from "@/lib/api";
@@ -76,7 +77,13 @@ export function ChatWidget() {
                 {status?.available ? "online · grounded on your live data" : "offline — needs GEMINI_API_KEY"}
               </div>
             </div>
-            <button onClick={() => setOpen(false)} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
+            <div className="flex items-center gap-1">
+              <Link href="/assistant" onClick={() => setOpen(false)} title="Open full assistant"
+                className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-accent">
+                <Maximize2 className="h-3.5 w-3.5" />
+              </Link>
+              <button onClick={() => setOpen(false)} className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-accent"><X className="h-4 w-4" /></button>
+            </div>
           </header>
 
           {!status?.available && (

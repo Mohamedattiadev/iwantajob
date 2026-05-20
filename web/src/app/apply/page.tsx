@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useApplications } from "@/lib/applications";
 import type { Application } from "@/lib/api";
 import { PageHeader } from "@/components/page-header";
+import { PageTabs, JOBS_TABS } from "@/components/page-tabs";
 
 const STATUS_TONE: Record<Application["status"], string> = {
   applied: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
@@ -34,10 +35,12 @@ export default function ApplyPage() {
   return (
     <div className="space-y-8">
       <PageHeader
-        eyebrow="04 · apply"
+        eyebrow="03 · jobs · pipeline"
         title={<>Application <em className="font-serif text-muted-foreground not-italic">history.</em></>}
         subtitle="Every job you mark applied lives here. Jobs page dedupes against this list — never apply twice."
       />
+
+      <PageTabs tabs={JOBS_TABS} />
 
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         <Stat label="Total" value={applications.length} color="slate" />

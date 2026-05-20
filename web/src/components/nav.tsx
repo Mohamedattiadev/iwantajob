@@ -1,83 +1,109 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import {
+  LayoutGrid, FileUser, GraduationCap, Briefcase, Sparkles,
+  Search,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/theme-toggle";
 
+// Top-level surfaces only. Apply lives inside Jobs, Interview lives inside Assistant.
 const links = [
-  { href: "/",      n: "00", label: "Overview" },
-  { href: "/cv",    n: "01", label: "CV" },
-  { href: "/learn", n: "02", label: "Learn" },
-  { href: "/jobs",  n: "03", label: "Jobs" },
-  { href: "/apply", n: "04", label: "Apply" },
+  { href: "/",          label: "Overview",  icon: LayoutGrid },
+  { href: "/cv",        label: "CV",        icon: FileUser },
+  { href: "/learn",     label: "Learn",     icon: GraduationCap },
+  { href: "/jobs",      label: "Jobs",      icon: Briefcase },
+  { href: "/assistant", label: "Assistant", icon: Sparkles },
 ];
+
+const JOBS_GROUP = ["/jobs", "/apply"];
+const ASSISTANT_GROUP = ["/assistant", "/interview"];
+
+function isActive(pathname: string, href: string) {
+  if (href === "/") return pathname === "/";
+  if (href === "/jobs") return JOBS_GROUP.some((p) => pathname === p || pathname.startsWith(p + "/"));
+  if (href === "/assistant") return ASSISTANT_GROUP.some((p) => pathname === p || pathname.startsWith(p + "/"));
+  return pathname === href || pathname.startsWith(href + "/");
+}
 
 export function Nav() {
   const pathname = usePathname();
-  return (
-    <header className="sticky top-0 z-40 flex h-14 shrink-0 items-center gap-2 px-4 sm:px-6 bg-white/70 dark:bg-black/30 backdrop-blur-xl backdrop-saturate-150 border-b border-black/6 dark:border-white/8 shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset]">
-      <div aria-hidden className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent pointer-events-none" />
-      <div aria-hidden className="absolute -bottom-px inset-x-0 h-px bg-gradient-to-r from-transparent via-black/5 dark:via-white/5 to-transparent pointer-events-none" />
 
-      <div className="max-w-6xl w-full mx-auto flex items-center gap-8">
-        <Link href="/" className="group flex items-center shrink-0">
-          <span className="text-[18px] font-extrabold tracking-tight leading-none transition-transform group-hover:scale-[1.03] group-active:scale-95">
-            W<span className="text-primary mx-[0.5px]">/</span>ORK
+  return (
+    <header className="sticky top-0 z-40 bg-background/85 backdrop-blur-xl border-b border-border/60">
+      <div aria-hidden className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent pointer-events-none" />
+
+      <div className="max-w-7xl w-full mx-auto h-12 grid grid-cols-[auto_1fr_auto] items-center gap-4 px-4 sm:px-6">
+        {/* Brand */}
+        <Link href="/" className="group flex items-center gap-2 shrink-0">
+          <div className="h-6 w-6 rounded-md bg-gradient-to-br from-primary to-primary/60 grid place-items-center text-background font-extrabold text-[11px] shadow-sm">
+            W
+          </div>
+          <span className="hidden sm:inline text-[13px] font-bold tracking-tight">
+            W<span className="text-primary mx-px">/</span>ORK
           </span>
         </Link>
 
-        <ul className="hidden md:flex items-center gap-0.5">
+        {/* Desktop nav — centered */}
+        <ul className="hidden lg:flex items-center justify-center gap-0.5">
           {links.map((l) => {
-            const active = pathname === l.href || (l.href !== "/" && pathname.startsWith(l.href));
+            const Icon = l.icon;
+            const active = isActive(pathname, l.href);
             return (
               <li key={l.href} className="relative">
                 <Link
                   href={l.href}
                   className={cn(
-                    "px-3 h-8 inline-flex items-center gap-2 rounded-lg text-sm transition-all",
+                    "h-8 px-2.5 inline-flex items-center gap-1.5 rounded-md text-[13px] transition-all",
                     active
-                      ? "text-foreground bg-black/4 dark:bg-white/6"
-                      : "text-foreground/55 hover:text-foreground hover:bg-black/3 dark:hover:bg-white/4",
+                      ? "text-foreground bg-foreground/[0.06] font-medium"
+                      : "text-muted-foreground hover:text-foreground hover:bg-foreground/[0.04]",
                   )}
                 >
-                  <span className={cn("font-mono text-[10px]", active ? "text-primary" : "text-foreground/35")}>{l.n}</span>
-                  <span>{l.label}</span>
+                  <Icon className={cn("h-3.5 w-3.5", active ? "text-primary" : "")} />
+                  {l.label}
                 </Link>
                 {active && (
-                  <span className="absolute -bottom-[15px] left-1/2 -translate-x-1/2 h-[2px] w-8 rounded-full bg-gradient-to-r from-transparent via-primary to-transparent" />
+                  <span className="absolute -bottom-[13px] left-1/2 -translate-x-1/2 h-[2px] w-6 rounded-full bg-primary" />
                 )}
               </li>
             );
           })}
         </ul>
 
-        <ul className="md:hidden flex items-center gap-0.5 overflow-x-auto">
+        {/* Compact mobile/tablet nav: icons only */}
+        <ul className="flex lg:hidden items-center justify-center gap-0.5 overflow-x-auto">
           {links.map((l) => {
-            const active = pathname === l.href || (l.href !== "/" && pathname.startsWith(l.href));
+            const Icon = l.icon;
+            const active = isActive(pathname, l.href);
             return (
               <li key={l.href}>
                 <Link
                   href={l.href}
+                  title={l.label}
                   className={cn(
-                    "px-2.5 h-7 inline-flex items-center rounded-md text-xs",
-                    active ? "bg-primary/10 text-primary" : "text-foreground/50",
+                    "h-8 w-8 grid place-items-center rounded-md transition-colors",
+                    active ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground hover:bg-foreground/[0.04]",
                   )}
                 >
-                  {l.label}
+                  <Icon className="h-4 w-4" />
                 </Link>
               </li>
             );
           })}
         </ul>
 
-        <div className="ml-auto flex items-center gap-1">
+        {/* Right: command palette + theme */}
+        <div className="flex items-center justify-end gap-1.5">
           <button
             onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }))}
-            className="hidden md:inline-flex items-center gap-1 rounded-lg border border-black/8 dark:border-white/10 bg-white/40 dark:bg-white/[0.03] px-2 h-7 text-[11px] text-foreground/55 hover:text-foreground hover:bg-black/5 dark:hover:bg-white/8 transition-colors font-mono shadow-sm"
+            className="hidden md:inline-flex items-center gap-2 h-7 px-2.5 rounded-md border border-border/60 bg-foreground/[0.03] text-[11px] text-muted-foreground hover:text-foreground hover:bg-foreground/[0.06] transition-colors"
             aria-label="Command palette"
           >
-            <kbd className="text-[13px] leading-none">⌘</kbd>
-            <kbd className="leading-none">K</kbd>
+            <Search className="h-3 w-3" />
+            <span>Search</span>
+            <kbd className="ml-1 font-mono text-[10px] px-1 rounded bg-foreground/[0.06]">⌘K</kbd>
           </button>
           <ThemeToggle />
         </div>

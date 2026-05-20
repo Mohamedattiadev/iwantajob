@@ -24,12 +24,14 @@ import {
   Plus,
   Trash2,
   ListChecks,
+  Briefcase,
+  X as XIcon,
 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { useSkillMilestones } from "@/lib/milestones";
 import { useUserPlans } from "@/lib/plans";
-import { SkillSketch } from "@/components/skill-sketch";
+import { SkillSketch, SketchPreloader } from "@/components/skill-sketch";
 import { VoiceRecorder } from "@/components/voice-recorder";
 import { VoiceInputButton } from "@/components/voice-input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -69,6 +71,7 @@ export default function SkillPage({
   const [tab, setTab] = useState<"note" | "sketch" | "voice">("note");
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [panel, setPanel] = useState<null | "milestones" | "resources" | "jobs">(null);
 
   useEffect(() => {
     if (note?.content !== undefined) {
@@ -125,71 +128,71 @@ export default function SkillPage({
   }, [mode, draft]);
 
   return (
-    <div className="space-y-10">
-      <div>
-        <Link
-          href="/learn"
-          className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1 mb-5"
-        >
-          <ArrowLeft className="h-3 w-3" />
-          back to all skills
-        </Link>
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <Badge variant="outline" className="mb-3 text-xs font-mono capitalize">
-              {note?.category ?? "skill"}
-            </Badge>
-            <h1 className="text-4xl sm:text-5xl font-semibold tracking-tight leading-[1.05]">
-              {skill}
-            </h1>
-            {market && (
-              <p className="text-sm text-muted-foreground mt-3">
-                Appears in <span className="text-foreground font-medium">{market.count}</span>{" "}
-                real junior jobs ({market.pct}%)
-              </p>
-            )}
+    <div className="space-y-6 max-w-5xl mx-auto">
+      <Link
+        href="/learn"
+        className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+      >
+        <ArrowLeft className="h-3 w-3" />
+        all skills
+      </Link>
+
+      {/* Compact header card */}
+      <div className="rounded-2xl border bg-card p-5 sm:p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 mb-2">
+              <Badge variant="outline" className="text-[10px] font-mono capitalize">{note?.category ?? "skill"}</Badge>
+              {market && (
+                <span className="text-xs text-muted-foreground">
+                  {market.count} jobs · {market.pct}%
+                </span>
+              )}
+            </div>
+            <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight leading-tight">{skill}</h1>
           </div>
-          <div className="flex flex-col items-start sm:items-end gap-3">
+          <div className="flex flex-col items-end gap-2 shrink-0">
             <button
               type="button"
               onClick={() => {
-                if (onPlan) {
-                  toast.info(`${skill} is already in your plan.`);
-                  return;
-                }
+                if (onPlan) { toast.info(`${skill} is already in your plan.`); return; }
                 plans.add({ title: `Master ${skill}`, skill });
                 toast.success(`Added "${skill}" to your plan`);
               }}
               disabled={onPlan}
-              className={`inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg text-sm font-medium transition-all ${
+              className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium transition-all ${
                 onPlan
-                  ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 ring-1 ring-emerald-500/30 cursor-default"
-                  : "bg-primary text-primary-foreground hover:opacity-90 shadow-sm shadow-primary/30 hover:-translate-y-0.5"
+                  ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 ring-1 ring-emerald-500/30"
+                  : "bg-primary text-primary-foreground hover:opacity-90"
               }`}
-              title={onPlan ? "Already on your plan" : "Add to weekly plan"}
             >
-              {onPlan ? (<><Check className="h-3.5 w-3.5" /> On your plan</>)
-                      : (<><Plus className="h-3.5 w-3.5" /> Add to my plan</>)}
+              {onPlan ? (<><Check className="h-3 w-3" /> On plan</>) : (<><Plus className="h-3 w-3" /> Add to plan</>)}
             </button>
-            <div className="text-xs text-muted-foreground">Your level</div>
-            {ready && <ProficiencyControl value={level} onChange={(v) => set(skill, v)} />}
+          </div>
+        </div>
+
+        {/* Level row */}
+        <div className="mt-5 pt-4 border-t flex flex-wrap items-center justify-between gap-3">
+          <div className="text-xs uppercase tracking-wider text-muted-foreground">Your level</div>
+          <div className="flex items-center gap-3">
             {ready && <ProficiencyLabel value={level} />}
+            {ready && <ProficiencyControl value={level} onChange={(v) => set(skill, v)} />}
           </div>
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex items-center gap-1 border-b border-foreground/10">
+      {/* Tabs — pill style */}
+      <div className="inline-flex items-center gap-1 p-1 rounded-lg bg-muted/60 border">
         {([
-          { id: "note",   label: "Note",   icon: <FileText className="h-3.5 w-3.5" /> },
+          { id: "note",   label: "Notes",  icon: <FileText className="h-3.5 w-3.5" /> },
           { id: "sketch", label: "Sketch", icon: <PenTool className="h-3.5 w-3.5" /> },
           { id: "voice",  label: "Voice",  icon: <Mic className="h-3.5 w-3.5" /> },
         ] as const).map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
-            className={`px-4 h-9 text-sm inline-flex items-center gap-2 border-b-2 transition-colors ${
-              tab === t.id ? "border-foreground text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
+            className={`px-3 h-8 text-xs rounded-md inline-flex items-center gap-1.5 transition-colors ${
+              tab === t.id ? "bg-background shadow-sm text-foreground font-medium" : "text-muted-foreground hover:text-foreground"
             }`}
           >
             {t.icon}
@@ -197,6 +200,10 @@ export default function SkillPage({
           </button>
         ))}
       </div>
+
+      {/* Main content full width — icon sidebar floats right; panel slides in on click */}
+      <div className="relative">
+        <div className="space-y-5 pr-12">
 
       {tab === "note" && (
         <>
@@ -264,62 +271,96 @@ export default function SkillPage({
         </>
       )}
 
-      {tab === "sketch" && <SkillSketch skill={skill} />}
+      <SketchPreloader />
+      <div className={tab === "sketch" ? "" : "hidden"}>
+        <SkillSketch skill={skill} />
+      </div>
       {tab === "voice" && <VoiceRecorder skill={skill} />}
 
-      {/* Milestones */}
-      <SkillMilestonesPanel skill={skill} />
+        </div>
 
-      {/* Resources */}
-      {resources.length > 0 && (
-        <section>
-          <h2 className="text-xs font-mono uppercase tracking-wider text-muted-foreground mb-3">
-            Curated resources
-          </h2>
-          <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {resources.map((r) => <ResourceCard key={r.url} r={r} />)}
-          </ul>
-        </section>
-      )}
+        {/* Right icon column — always visible, like CV sidebar */}
+        <nav className="absolute right-0 top-0 w-10 flex flex-col items-center gap-1 py-1 sticky-supports:sticky">
+          {([
+            { id: "milestones", icon: <ListChecks className="h-4 w-4" />, label: "Milestones" },
+            { id: "resources",  icon: <BookOpen   className="h-4 w-4" />, label: `Resources (${resources.length})` },
+            { id: "jobs",       icon: <Briefcase  className="h-4 w-4" />, label: `Jobs (${jobsQ.data?.items.length ?? 0})` },
+          ] as const).map((it) => (
+            <button
+              key={it.id}
+              onClick={() => setPanel(panel === it.id ? null : it.id)}
+              title={it.label}
+              className={`h-9 w-9 grid place-items-center rounded-lg transition-colors ${
+                panel === it.id ? "bg-primary/15 text-primary ring-1 ring-primary/30" : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
+              }`}
+            >
+              {it.icon}
+            </button>
+          ))}
+        </nav>
 
-      {/* Jobs */}
-      <section>
-        <h2 className="text-xs font-mono uppercase tracking-wider text-muted-foreground mb-3">
-          Jobs that want {skill}
-        </h2>
-        {jobsQ.isLoading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-20 rounded-xl" />)}
-          </div>
-        ) : (jobsQ.data?.items.length ?? 0) === 0 ? (
-          <Card><CardContent className="py-8 text-center text-sm text-muted-foreground">No real jobs currently list this skill.</CardContent></Card>
-        ) : (
-          <ul className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            {(jobsQ.data?.items ?? []).map((j) => (
-              <li key={j.id}>
-                <a
-                  href={j.source_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block px-4 py-3 rounded-xl border bg-card hover:bg-accent/40 transition-colors"
-                >
-                  <div className="flex items-start gap-3">
-                    <div className={`text-base font-semibold tabular-nums shrink-0 ${
-                      j.score >= 80 ? "text-emerald-500" : j.score >= 60 ? "text-amber-500" : "text-muted-foreground"
-                    }`}>{j.score}</div>
-                    <div className="min-w-0">
-                      <div className="font-medium line-clamp-1 text-sm">{j.title}</div>
-                      <div className="text-xs text-muted-foreground mt-0.5">
-                        {j.company ?? "?"} · {j.source} · {j.posted_at?.slice(0, 10) ?? "—"}
-                      </div>
-                    </div>
+        {/* Slide-in panel */}
+        {panel && (
+          <>
+            <div className="fixed inset-0 z-30 lg:hidden" onClick={() => setPanel(null)} />
+            <aside className="fixed lg:absolute right-12 lg:right-12 top-[5rem] lg:top-0 z-40 w-[320px] max-h-[calc(100vh-6rem)] lg:max-h-[80vh] overflow-y-auto rounded-xl border bg-card shadow-2xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-mono uppercase tracking-wider text-muted-foreground">
+                  {panel === "milestones" ? "Milestones"
+                   : panel === "resources" ? `Resources (${resources.length})`
+                   : `Jobs wanting ${skill}`}
+                </h3>
+                <button onClick={() => setPanel(null)} className="text-muted-foreground hover:text-foreground">
+                  <XIcon className="h-3.5 w-3.5" />
+                </button>
+              </div>
+
+              {panel === "milestones" && <SkillMilestonesPanel skill={skill} />}
+
+              {panel === "resources" && (
+                resources.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic">No curated resources for this skill yet.</p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {resources.map((r) => <ResourceCard key={r.url} r={r} />)}
+                  </ul>
+                )
+              )}
+
+              {panel === "jobs" && (
+                jobsQ.isLoading ? (
+                  <div className="space-y-1.5">
+                    {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-14 rounded-lg" />)}
                   </div>
-                </a>
-              </li>
-            ))}
-          </ul>
+                ) : (jobsQ.data?.items.length ?? 0) === 0 ? (
+                  <p className="text-xs text-muted-foreground italic">No matching jobs yet.</p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {(jobsQ.data?.items ?? []).slice(0, 8).map((j) => (
+                      <li key={j.id}>
+                        <a href={j.source_url} target="_blank" rel="noopener noreferrer"
+                           className="block px-3 py-2 rounded-lg border bg-card hover:bg-accent/40 transition-colors">
+                          <div className="flex items-start gap-2">
+                            <div className={`text-xs font-semibold tabular-nums shrink-0 mt-0.5 ${
+                              j.score >= 80 ? "text-emerald-500" : j.score >= 60 ? "text-amber-500" : "text-muted-foreground"
+                            }`}>{j.score}</div>
+                            <div className="min-w-0">
+                              <div className="font-medium line-clamp-1 text-xs">{j.title}</div>
+                              <div className="text-[10px] text-muted-foreground mt-0.5 truncate">
+                                {j.company ?? "?"} · {j.source}
+                              </div>
+                            </div>
+                          </div>
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                )
+              )}
+            </aside>
+          </>
         )}
-      </section>
+      </div>
     </div>
   );
 }
@@ -333,28 +374,20 @@ function SkillMilestonesPanel({ skill }: { skill: string }) {
   const doneCount = ms.items.filter((m) => m.done).length;
 
   return (
-    <section>
-      <div className="flex flex-wrap items-end justify-between gap-3 mb-3">
-        <div>
-          <h2 className="text-xs font-mono uppercase tracking-wider text-muted-foreground inline-flex items-center gap-2">
-            <ListChecks className="h-3.5 w-3.5" /> Milestones
-          </h2>
-          <p className="text-xs text-muted-foreground mt-1">Break {skill} into checkpoints. Tick them off as you go.</p>
-        </div>
-        <div className="flex items-center gap-3 min-w-[180px]">
-          <span className="text-xs tabular-nums text-muted-foreground shrink-0">{doneCount}/{ms.items.length}</span>
-          <Progress value={pct} className="h-1.5 w-32" />
-          <button
-            onClick={() => { if (confirm("Reset milestones to default checklist for this skill?")) ms.reset(); }}
-            className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground hover:text-foreground"
-            title="Reset to default"
-          >
-            reset
-          </button>
-        </div>
+    <div>
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-[10px] tabular-nums text-muted-foreground shrink-0">{doneCount}/{ms.items.length}</span>
+        <Progress value={pct} className="h-1 flex-1" />
+        <button
+          onClick={() => { if (confirm("Reset milestones to default?")) ms.reset(); }}
+          className="text-[9px] font-mono uppercase tracking-wider text-muted-foreground hover:text-foreground"
+          title="Reset to default"
+        >
+          reset
+        </button>
       </div>
 
-      <Card><CardContent className="p-4 space-y-1.5">
+      <Card><CardContent className="p-2.5 space-y-1">
         {ms.items.length === 0 && (
           <div className="text-xs text-muted-foreground py-2">No milestones yet. Add your first below.</div>
         )}
@@ -401,23 +434,23 @@ function SkillMilestonesPanel({ skill }: { skill: string }) {
           </div>
         ))}
 
-        <div className="flex items-center gap-2 pt-2 mt-1 border-t border-foreground/8">
-          <Plus className="h-3.5 w-3.5 text-muted-foreground ml-2" />
+        <div className="flex items-center gap-1 pt-1.5 mt-1 border-t border-foreground/8">
+          <Plus className="h-3 w-3 text-muted-foreground ml-1" />
           <Input
             value={adding}
             onChange={(e) => setAdding(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && adding.trim()) { ms.add(adding); setAdding(""); }
             }}
-            placeholder="Add a milestone — e.g. Built a real CRUD app"
-            className="flex-1 border-0 bg-transparent focus-visible:ring-0 px-0 text-sm h-8"
+            placeholder="Add milestone…"
+            className="flex-1 border-0 bg-transparent focus-visible:ring-0 px-1 text-xs h-7"
           />
-          <Button size="sm" variant="ghost" disabled={!adding.trim()} onClick={() => { ms.add(adding); setAdding(""); }}>
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" disabled={!adding.trim()} onClick={() => { ms.add(adding); setAdding(""); }}>
             Add
           </Button>
         </div>
       </CardContent></Card>
-    </section>
+    </div>
   );
 }
 

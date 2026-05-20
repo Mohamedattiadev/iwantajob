@@ -45,6 +45,7 @@ class Job(Base):
     currency = Column(String(8))
     scraped_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     extracted_at = Column(DateTime)
+    auto_briefed_at = Column(DateTime)  # set when bot auto-sent a brief to Telegram
 
     skills = relationship("JobSkill", back_populates="job", cascade="all, delete-orphan")
 
@@ -66,6 +67,34 @@ class JobSkill(Base):
     job = relationship("Job", back_populates="skills")
 
     __table_args__ = (UniqueConstraint("job_id", "skill", name="uq_job_skill"),)
+
+
+class Conversation(Base):
+    __tablename__ = "conversation"
+
+    id = Column(Integer, primary_key=True)
+    type = Column(String(32), nullable=False, index=True)  # 'assistant' | 'interview'
+    title = Column(Text, nullable=False, default="Untitled")
+    meta_json = Column(Text, default="{}")  # topic, mode, lang, etc.
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    messages = relationship("Message", back_populates="conversation",
+                            cascade="all, delete-orphan", order_by="Message.id")
+
+
+class Message(Base):
+    __tablename__ = "message"
+
+    id = Column(Integer, primary_key=True)
+    conversation_id = Column(Integer, ForeignKey("conversation.id", ondelete="CASCADE"),
+                             nullable=False, index=True)
+    role = Column(String(32), nullable=False)  # 'user' | 'assistant'
+    content = Column(Text, nullable=False, default="")
+    meta_json = Column(Text, default="{}")     # tool_calls, etc.
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    conversation = relationship("Conversation", back_populates="messages")
 
 
 class Application(Base):

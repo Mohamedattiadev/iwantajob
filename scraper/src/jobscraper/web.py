@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections import Counter, defaultdict
@@ -138,12 +139,32 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # In-memory cache for _load(): invalidates when the SQLite file mtime changes
+    # or an Application/Profile mutation bumps `_cache_bump`. ~2s → ~5ms per call.
+    from .config import DB_PATH as _DB_PATH
+    _cache: dict[str, Any] = {"key": None, "jobs": None, "scores": None, "bump": 0}
+
+    def _bump_cache():
+        _cache["bump"] += 1
+
     def _load() -> tuple[list[Job], dict[int, int]]:
+        try:
+            mtime = _DB_PATH.stat().st_mtime_ns
+        except OSError:
+            mtime = 0
+        key = (mtime, _cache["bump"])
+        if _cache["key"] == key and _cache["jobs"] is not None:
+            return _cache["jobs"], _cache["scores"]  # type: ignore[return-value]
         with session_scope() as s:
             jobs = list(s.scalars(select(Job)))
             for j in jobs:
                 _ = [(sk.skill, sk.category) for sk in j.skills]
-        return jobs, score_jobs(jobs)
+            # Detach so they survive after session_scope exits.
+            for j in jobs:
+                s.expunge(j)
+        scores = score_jobs(jobs)
+        _cache["key"], _cache["jobs"], _cache["scores"] = key, jobs, scores
+        return jobs, scores
 
     def _skill_counts(jobs: list[Job]) -> tuple[Counter, dict[str, str]]:
         counts: Counter = Counter()
@@ -155,6 +176,7 @@ def create_app() -> FastAPI:
         return counts, cat_of
 
     def _serialize_job(j: Job, score: int) -> dict:
+        from . import apply_bot
         return {
             "id": j.id,
             "source": j.source,
@@ -169,6 +191,7 @@ def create_app() -> FastAPI:
             "salary_max": j.salary_max,
             "currency": j.currency,
             "score": score,
+            "is_intern": apply_bot.is_intern(j),
             "skills": [
                 {"skill": sk.skill, "category": sk.category} for sk in j.skills
             ],
@@ -295,6 +318,22 @@ def create_app() -> FastAPI:
     def api_scrape_status():
         return _scrape_state
 
+    @app.get("/api/scrape/sources")
+    def api_scrape_sources():
+        # Marks sources that require env keys so the UI can warn.
+        needs = {
+            "adzuna": ["ADZUNA_APP_ID", "ADZUNA_APP_KEY"],
+            "jsearch": ["RAPIDAPI_KEY"],
+        }
+        return [
+            {
+                "id": src,
+                "configured": all(os.environ.get(k) for k in needs.get(src, [])),
+                "requires": needs.get(src, []),
+            }
+            for src in COLLECTORS
+        ]
+
     @app.get("/api/notes/{skill}")
     def api_get_note(skill: str):
         # Best-effort category lookup so generic template gets a meaningful word.
@@ -391,10 +430,15 @@ def create_app() -> FastAPI:
     def api_cv_templates():
         return {
             "templates": [
-                {"id": "classic", "name": "Classic",  "desc": "Sans-serif. Clean section dividers. Safe default."},
-                {"id": "compact", "name": "Compact",  "desc": "Tighter spacing. Fits more on one page."},
-                {"id": "modern",  "name": "Modern",   "desc": "Inter font. Purple accents, gradient name."},
-                {"id": "elegant", "name": "Elegant",  "desc": "Georgia serif. Centered headings, small caps."},
+                {"id": "classic",   "name": "Classic",   "desc": "Navy accent. Balanced two-column. Safe default."},
+                {"id": "modern",    "name": "Modern",    "desc": "Bold blue. Generous spacing. Easy to skim."},
+                {"id": "executive", "name": "Executive", "desc": "Formal corporate. Charcoal serif. Senior-leadership feel."},
+                {"id": "academic",  "name": "Academic",  "desc": "Research/grad-school. Airy single-column serif."},
+                {"id": "tech",      "name": "Tech",      "desc": "Developer-flavored. Monospace headings. Teal accent."},
+                {"id": "elegant",   "name": "Elegant",   "desc": "Serif small-caps. Centered headings. Hairline rules."},
+                {"id": "sidebar",   "name": "Sidebar",   "desc": "Sky accent. Hairline column divider."},
+                {"id": "compact",   "name": "Compact",   "desc": "Tighter spacing. Fits more on one page."},
+                {"id": "minimal",   "name": "Minimal",   "desc": "Black-and-white. ATS-safe. Maximum readability."},
             ],
             "default": "classic",
         }
@@ -409,7 +453,7 @@ def create_app() -> FastAPI:
         return {"available": bool(shutil.which("pdflatex"))}
 
     @app.get("/api/cv/pdf")
-    def api_cv_pdf(min_level: int = 3, template: str = "classic"):
+    def api_cv_pdf(min_level: int = 3, template: str = "classic", dl: int = 0):
         tex = latex_mod.render_tex(min_level=min_level, template=template)
         result = latex_mod.compile_pdf(tex)
         if result is None:
@@ -417,8 +461,9 @@ def create_app() -> FastAPI:
         if isinstance(result, tuple):  # (None, error_log)
             raise HTTPException(500, detail=f"pdflatex compile failed:\n{result[1][:2000]}")
         from fastapi.responses import Response
+        disp = "attachment" if dl else "inline"
         return Response(content=result, media_type="application/pdf",
-                        headers={"Content-Disposition": f"inline; filename=cv-{template}.pdf"})
+                        headers={"Content-Disposition": f"{disp}; filename=cv-{template}.pdf"})
 
     # -------- Applications (apply tracker / dedupe) --------
 
@@ -482,6 +527,32 @@ def create_app() -> FastAPI:
             if a:
                 s.delete(a)
 
+    # -------- Telegram apply --------
+
+    @app.get("/api/telegram/status")
+    def api_telegram_status():
+        from . import telegram as tg_mod
+        return {
+            "available": tg_mod.have_config(),
+            "topics": {
+                "applying": bool(os.environ.get("TELEGRAM_TOPIC_APPLYING")),
+                "applied":  bool(os.environ.get("TELEGRAM_TOPIC_APPLIED")),
+                "submit":   bool(os.environ.get("TELEGRAM_TOPIC_SUBMIT")),
+                "skills":   bool(os.environ.get("TELEGRAM_TOPIC_SKILLS")),
+            },
+        }
+
+    @app.post("/api/applications/telegram-apply")
+    def api_telegram_apply(body: dict):
+        from . import apply_bot
+        job_id = body.get("job_id")
+        if not isinstance(job_id, int):
+            raise HTTPException(400, "job_id required (int)")
+        res = apply_bot.send_apply_request(job_id)
+        if not res.get("ok"):
+            raise HTTPException(400, res.get("error") or "failed")
+        return res
+
     # -------- Chat --------
 
     @app.get("/api/chat/status")
@@ -514,6 +585,197 @@ def create_app() -> FastAPI:
     def api_ai_rewrite(body: RewriteIn):
         return chat_mod.rewrite(body.field, body.raw, body.instruction)
 
+    # -------- Conversations (assistant + interview history) --------
+
+    @app.get("/api/conversations")
+    def api_conv_list(type: str = ""):
+        from .db import Conversation
+        import json as _json
+        with session_scope() as s:
+            q = select(Conversation).order_by(Conversation.updated_at.desc())
+            if type:
+                q = q.where(Conversation.type == type)
+            rows = list(s.scalars(q))
+            return [{
+                "id": c.id, "type": c.type, "title": c.title,
+                "meta": _json.loads(c.meta_json or "{}"),
+                "created_at": c.created_at.isoformat(),
+                "updated_at": c.updated_at.isoformat(),
+                "message_count": len(c.messages),
+            } for c in rows]
+
+    @app.post("/api/conversations", status_code=201)
+    def api_conv_create(body: dict):
+        from .db import Conversation
+        import json as _json
+        ctype = (body.get("type") or "").strip()
+        if ctype not in {"assistant", "interview"}:
+            raise HTTPException(400, "type must be 'assistant' or 'interview'")
+        title = (body.get("title") or "New chat").strip()[:200]
+        meta = body.get("meta") or {}
+        with session_scope() as s:
+            c = Conversation(type=ctype, title=title, meta_json=_json.dumps(meta))
+            s.add(c); s.flush()
+            return {"id": c.id, "type": c.type, "title": c.title, "meta": meta}
+
+    @app.get("/api/conversations/{conv_id}")
+    def api_conv_get(conv_id: int):
+        from .db import Conversation
+        import json as _json
+        with session_scope() as s:
+            c = s.get(Conversation, conv_id)
+            if not c: raise HTTPException(404, "not found")
+            return {
+                "id": c.id, "type": c.type, "title": c.title,
+                "meta": _json.loads(c.meta_json or "{}"),
+                "messages": [{
+                    "id": m.id, "role": m.role, "content": m.content,
+                    "meta": _json.loads(m.meta_json or "{}"),
+                    "created_at": m.created_at.isoformat(),
+                } for m in c.messages],
+            }
+
+    @app.post("/api/conversations/{conv_id}/messages", status_code=201)
+    def api_conv_msg_add(conv_id: int, body: dict):
+        from .db import Conversation, Message
+        import json as _json
+        with session_scope() as s:
+            c = s.get(Conversation, conv_id)
+            if not c: raise HTTPException(404, "conversation not found")
+            m = Message(
+                conversation_id=conv_id,
+                role=body.get("role", "user"),
+                content=body.get("content", ""),
+                meta_json=_json.dumps(body.get("meta") or {}),
+            )
+            s.add(m); s.flush()
+            c.updated_at = datetime.utcnow()
+            return {"id": m.id}
+
+    @app.patch("/api/conversations/{conv_id}")
+    def api_conv_patch(conv_id: int, body: dict):
+        from .db import Conversation
+        with session_scope() as s:
+            c = s.get(Conversation, conv_id)
+            if not c: raise HTTPException(404, "not found")
+            if "title" in body:
+                c.title = (body["title"] or "Untitled").strip()[:200]
+            return {"ok": True}
+
+    @app.delete("/api/conversations/{conv_id}", status_code=204)
+    def api_conv_delete(conv_id: int):
+        from .db import Conversation
+        with session_scope() as s:
+            c = s.get(Conversation, conv_id)
+            if c: s.delete(c)
+
+    # -------- User goal (used by Learn page rerank) --------
+
+    @app.get("/api/profile/goal")
+    def api_goal_get():
+        p = profile_mod.load()
+        pers = p.get("personal") or {}
+        return {"goal": pers.get("goal") or "", "ranked": pers.get("learn_ranked") or []}
+
+    @app.put("/api/profile/goal")
+    def api_goal_put(body: dict):
+        p = profile_mod.load()
+        pers = p.setdefault("personal", {})
+        if "goal" in body:
+            pers["goal"] = (body.get("goal") or "").strip()[:200]
+        if "ranked" in body:
+            pers["learn_ranked"] = body.get("ranked") or []
+        profile_mod.save(p)
+        return {"ok": True, "goal": pers.get("goal", ""), "ranked": pers.get("learn_ranked", [])}
+
+    @app.post("/api/learn/rerank")
+    def api_learn_rerank(body: dict):
+        """Rerank candidate skills by relevance to user's stated goal.
+        Body: {goal: str, candidates: [str]} → {ranked: [{skill, why}], goal}"""
+        from . import llm
+        import json as _json
+        goal = (body.get("goal") or "").strip()
+        candidates = body.get("candidates") or []
+        if not goal:
+            return {"error": "goal required"}
+        if not candidates:
+            return {"ranked": []}
+        prompt = f"""You rerank skills by relevance to a user's career goal.
+
+GOAL: {goal}
+CANDIDATE SKILLS (drawn from real junior job postings):
+{', '.join(candidates[:40])}
+
+Return STRICT JSON only — no prose, no markdown — in this exact shape:
+{{"ranked": [{{"skill": "<one from candidates>", "why": "<<=12 words>"}}, ...]}}
+- Pick the TOP 5 most relevant skills for the goal.
+- Use only skills from the candidate list (exact spelling).
+- 'why' must be concrete: how it serves the goal.
+"""
+        try:
+            text = llm.generate(prompt, max_tokens=400, temperature=0.2, tier="cheap")
+        except llm.LLMError as e:
+            return {"error": str(e)}
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.strip("`").lstrip("json").strip()
+        try:
+            data = _json.loads(text)
+        except _json.JSONDecodeError:
+            return {"error": "model returned non-JSON", "raw": text[:400]}
+        # Filter to known candidates
+        cand_lower = {c.lower(): c for c in candidates}
+        ranked = []
+        for it in (data.get("ranked") or [])[:5]:
+            sk = (it.get("skill") or "").strip()
+            if sk.lower() in cand_lower:
+                ranked.append({"skill": cand_lower[sk.lower()], "why": (it.get("why") or "").strip()})
+        return {"ranked": ranked, "goal": goal}
+
+    @app.post("/api/interview")
+    def api_interview(body: dict):
+        from . import interview as iv
+        topic = (body.get("topic") or "").strip()
+        mode = body.get("mode") or "interview"
+        lang = body.get("lang") or "en"
+        messages = body.get("messages") or []
+        return iv.run(topic=topic, mode=mode, lang=lang, messages=messages)
+
+    @app.get("/api/stt/status")
+    def api_stt_status():
+        from . import stt as stt_mod
+        return {"available": stt_mod.have_provider(), "model": stt_mod.GROQ_WHISPER_MODEL}
+
+    @app.post("/api/stt")
+    async def api_stt(file: UploadFile = File(...), lang: str = ""):
+        from . import stt as stt_mod
+        try:
+            audio = await file.read()
+            return stt_mod.transcribe(audio, filename=file.filename or "audio.webm", lang=lang or None)
+        except stt_mod.STTError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/api/tts/status")
+    def api_tts_status():
+        from . import tts as tts_mod
+        return {"available": tts_mod.have_provider(), "voices": tts_mod.VOICES}
+
+    @app.post("/api/tts")
+    def api_tts(body: dict):
+        from . import tts as tts_mod
+        from fastapi.responses import StreamingResponse
+        text = (body.get("text") or "").strip()
+        lang = body.get("lang") or "en"
+        if not text:
+            raise HTTPException(400, "text required")
+        try:
+            agen = tts_mod.stream(text, lang=lang)
+        except tts_mod.TTSError as e:
+            raise HTTPException(500, str(e))
+        return StreamingResponse(agen, media_type="audio/mpeg",
+                                 headers={"Cache-Control": "no-cache",
+                                          "X-Accel-Buffering": "no"})
+
     # -------- Drawings --------
 
     @app.get("/api/drawings")
@@ -539,6 +801,16 @@ def create_app() -> FastAPI:
     @app.get("/api/health")
     def health():
         return {"ok": True, "time": datetime.utcnow().isoformat() + "Z"}
+
+    @app.on_event("startup")
+    def _start_bots():
+        from . import apply_bot
+        apply_bot.start_polling()
+
+    @app.on_event("shutdown")
+    def _stop_bots():
+        from . import apply_bot
+        apply_bot.stop_polling()
 
     return app
 

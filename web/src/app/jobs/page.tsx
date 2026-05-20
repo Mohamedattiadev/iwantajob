@@ -23,8 +23,10 @@ import {
 } from "@/components/ui/collapsible";
 import { ScrapeButton } from "@/components/scrape-button";
 import { PageHeader } from "@/components/page-header";
+import { PageTabs, JOBS_TABS } from "@/components/page-tabs";
 import { Pagination } from "@/components/pagination";
-import { fetcher, type JobsResponse } from "@/lib/api";
+import { fetcher, API, type JobsResponse } from "@/lib/api";
+import { Send } from "lucide-react";
 import { useApplications } from "@/lib/applications";
 import { CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
@@ -57,6 +59,26 @@ function JobsPageInner() {
   );
 
   const { appliedIds, apply } = useApplications();
+  const { data: tgStatus } = useSWR<{ available: boolean }>("/api/telegram/status", fetcher);
+  const [tgLoading, setTgLoading] = useState<number | null>(null);
+
+  const telegramApply = async (jobId: number) => {
+    setTgLoading(jobId);
+    try {
+      const r = await fetch(`${API}/api/applications/telegram-apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: jobId }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail || "Telegram send failed");
+      toast.success("Brief sent to Telegram. Confirm there to record application.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setTgLoading(null);
+    }
+  };
 
   // Filter-setter wrappers that also reset to page 1
   const withReset = <T,>(setter: (v: T) => void) => (v: T) => { setter(v); setPage(1); };
@@ -90,6 +112,8 @@ function JobsPageInner() {
         subtitle="Ghost-filtered junior listings. Click any row to open and mark applied."
         action={<ScrapeButton />}
       />
+
+      <PageTabs tabs={JOBS_TABS} />
 
       {/* Search bar */}
       <div className="space-y-3">
@@ -188,81 +212,100 @@ function JobsPageInner() {
       ) : data?.items.length === 0 ? (
         <div className="py-16 text-center text-sm text-muted-foreground">No matches. Try resetting filters.</div>
       ) : (
-        <ul className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+        <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {(data?.items ?? []).slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map((j) => {
             const isApplied = appliedIds.has(j.id);
+            const scoreTone =
+              j.score >= 80 ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30"
+              : j.score >= 60 ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-amber-500/30"
+              : "bg-muted text-muted-foreground ring-foreground/10";
             return (
-            <li key={j.id}>
-              <div className={`group block h-full px-5 py-4 rounded-xl glass press flex flex-col gap-3 ${isApplied ? "opacity-70" : ""}`}>
-                <div className="flex items-start gap-4">
-                  <div className="w-12 text-center shrink-0 pt-0.5">
-                    <div className={`text-lg font-semibold tabular-nums ${
-                      j.score >= 80 ? "text-emerald-500"
-                      : j.score >= 60 ? "text-amber-500"
-                      : "text-muted-foreground"
-                    }`}>
-                      {j.score}
+              <li key={j.id}>
+                <article className={`group h-full flex flex-col rounded-2xl border bg-card hover:shadow-lg hover:border-foreground/20 transition-all ${isApplied ? "opacity-75" : ""}`}>
+                  {/* Header: score chip + title */}
+                  <div className="p-5 pb-3 flex-1 flex flex-col gap-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <h3 className="font-semibold text-base leading-snug line-clamp-2 flex-1">{j.title}</h3>
+                      <span className={`shrink-0 inline-flex items-center justify-center min-w-[40px] h-7 px-2 rounded-full text-xs font-bold tabular-nums ring-1 ${scoreTone}`} title="Match score">
+                        {j.score}
+                      </span>
                     </div>
-                    <div className="text-[10px] text-muted-foreground font-mono">score</div>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium line-clamp-1">{j.title}</div>
-                    <div className="text-xs text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-                      <span>{j.company ?? "?"}</span>
-                      <span>·</span>
-                      <span className="font-mono">{j.source}</span>
-                      <span>·</span>
-                      <span>{j.posted_at ? j.posted_at.slice(0, 10) : "no date"}</span>
-                      {j.seniority && (<>
-                        <span>·</span>
-                        <span className="capitalize">{j.seniority}</span>
-                      </>)}
+
+                    <div className="text-sm text-foreground/80 font-medium line-clamp-1">{j.company ?? "Unknown company"}</div>
+
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                      <span className="font-mono uppercase">{j.source}</span>
+                      {j.posted_at && (<><span>·</span><span>{j.posted_at.slice(0, 10)}</span></>)}
+                      {j.seniority && (<><span>·</span><span className="capitalize">{j.seniority.replace(/_/g, " ")}</span></>)}
+                      {j.is_intern && (
+                        <span className="ml-auto px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-700 dark:text-sky-300 text-[10px] font-semibold uppercase tracking-wide">
+                          Intern
+                        </span>
+                      )}
                     </div>
+
                     {j.skills.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-2">
-                        {j.skills.slice(0, 8).map((sk) => (
+                      <div className="flex flex-wrap gap-1.5 mt-1">
+                        {j.skills.slice(0, 6).map((sk) => (
                           <button
                             key={sk.skill}
                             type="button"
                             onClick={(e) => { e.preventDefault(); e.stopPropagation(); setSkill_(sk.skill); }}
-                            className="px-2 py-0.5 rounded text-[10px] bg-foreground/5 text-muted-foreground hover:bg-foreground/10 hover:text-foreground transition-colors"
+                            className="px-2 py-0.5 rounded-md text-[10px] bg-foreground/[0.04] border border-foreground/10 text-muted-foreground hover:bg-foreground/10 hover:text-foreground transition-colors"
                           >
                             {sk.skill}
                           </button>
                         ))}
+                        {j.skills.length > 6 && (
+                          <span className="px-1.5 py-0.5 text-[10px] text-muted-foreground">+{j.skills.length - 6}</span>
+                        )}
                       </div>
                     )}
                   </div>
-                </div>
-                <div className="flex items-center gap-2 pt-1 mt-auto">
-                  <a
-                    href={j.source_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex-1 inline-flex items-center justify-center gap-1.5 h-8 rounded-md border border-foreground/15 text-xs hover:bg-accent/40 transition-colors"
-                  >
-                    Open posting <ArrowRight className="h-3 w-3" />
-                  </a>
-                  {isApplied ? (
-                    <span className="inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-xs font-medium">
-                      <CheckCircle2 className="h-3.5 w-3.5" /> applied
-                    </span>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={async (e) => {
-                        e.preventDefault();
-                        const ok = await apply(j.id);
-                        if (ok) toast.success("Marked applied");
-                      }}
-                      className="inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-md bg-foreground text-background text-xs font-medium hover:opacity-90"
+
+                  {/* Actions */}
+                  <div className="px-4 py-3 border-t bg-muted/30 rounded-b-2xl flex items-center gap-2">
+                    <a
+                      href={j.source_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center justify-center h-9 px-3 rounded-lg text-xs text-muted-foreground hover:text-foreground hover:bg-background transition-colors"
+                      title="Open posting in new tab"
                     >
-                      Mark applied
-                    </button>
-                  )}
-                </div>
-              </div>
-            </li>
+                      Open <ArrowRight className="h-3 w-3 ml-1" />
+                    </a>
+                    <div className="flex-1" />
+                    {isApplied ? (
+                      <span className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-xs font-semibold">
+                        <CheckCircle2 className="h-3.5 w-3.5" /> Applied
+                      </span>
+                    ) : j.is_intern && tgStatus?.available ? (
+                      <button
+                        type="button"
+                        disabled={tgLoading === j.id}
+                        onClick={(e) => { e.preventDefault(); telegramApply(j.id); }}
+                        className="inline-flex items-center justify-center gap-1.5 h-9 px-4 rounded-lg bg-sky-600 text-white text-xs font-semibold hover:opacity-90 shadow-sm disabled:opacity-50"
+                        title="Send brief to Telegram for review + confirm"
+                      >
+                        <Send className="h-3.5 w-3.5" />
+                        {tgLoading === j.id ? "Sending..." : "Apply via TG"}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={async (e) => {
+                          e.preventDefault();
+                          const ok = await apply(j.id);
+                          if (ok) toast.success("Marked applied");
+                        }}
+                        className="inline-flex items-center justify-center h-9 px-4 rounded-lg bg-foreground text-background text-xs font-semibold hover:opacity-90 shadow-sm"
+                      >
+                        Mark applied
+                      </button>
+                    )}
+                  </div>
+                </article>
+              </li>
             );
           })}
         </ul>
