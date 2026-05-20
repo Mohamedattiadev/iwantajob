@@ -182,20 +182,7 @@ function JobsPageInner() {
             const isApplied = appliedIds.has(j.id);
             return (
             <li key={j.id}>
-              <a
-                href={j.source_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={async () => {
-                  if (!isApplied) {
-                    const ok = await apply(j.id);
-                    if (ok) toast.success("Marked applied — tracked in /apply");
-                  }
-                }}
-                className={`group block h-full px-5 py-4 rounded-xl border bg-card hover:bg-accent/40 transition-colors ${
-                  isApplied ? "opacity-60" : ""
-                }`}
-              >
+              <div className={`group block h-full px-5 py-4 rounded-xl glass press flex flex-col gap-3 ${isApplied ? "opacity-70" : ""}`}>
                 <div className="flex items-start gap-4">
                   <div className="w-12 text-center shrink-0 pt-0.5">
                     <div className={`text-lg font-semibold tabular-nums ${
@@ -223,24 +210,47 @@ function JobsPageInner() {
                     {j.skills.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-2">
                         {j.skills.slice(0, 8).map((sk) => (
-                          <span
+                          <button
                             key={sk.skill}
+                            type="button"
                             onClick={(e) => { e.preventDefault(); e.stopPropagation(); setSkill(sk.skill); }}
-                            className="px-2 py-0.5 rounded text-[10px] bg-foreground/5 text-muted-foreground hover:bg-foreground/10 hover:text-foreground transition-colors cursor-pointer"
+                            className="px-2 py-0.5 rounded text-[10px] bg-foreground/5 text-muted-foreground hover:bg-foreground/10 hover:text-foreground transition-colors"
                           >
                             {sk.skill}
-                          </span>
+                          </button>
                         ))}
                       </div>
                     )}
                   </div>
+                </div>
+                <div className="flex items-center gap-2 pt-1 mt-auto">
+                  <a
+                    href={j.source_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 h-8 rounded-md border border-foreground/15 text-xs hover:bg-accent/40 transition-colors"
+                  >
+                    Open posting <ArrowRight className="h-3 w-3" />
+                  </a>
                   {isApplied ? (
-                    <CheckCircle2 className="h-4 w-4 text-emerald-500 mt-1 shrink-0" aria-label="applied" />
+                    <span className="inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-xs font-medium">
+                      <CheckCircle2 className="h-3.5 w-3.5" /> applied
+                    </span>
                   ) : (
-                    <ArrowRight className="h-4 w-4 text-muted-foreground mt-1 group-hover:translate-x-1 transition-transform shrink-0" />
+                    <button
+                      type="button"
+                      onClick={async (e) => {
+                        e.preventDefault();
+                        const ok = await apply(j.id);
+                        if (ok) toast.success("Marked applied");
+                      }}
+                      className="inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-md bg-foreground text-background text-xs font-medium hover:opacity-90"
+                    >
+                      Mark applied
+                    </button>
                   )}
                 </div>
-              </a>
+              </div>
             </li>
             );
           })}

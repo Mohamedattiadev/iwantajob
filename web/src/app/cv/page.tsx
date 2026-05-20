@@ -142,7 +142,7 @@ export default function CvPage() {
         {/* Edit form */}
         <div className="space-y-5">
           <Card><CardContent className="p-5 space-y-3">
-            <div className="text-xs font-mono uppercase tracking-wider text-muted-foreground">Personal</div>
+            <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground">Personal</div>
             <Field label="Name"><Input value={draft.personal.name} onChange={(e) => updatePersonal("name", e.target.value)} /></Field>
             <Field label="Email"><Input value={draft.personal.email} onChange={(e) => updatePersonal("email", e.target.value)} /></Field>
             <Field label="Phone"><Input value={draft.personal.phone} onChange={(e) => updatePersonal("phone", e.target.value)} /></Field>
@@ -173,7 +173,7 @@ export default function CvPage() {
           />
 
           <Card><CardContent className="p-5 space-y-3">
-            <div className="text-xs font-mono uppercase tracking-wider text-muted-foreground">Skills</div>
+            <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground">Skills</div>
             {skillsList.length === 0 ? (
               <p className="text-sm text-muted-foreground">Rate skills in Learn — they appear here automatically.</p>
             ) : (
@@ -215,6 +215,10 @@ function CVPreview({
 }) {
   const [tab, setTab] = useState<"page" | "md" | "tex">("page");
   const v = encodeURIComponent(bust + ":" + minLevel);
+  const [pdfOk, setPdfOk] = useState(false);
+  useEffect(() => {
+    fetch(`${API}/api/cv/pdf/available`).then(r => r.json()).then(d => setPdfOk(!!d.available)).catch(() => {});
+  }, []);
 
   return (
     <Card><CardContent className="p-0">
@@ -271,13 +275,21 @@ function CVPreview({
         <a href={`${API}/api/cv/html?min_level=${minLevel}`} target="_blank" rel="noopener noreferrer">
           <Button variant="outline" size="sm"><ExternalLink className="h-3.5 w-3.5 mr-1.5" />.html (print → PDF)</Button>
         </a>
-        <a href={`${API}/api/cv/pdf?min_level=${minLevel}`} target="_blank" rel="noopener noreferrer">
-          <Button size="sm"><Download className="h-3.5 w-3.5 mr-1.5" />.pdf (LaTeX)</Button>
-        </a>
+        {pdfOk ? (
+          <a href={`${API}/api/cv/pdf?min_level=${minLevel}`} target="_blank" rel="noopener noreferrer">
+            <Button size="sm"><Download className="h-3.5 w-3.5 mr-1.5" />.pdf (LaTeX)</Button>
+          </a>
+        ) : (
+          <Button size="sm" variant="outline" title="install texlive on backend" disabled>
+            .pdf (install texlive)
+          </Button>
+        )}
       </div>
-      <p className="px-5 pb-5 text-[10px] text-muted-foreground">
-        ATS = Applicant Tracking System. The HTML and LaTeX templates are single-column, no images — every ATS parses them.
-        .pdf needs pdflatex installed on backend; otherwise use .html → browser Print → Save as PDF.
+      <p className="px-5 pb-5 text-[10px] text-muted-foreground leading-relaxed">
+        ATS = Applicant Tracking System. HTML + LaTeX are single-column, no images — every ATS parses them.
+        {pdfOk ? null : (
+          <> Direct .pdf needs <code>pdflatex</code> installed (e.g. <code>sudo pacman -S texlive-most</code>). Otherwise open .html → browser Print → Save as PDF.</>
+        )}
       </p>
     </CardContent></Card>
   );
@@ -298,8 +310,8 @@ function LatexPane({ minLevel, bust }: { minLevel: number; bust: string }) {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <div className="mt-1">{children}</div>
+      <span className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground">{label}</span>
+      <div className="mt-1.5">{children}</div>
     </label>
   );
 }
@@ -317,7 +329,7 @@ function ListEditor({
 }) {
   return (
     <Card><CardContent className="p-5 space-y-3">
-      <div className="text-xs font-mono uppercase tracking-wider text-muted-foreground">{title}</div>
+      <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground">{title}</div>
       {items.map((it, i) => (
         <div key={i} className="flex gap-2">
           <Textarea

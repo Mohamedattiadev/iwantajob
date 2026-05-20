@@ -52,7 +52,7 @@ export default function ApplyPage() {
           No applications yet. Head to <Link href="/jobs" className="text-primary hover:underline">Jobs</Link> and click "Apply" on any listing.
         </CardContent></Card>
       ) : (
-        <ul className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <ul className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           {applications.map((a) => (
             <li key={a.id}>
               <Card><CardContent className="p-4 space-y-2">

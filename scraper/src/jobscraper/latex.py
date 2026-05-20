@@ -22,7 +22,7 @@ LEVEL_LABEL = {
 def _escape(s: str) -> str:
     if not s:
         return ""
-    # LaTeX special characters
+    # LaTeX special characters + common unicode that pdflatex chokes on
     repl = {
         "\\": r"\textbackslash{}",
         "&": r"\&",
@@ -34,16 +34,41 @@ def _escape(s: str) -> str:
         "}": r"\}",
         "~": r"\textasciitilde{}",
         "^": r"\textasciicircum{}",
+        # Unicode bullets and dashes — pdflatex with pdftex.def chokes
+        "●": r"\textbullet{}",
+        "•": r"\textbullet{}",
+        "◦": r"\textopenbullet{}",
+        "▪": r"\textbullet{}",
+        "—": "---",
+        "–": "--",
+        "“": "``",
+        "”": "''",
+        "‘": "`",
+        "’": "'",
+        "→": r"$\rightarrow$",
+        "←": r"$\leftarrow$",
+        "≥": r"$\geq$",
+        "≤": r"$\leq$",
+        "✓": r"$\checkmark$",
+        "★": r"$\star$",
+        "·": r"\textperiodcentered{}",
     }
     out = []
     for ch in s:
-        out.append(repl.get(ch, ch))
+        if ch in repl:
+            out.append(repl[ch])
+        elif ord(ch) > 127 and ord(ch) not in range(0x00C0, 0x024F):
+            # Drop other non-ASCII outside common Latin extended ranges
+            out.append("?")
+        else:
+            out.append(ch)
     return "".join(out)
 
 
 PREAMBLE = r"""\documentclass[11pt,a4paper]{article}
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
+\usepackage{textcomp}
 \usepackage[a4paper, margin=0.7in]{geometry}
 \usepackage[hidelinks]{hyperref}
 \usepackage{titlesec}

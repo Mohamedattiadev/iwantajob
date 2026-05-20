@@ -383,6 +383,11 @@ def create_app() -> FastAPI:
     def api_cv_tex(min_level: int = 3):
         return PlainTextResponse(latex_mod.render_tex(min_level=min_level))
 
+    @app.get("/api/cv/pdf/available")
+    def api_cv_pdf_available():
+        import shutil
+        return {"available": bool(shutil.which("pdflatex"))}
+
     @app.get("/api/cv/pdf")
     def api_cv_pdf(min_level: int = 3):
         tex = latex_mod.render_tex(min_level=min_level)

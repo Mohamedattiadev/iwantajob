@@ -130,7 +130,7 @@
       radial-gradient(40rem 30rem at 50% 110%, oklch(0.58 0.18 295 / 0.10), transparent 55%),
       var(--background);
     background-attachment: fixed;
-    font-feature-settings: "ss01", "ss02", "cv01", "cv11";
+    font-feature-settings: "ss01";
   }
   html {
     @apply font-sans;
@@ -162,7 +162,6 @@
   }
   .font-serif {
     font-family: var(--font-serif), Georgia, "Times New Roman", serif;
-    font-feature-settings: "ss01", "ss02";
   }
   .text-balance { text-wrap: balance; }
   .text-pretty  { text-wrap: pretty; }
