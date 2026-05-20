@@ -8,6 +8,7 @@ import { CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrapeButton } from "@/components/scrape-button";
 import { Aurora, GridBg, MagicCard, Gradient, AnimatedNumber, Bento } from "@/components/eye-candy";
+import { ShaderBackground } from "@/components/shader-background";
 import { PageHeader, SectionTitle } from "@/components/page-header";
 import { fetcher, type Stats, type JobsResponse, type Profile, type Application } from "@/lib/api";
 import { useProficiency } from "@/lib/proficiency";
@@ -41,8 +42,10 @@ export default function Home() {
 
   return (
     <div className="relative space-y-16">
-      <Aurora />
-      <GridBg className="opacity-50" />
+      <div className="pointer-events-none fixed inset-0 -z-10 opacity-70">
+        <ShaderBackground />
+      </div>
+      <GridBg className="opacity-40" />
 
       <PageHeader
         eyebrow="launchpad"
@@ -115,9 +118,9 @@ export default function Home() {
           />
           <FeatureCard
             n="05" icon={<Pencil className="h-5 w-5" />}
-            title="Sketchpad"
-            desc="Excalidraw embedded. Draw system designs, save to backend."
-            href="/draw" cta="Open canvas"
+            title="Sketch + voice"
+            desc="Each Learn skill has Note · Sketch · Voice tabs. Draw, record memo, dictate notes."
+            href="/learn" cta="Open Learn"
             glow="rose"
             className="lg:col-span-3"
           />

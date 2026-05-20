@@ -17,7 +17,13 @@ import {
   GraduationCap,
   Video,
   Hammer,
+  PenTool,
+  Mic,
+  FileText,
 } from "lucide-react";
+import { SkillSketch } from "@/components/skill-sketch";
+import { VoiceRecorder } from "@/components/voice-recorder";
+import { VoiceInputButton } from "@/components/voice-input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -50,6 +56,7 @@ export default function SkillPage({
 
   const [draft, setDraft] = useState<string>("");
   const [mode, setMode] = useState<"preview" | "edit">("preview");
+  const [tab, setTab] = useState<"note" | "sketch" | "voice">("note");
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
 
@@ -140,61 +147,94 @@ export default function SkillPage({
         </div>
       </div>
 
-      {/* Editor toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
-        <div className="inline-flex items-center rounded-md border bg-card p-0.5">
+      {/* Tabs */}
+      <div className="flex items-center gap-1 border-b border-foreground/10">
+        {([
+          { id: "note",   label: "Note",   icon: <FileText className="h-3.5 w-3.5" /> },
+          { id: "sketch", label: "Sketch", icon: <PenTool className="h-3.5 w-3.5" /> },
+          { id: "voice",  label: "Voice",  icon: <Mic className="h-3.5 w-3.5" /> },
+        ] as const).map((t) => (
           <button
-            onClick={() => setMode("preview")}
-            className={`h-7 px-3 rounded-sm text-xs inline-flex items-center gap-1.5 ${
-              mode === "preview" ? "bg-accent" : "text-muted-foreground hover:bg-accent/50"
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`px-4 h-9 text-sm inline-flex items-center gap-2 border-b-2 transition-colors ${
+              tab === t.id ? "border-foreground text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
           >
-            <Eye className="h-3.5 w-3.5" />Preview
+            {t.icon}
+            {t.label}
           </button>
-          <button
-            onClick={() => setMode("edit")}
-            className={`h-7 px-3 rounded-sm text-xs inline-flex items-center gap-1.5 ${
-              mode === "edit" ? "bg-accent" : "text-muted-foreground hover:bg-accent/50"
-            }`}
-          >
-            <Pencil className="h-3.5 w-3.5" />Edit
-          </button>
-        </div>
-        <div className="flex items-center gap-2">
-          {dirty && <span className="text-xs text-amber-500">unsaved</span>}
-          {!dirty && note && <span className="text-xs text-muted-foreground inline-flex items-center gap-1"><CheckCircle2 className="h-3 w-3 text-emerald-500" />saved</span>}
-          <Button variant="outline" size="sm" onClick={reset}>
-            <RotateCcw className="h-3.5 w-3.5 mr-1.5" />Reset
-          </Button>
-          <Button size="sm" disabled={!dirty || saving} onClick={save}>
-            <Save className="h-3.5 w-3.5 mr-1.5" />
-            {saving ? "Saving..." : "Save"}
-          </Button>
-        </div>
+        ))}
       </div>
 
-      {/* Editor */}
-      {!note ? (
-        <Skeleton className="h-96 w-full rounded-xl" />
-      ) : mode === "edit" ? (
-        <div>
-          <Textarea
-            value={draft}
-            onChange={(e) => { setDraft(e.target.value); setDirty(true); }}
-            rows={28}
-            spellCheck={false}
-            className="font-mono text-sm leading-relaxed"
-            placeholder="Markdown..."
-          />
-          <p className="text-xs text-muted-foreground mt-2">
-            Ctrl+S saves. File persists at <code>scraper/data/notes/</code> on the backend.
-          </p>
-        </div>
-      ) : (
-        <article className="prose prose-invert max-w-none prose-headings:tracking-tight prose-h1:text-3xl prose-h2:text-xl prose-h2:mt-8 prose-h2:mb-3 prose-h3:text-base prose-pre:bg-muted prose-pre:border prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-sm prose-li:my-1 prose-a:text-primary">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft}</ReactMarkdown>
-        </article>
+      {tab === "note" && (
+        <>
+          {/* Editor toolbar */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="inline-flex items-center rounded-md border bg-card p-0.5">
+              <button
+                onClick={() => setMode("preview")}
+                className={`h-7 px-3 rounded-sm text-xs inline-flex items-center gap-1.5 ${
+                  mode === "preview" ? "bg-accent" : "text-muted-foreground hover:bg-accent/50"
+                }`}
+              >
+                <Eye className="h-3.5 w-3.5" />Preview
+              </button>
+              <button
+                onClick={() => setMode("edit")}
+                className={`h-7 px-3 rounded-sm text-xs inline-flex items-center gap-1.5 ${
+                  mode === "edit" ? "bg-accent" : "text-muted-foreground hover:bg-accent/50"
+                }`}
+              >
+                <Pencil className="h-3.5 w-3.5" />Edit
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <VoiceInputButton
+                onTranscript={(text) => {
+                  setDraft((d) => d + (d.endsWith("\n") || d === "" ? "" : "\n") + text + "\n");
+                  setDirty(true);
+                  setMode("edit");
+                }}
+              />
+              {dirty && <span className="text-xs text-amber-500">unsaved</span>}
+              {!dirty && note && <span className="text-xs text-muted-foreground inline-flex items-center gap-1"><CheckCircle2 className="h-3 w-3 text-emerald-500" />saved</span>}
+              <Button variant="outline" size="sm" onClick={reset}>
+                <RotateCcw className="h-3.5 w-3.5 mr-1.5" />Reset
+              </Button>
+              <Button size="sm" disabled={!dirty || saving} onClick={save}>
+                <Save className="h-3.5 w-3.5 mr-1.5" />
+                {saving ? "Saving..." : "Save"}
+              </Button>
+            </div>
+          </div>
+
+          {!note ? (
+            <Skeleton className="h-96 w-full rounded-xl" />
+          ) : mode === "edit" ? (
+            <div>
+              <Textarea
+                value={draft}
+                onChange={(e) => { setDraft(e.target.value); setDirty(true); }}
+                rows={28}
+                spellCheck={false}
+                className="font-mono text-sm leading-relaxed"
+                placeholder="Markdown... (use mic button to dictate)"
+              />
+              <p className="text-xs text-muted-foreground mt-2">
+                Ctrl+S saves. Mic button appends transcribed speech.
+              </p>
+            </div>
+          ) : (
+            <article className="prose prose-invert max-w-none prose-headings:tracking-tight prose-h1:text-3xl prose-h2:text-xl prose-h2:mt-8 prose-h2:mb-3 prose-h3:text-base prose-pre:bg-muted prose-pre:border prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-sm prose-li:my-1 prose-a:text-primary">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft}</ReactMarkdown>
+            </article>
+          )}
+        </>
       )}
+
+      {tab === "sketch" && <SkillSketch skill={skill} />}
+      {tab === "voice" && <VoiceRecorder skill={skill} />}
 
       {/* Resources */}
       {resources.length > 0 && (
