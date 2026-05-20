@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import io
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from pypdf import PdfReader
@@ -110,7 +110,7 @@ def parse_text(text: str) -> dict[str, Any]:
         "languages": languages,
         "certifications": [],
         "_meta": {
-            "parsed_at": datetime.utcnow().isoformat() + "Z",
+            "parsed_at": datetime.now(timezone.utc).isoformat(),
             "raw_text_chars": len(blob),
             "skills_detected": len(skills_map),
         },
@@ -158,6 +158,40 @@ LEVEL_LABEL = {
     4: "Strong",
     5: "Expert",
 }
+
+
+# ---------- Entry normalization (handles "raw" CV blobs with ● / • bullets) ----------
+
+_BULLET_RE = re.compile(r"\s*[●•▪◆■]\s*")
+
+def _split_bullets(raw: str) -> tuple[str, list[str]]:
+    """Split a free-form CV entry into (header_line, bullets).
+
+    Many imported entries look like:
+        "Full-Stack Dev (X) - 5mo 2024 ● did this ● did that ● fixed bug"
+    We want one header + a real bulleted list — that's what makes templates
+    render cleanly instead of one squashed paragraph.
+    """
+    if not raw:
+        return "", []
+    s = raw.strip()
+    # Split on bullet glyphs.
+    parts = _BULLET_RE.split(s)
+    parts = [p.strip(" \n\t-:") for p in parts if p and p.strip()]
+    if not parts:
+        return s, []
+    if len(parts) == 1:
+        # No glyph bullets — try splitting long sentences on '. ' fallback off.
+        return parts[0], []
+    return parts[0], parts[1:]
+
+
+TEMPLATES = ("classic", "compact", "modern", "elegant")
+DEFAULT_TEMPLATE = "classic"
+
+
+def _validate_template(name: str | None) -> str:
+    return name if name in TEMPLATES else DEFAULT_TEMPLATE
 
 
 def render_markdown(profile: dict[str, Any] | None = None, min_level: int = 3) -> str:
@@ -214,7 +248,13 @@ def render_markdown(profile: dict[str, Any] | None = None, min_level: int = 3) -
         lines.append("## Experience")
         for e in exp:
             if "raw" in e:
-                lines.append(f"- {e['raw']}")
+                header, bullets = _split_bullets(e.get("raw") or "")
+                if header:
+                    lines.append(f"**{header}**")
+                for b in bullets:
+                    lines.append(f"- {b}")
+                if not header and not bullets:
+                    lines.append(f"- {e.get('raw','')}")
             else:
                 title = " — ".join(filter(None, [e.get("role"), e.get("company")]))
                 period = " ".join(filter(None, [e.get("start"), e.get("end")])).strip()
@@ -232,7 +272,13 @@ def render_markdown(profile: dict[str, Any] | None = None, min_level: int = 3) -
         lines.append("## Projects")
         for pr in proj:
             if "raw" in pr:
-                lines.append(f"- {pr['raw']}")
+                header, bullets = _split_bullets(pr.get("raw") or "")
+                if header:
+                    lines.append(f"**{header}**")
+                for b in bullets:
+                    lines.append(f"- {b}")
+                if not header and not bullets:
+                    lines.append(f"- {pr.get('raw','')}")
             else:
                 head = pr.get("name", "")
                 link = pr.get("link")
@@ -253,7 +299,13 @@ def render_markdown(profile: dict[str, Any] | None = None, min_level: int = 3) -
         lines.append("## Education")
         for ed in edu:
             if "raw" in ed:
-                lines.append(f"- {ed['raw']}")
+                header, bullets = _split_bullets(ed.get("raw") or "")
+                if header:
+                    lines.append(f"**{header}**")
+                for b in bullets:
+                    lines.append(f"- {b}")
+                if not header and not bullets:
+                    lines.append(f"- {ed.get('raw','')}")
             else:
                 title = " — ".join(filter(None, [ed.get("degree"), ed.get("school")]))
                 period = " ".join(filter(None, [ed.get("start"), ed.get("end")])).strip()
@@ -293,11 +345,13 @@ def render_markdown(profile: dict[str, Any] | None = None, min_level: int = 3) -
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_html(profile: dict[str, Any] | None = None, min_level: int = 3) -> str:
+def render_html(profile: dict[str, Any] | None = None, min_level: int = 3, template: str | None = None) -> str:
+    tpl = _validate_template(template)
     md = render_markdown(profile, min_level)
     # Minimal markdown → HTML (headings, bold, italic, links, bullets). Keep deps light.
     html = _md_to_html(md)
-    return _html_doc(html, name=(profile or load()).get("personal", {}).get("name") or "CV")
+    name = (profile or load()).get("personal", {}).get("name") or "CV"
+    return _html_doc(html, name=name, template=tpl)
 
 
 def _md_to_html(md: str) -> str:
@@ -341,26 +395,92 @@ def _md_to_html(md: str) -> str:
     return "\n".join(out)
 
 
-def _html_doc(body: str, name: str) -> str:
+_TEMPLATE_CSS: dict[str, str] = {
+    "classic": """
+        body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+               max-width: 760px; margin: 40px auto; padding: 0 24px;
+               color: #111; line-height: 1.55; font-size: 14px; }
+        h1   { font-size: 30px; margin: 0 0 6px; letter-spacing: -0.015em; font-weight: 700; }
+        h1 + p { color: #555; font-size: 13px; margin: 0 0 18px; }
+        h2   { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em;
+               color: #555; margin: 26px 0 8px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+        p    { margin: 6px 0; }
+        ul   { margin: 6px 0 14px 20px; padding: 0; }
+        li   { margin: 3px 0; }
+        a    { color: #1a4dad; text-decoration: none; }
+        strong { color: #000; }
+        em   { color: #555; font-style: normal; }
+    """,
+    "compact": """
+        body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+               max-width: 740px; margin: 28px auto; padding: 0 22px;
+               color: #111; line-height: 1.38; font-size: 12.5px; }
+        h1   { font-size: 22px; margin: 0 0 2px; letter-spacing: -0.01em; font-weight: 700; }
+        h1 + p { color: #555; font-size: 11.5px; margin: 0 0 12px; }
+        h2   { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.15em;
+               color: #333; margin: 14px 0 4px; border-bottom: 1px solid #ccc; padding-bottom: 2px; }
+        p    { margin: 3px 0; }
+        ul   { margin: 3px 0 8px 18px; padding: 0; }
+        li   { margin: 1.5px 0; }
+        a    { color: #1a4dad; text-decoration: none; }
+        strong { color: #000; }
+        em   { color: #555; font-style: normal; }
+    """,
+    "modern": """
+        body { font-family: "Inter", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+               max-width: 780px; margin: 36px auto; padding: 0 28px;
+               color: #1a1d24; line-height: 1.55; font-size: 13.5px; }
+        h1   { font-size: 32px; margin: 0 0 4px; letter-spacing: -0.02em; font-weight: 800;
+               background: linear-gradient(90deg, #6d28d9 0%, #db2777 100%);
+               -webkit-background-clip: text; background-clip: text; color: transparent; }
+        h1 + p { color: #525866; font-size: 12.5px; margin: 0 0 22px; padding-bottom: 14px;
+                 border-bottom: 2px solid #6d28d9; }
+        h2   { font-size: 11px; text-transform: uppercase; letter-spacing: 0.18em;
+               color: #6d28d9; margin: 22px 0 6px; font-weight: 700; }
+        h2::before { content: ""; display: inline-block; width: 18px; height: 2px;
+                     background: #6d28d9; vertical-align: middle; margin-right: 10px; }
+        p    { margin: 5px 0; }
+        ul   { margin: 5px 0 12px 18px; padding: 0; list-style: none; }
+        li   { margin: 3px 0; position: relative; padding-left: 14px; }
+        li::before { content: "▸"; color: #6d28d9; position: absolute; left: 0; font-weight: 700; }
+        a    { color: #6d28d9; text-decoration: none; border-bottom: 1px dotted #6d28d9; }
+        strong { color: #1a1d24; }
+        em   { color: #525866; font-style: normal; font-weight: 500; }
+    """,
+    "elegant": """
+        body { font-family: "Georgia", "Times New Roman", serif;
+               max-width: 720px; margin: 50px auto; padding: 0 28px;
+               color: #1a1a1a; line-height: 1.62; font-size: 13.5px; }
+        h1   { font-size: 34px; margin: 0 0 4px; letter-spacing: 0.01em; font-weight: 400;
+               text-align: center; font-variant: small-caps; }
+        h1 + p { color: #444; font-size: 12.5px; margin: 0 0 26px; text-align: center;
+                 font-style: italic; padding-bottom: 18px;
+                 border-bottom: 1px solid #aaa; }
+        h2   { font-size: 13px; text-transform: uppercase; letter-spacing: 0.22em;
+               color: #1a1a1a; margin: 22px 0 8px; text-align: center; font-weight: 400;
+               border: none; }
+        h2::after { content: ""; display: block; width: 40px; height: 1px;
+                    background: #1a1a1a; margin: 6px auto 0; }
+        p    { margin: 6px 0; }
+        ul   { margin: 6px 0 14px 22px; padding: 0; }
+        li   { margin: 4px 0; }
+        a    { color: #5a3a8c; text-decoration: none; }
+        strong { color: #1a1a1a; font-weight: 700; }
+        em   { color: #555; font-style: italic; }
+    """,
+}
+
+
+def _html_doc(body: str, name: str, template: str = "classic") -> str:
+    css = _TEMPLATE_CSS.get(template, _TEMPLATE_CSS["classic"])
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>{name} — CV</title>
 <style>
-  body {{ font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif;
-         max-width: 760px; margin: 40px auto; padding: 0 24px;
-         color: #111; line-height: 1.5; }}
-  h1 {{ font-size: 28px; margin: 0 0 4px; letter-spacing: -0.01em; }}
-  h2 {{ font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em;
-        color: #555; margin: 28px 0 8px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }}
-  p {{ margin: 6px 0; }}
-  ul {{ margin: 6px 0 12px 18px; padding: 0; }}
-  li {{ margin: 3px 0; }}
-  a {{ color: #1a4dad; text-decoration: none; }}
-  strong {{ color: #000; }}
-  em {{ color: #555; font-style: normal; }}
-  @media print {{ body {{ margin: 0; padding: 20px; }} }}
+{css}
+  @media print {{ body {{ margin: 0; padding: 20px; max-width: none; }} }}
 </style>
 </head>
 <body>

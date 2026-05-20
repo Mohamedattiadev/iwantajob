@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter, Geist_Mono, Instrument_Serif } from "next/font/google";
+import { Inter, JetBrains_Mono, Fraunces } from "next/font/google";
 import "./globals.css";
 import { Nav } from "@/components/nav";
 import { Toaster } from "@/components/ui/sonner";
@@ -11,21 +11,27 @@ import { CommandPalette } from "@/components/command-palette";
 const sansFont = Inter({
   variable: "--font-sans",
   subsets: ["latin"],
+  weight: ["300", "400", "500", "600", "700", "800"],
 });
 
-const geistMono = Geist_Mono({
+const monoFont = JetBrains_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
 });
 
-const serif = Instrument_Serif({
+// Fraunces: variable serif with personality — opt-soft + 9pt grade axes.
+// Replaces Instrument_Serif (whose italic display was reading as generic /
+// AI-template). Used sparingly via .font-serif on accent words.
+const serif = Fraunces({
   variable: "--font-serif",
-  weight: "400",
   subsets: ["latin"],
+  style: ["normal"],
+  axes: ["opsz", "SOFT"],
 });
 
 export const metadata: Metadata = {
-  title: "IWANTAJOB",
+  title: "W/ORK",
   description: "Personal job-market launchpad.",
 };
 
@@ -38,7 +44,7 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${sansFont.variable} ${geistMono.variable} ${serif.variable} h-full antialiased`}
+      className={`${sansFont.variable} ${monoFont.variable} ${serif.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>

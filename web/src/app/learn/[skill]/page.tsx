@@ -20,7 +20,15 @@ import {
   PenTool,
   Mic,
   FileText,
+  Check,
+  Plus,
+  Trash2,
+  ListChecks,
 } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
+import { Input } from "@/components/ui/input";
+import { useSkillMilestones } from "@/lib/milestones";
+import { useUserPlans } from "@/lib/plans";
 import { SkillSketch } from "@/components/skill-sketch";
 import { VoiceRecorder } from "@/components/voice-recorder";
 import { VoiceInputButton } from "@/components/voice-input";
@@ -53,6 +61,8 @@ export default function SkillPage({
     fetcher,
   );
   const { map: prof, set, ready } = useProficiency();
+  const plans = useUserPlans();
+  const onPlan = plans.items.some((p) => !p.done && p.skill?.toLowerCase() === skill.toLowerCase());
 
   const [draft, setDraft] = useState<string>("");
   const [mode, setMode] = useState<"preview" | "edit">("preview");
@@ -139,7 +149,28 @@ export default function SkillPage({
               </p>
             )}
           </div>
-          <div className="flex flex-col items-start sm:items-end gap-2">
+          <div className="flex flex-col items-start sm:items-end gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                if (onPlan) {
+                  toast.info(`${skill} is already in your plan.`);
+                  return;
+                }
+                plans.add({ title: `Master ${skill}`, skill });
+                toast.success(`Added "${skill}" to your plan`);
+              }}
+              disabled={onPlan}
+              className={`inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg text-sm font-medium transition-all ${
+                onPlan
+                  ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 ring-1 ring-emerald-500/30 cursor-default"
+                  : "bg-primary text-primary-foreground hover:opacity-90 shadow-sm shadow-primary/30 hover:-translate-y-0.5"
+              }`}
+              title={onPlan ? "Already on your plan" : "Add to weekly plan"}
+            >
+              {onPlan ? (<><Check className="h-3.5 w-3.5" /> On your plan</>)
+                      : (<><Plus className="h-3.5 w-3.5" /> Add to my plan</>)}
+            </button>
             <div className="text-xs text-muted-foreground">Your level</div>
             {ready && <ProficiencyControl value={level} onChange={(v) => set(skill, v)} />}
             {ready && <ProficiencyLabel value={level} />}
@@ -236,6 +267,9 @@ export default function SkillPage({
       {tab === "sketch" && <SkillSketch skill={skill} />}
       {tab === "voice" && <VoiceRecorder skill={skill} />}
 
+      {/* Milestones */}
+      <SkillMilestonesPanel skill={skill} />
+
       {/* Resources */}
       {resources.length > 0 && (
         <section>
@@ -287,6 +321,103 @@ export default function SkillPage({
         )}
       </section>
     </div>
+  );
+}
+
+function SkillMilestonesPanel({ skill }: { skill: string }) {
+  const ms = useSkillMilestones(skill);
+  const [adding, setAdding] = useState("");
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+  const pct = Math.round(ms.progress * 100);
+  const doneCount = ms.items.filter((m) => m.done).length;
+
+  return (
+    <section>
+      <div className="flex flex-wrap items-end justify-between gap-3 mb-3">
+        <div>
+          <h2 className="text-xs font-mono uppercase tracking-wider text-muted-foreground inline-flex items-center gap-2">
+            <ListChecks className="h-3.5 w-3.5" /> Milestones
+          </h2>
+          <p className="text-xs text-muted-foreground mt-1">Break {skill} into checkpoints. Tick them off as you go.</p>
+        </div>
+        <div className="flex items-center gap-3 min-w-[180px]">
+          <span className="text-xs tabular-nums text-muted-foreground shrink-0">{doneCount}/{ms.items.length}</span>
+          <Progress value={pct} className="h-1.5 w-32" />
+          <button
+            onClick={() => { if (confirm("Reset milestones to default checklist for this skill?")) ms.reset(); }}
+            className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground hover:text-foreground"
+            title="Reset to default"
+          >
+            reset
+          </button>
+        </div>
+      </div>
+
+      <Card><CardContent className="p-4 space-y-1.5">
+        {ms.items.length === 0 && (
+          <div className="text-xs text-muted-foreground py-2">No milestones yet. Add your first below.</div>
+        )}
+        {ms.items.map((m, i) => (
+          <div key={m.id} className="group flex items-start gap-3 px-2 py-1.5 rounded-md hover:bg-accent/40 transition-colors">
+            <button
+              onClick={() => ms.toggle(m.id)}
+              className={`mt-0.5 h-4.5 w-4.5 rounded border-2 grid place-items-center shrink-0 transition-colors ${
+                m.done ? "bg-emerald-500 border-emerald-500" : "border-foreground/30 hover:border-primary"
+              }`}
+              style={{ height: "1.125rem", width: "1.125rem" }}
+              aria-label={m.done ? "Mark not done" : "Mark done"}
+            >
+              {m.done && <Check className="h-3 w-3 text-white" strokeWidth={3} />}
+            </button>
+            <span className="font-mono text-[10px] text-muted-foreground mt-1 tabular-nums w-5 text-right shrink-0">{i + 1}.</span>
+            {editId === m.id ? (
+              <input
+                autoFocus
+                value={editText}
+                onChange={(e) => setEditText(e.target.value)}
+                onBlur={() => { if (editText.trim() && editText !== m.text) ms.updateText(m.id, editText.trim()); setEditId(null); }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                  if (e.key === "Escape") setEditId(null);
+                }}
+                className="flex-1 bg-transparent border-b border-primary text-sm focus:outline-none"
+              />
+            ) : (
+              <span
+                onClick={() => { if (!m.done) { setEditId(m.id); setEditText(m.text); } }}
+                className={`flex-1 text-sm cursor-text ${m.done ? "line-through text-muted-foreground" : ""}`}
+              >
+                {m.text}
+              </span>
+            )}
+            <button
+              onClick={() => ms.remove(m.id)}
+              className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-rose-500 shrink-0"
+              aria-label="Remove milestone"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))}
+
+        <div className="flex items-center gap-2 pt-2 mt-1 border-t border-foreground/8">
+          <Plus className="h-3.5 w-3.5 text-muted-foreground ml-2" />
+          <Input
+            value={adding}
+            onChange={(e) => setAdding(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && adding.trim()) { ms.add(adding); setAdding(""); }
+            }}
+            placeholder="Add a milestone — e.g. Built a real CRUD app"
+            className="flex-1 border-0 bg-transparent focus-visible:ring-0 px-0 text-sm h-8"
+          />
+          <Button size="sm" variant="ghost" disabled={!adding.trim()} onClick={() => { ms.add(adding); setAdding(""); }}>
+            Add
+          </Button>
+        </div>
+      </CardContent></Card>
+    </section>
   );
 }
 

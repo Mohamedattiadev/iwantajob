@@ -1,7 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { ExternalLink, Trash2 } from "lucide-react";
+import { Pagination } from "@/components/pagination";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,6 +23,8 @@ const STATUS_TONE: Record<Application["status"], string> = {
 
 export default function ApplyPage() {
   const { applications, isLoading, remove, setStatus } = useApplications();
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 12;
 
   const counts = applications.reduce<Record<string, number>>((acc, a) => {
     acc[a.status] = (acc[a.status] ?? 0) + 1;
@@ -52,8 +56,8 @@ export default function ApplyPage() {
           No applications yet. Head to <Link href="/jobs" className="text-primary hover:underline">Jobs</Link> and click "Apply" on any listing.
         </CardContent></Card>
       ) : (
-        <ul className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {applications.map((a) => (
+        <ul className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+          {applications.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map((a) => (
             <li key={a.id}>
               <Card
                 accentColor={
@@ -98,6 +102,16 @@ export default function ApplyPage() {
             </li>
           ))}
         </ul>
+      )}
+
+      {applications.length > 0 && (
+        <Pagination
+          page={page}
+          pageSize={PAGE_SIZE}
+          totalShown={applications.length}
+          total={applications.length}
+          onChange={(p) => { setPage(p); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+        />
       )}
     </div>
   );

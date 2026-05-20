@@ -56,6 +56,12 @@ class ApplyUpdate(BaseModel):
 
 class DrawingIn(BaseModel):
     data: dict[str, Any]
+
+
+class RewriteIn(BaseModel):
+    field: str
+    raw: str = ""
+    instruction: str = ""
 from sqlalchemy import func, select
 
 from .collectors import COLLECTORS, upsert_jobs
@@ -372,16 +378,30 @@ def create_app() -> FastAPI:
         return cv_mod.update_skill(body.skill, body.level)
 
     @app.get("/api/cv/markdown")
-    def api_cv_md(min_level: int = 3):
+    def api_cv_md(min_level: int = 3, template: str = "classic"):
+        # Markdown is the canonical lossless form — same for every template.
+        del template
         return PlainTextResponse(cv_mod.render_markdown(min_level=min_level))
 
     @app.get("/api/cv/html")
-    def api_cv_html(min_level: int = 3):
-        return HTMLResponse(cv_mod.render_html(min_level=min_level))
+    def api_cv_html(min_level: int = 3, template: str = "classic"):
+        return HTMLResponse(cv_mod.render_html(min_level=min_level, template=template))
+
+    @app.get("/api/cv/templates")
+    def api_cv_templates():
+        return {
+            "templates": [
+                {"id": "classic", "name": "Classic",  "desc": "Sans-serif. Clean section dividers. Safe default."},
+                {"id": "compact", "name": "Compact",  "desc": "Tighter spacing. Fits more on one page."},
+                {"id": "modern",  "name": "Modern",   "desc": "Inter font. Purple accents, gradient name."},
+                {"id": "elegant", "name": "Elegant",  "desc": "Georgia serif. Centered headings, small caps."},
+            ],
+            "default": "classic",
+        }
 
     @app.get("/api/cv/tex")
-    def api_cv_tex(min_level: int = 3):
-        return PlainTextResponse(latex_mod.render_tex(min_level=min_level))
+    def api_cv_tex(min_level: int = 3, template: str = "classic"):
+        return PlainTextResponse(latex_mod.render_tex(min_level=min_level, template=template))
 
     @app.get("/api/cv/pdf/available")
     def api_cv_pdf_available():
@@ -389,14 +409,16 @@ def create_app() -> FastAPI:
         return {"available": bool(shutil.which("pdflatex"))}
 
     @app.get("/api/cv/pdf")
-    def api_cv_pdf(min_level: int = 3):
-        tex = latex_mod.render_tex(min_level=min_level)
-        pdf = latex_mod.compile_pdf(tex)
-        if pdf is None:
+    def api_cv_pdf(min_level: int = 3, template: str = "classic"):
+        tex = latex_mod.render_tex(min_level=min_level, template=template)
+        result = latex_mod.compile_pdf(tex)
+        if result is None:
             raise HTTPException(503, detail="pdflatex not installed. Install texlive or use the .tex export.")
+        if isinstance(result, tuple):  # (None, error_log)
+            raise HTTPException(500, detail=f"pdflatex compile failed:\n{result[1][:2000]}")
         from fastapi.responses import Response
-        return Response(content=pdf, media_type="application/pdf",
-                        headers={"Content-Disposition": "inline; filename=cv.pdf"})
+        return Response(content=result, media_type="application/pdf",
+                        headers={"Content-Disposition": f"inline; filename=cv-{template}.pdf"})
 
     # -------- Applications (apply tracker / dedupe) --------
 
@@ -487,6 +509,10 @@ def create_app() -> FastAPI:
             "top_skills": counts.most_common(20),
         }
         return chat_mod.chat(msgs_dict, snapshot)
+
+    @app.post("/api/ai/rewrite")
+    def api_ai_rewrite(body: RewriteIn):
+        return chat_mod.rewrite(body.field, body.raw, body.instruction)
 
     # -------- Drawings --------
 

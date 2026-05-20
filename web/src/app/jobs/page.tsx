@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/collapsible";
 import { ScrapeButton } from "@/components/scrape-button";
 import { PageHeader } from "@/components/page-header";
+import { Pagination } from "@/components/pagination";
 import { fetcher, type JobsResponse } from "@/lib/api";
 import { useApplications } from "@/lib/applications";
 import { CheckCircle2 } from "lucide-react";
@@ -38,6 +39,8 @@ function JobsPageInner() {
   const [minScore, setMinScore] = useState(sp.get("min_score") ?? "50");
   const [skill, setSkill] = useState(sp.get("skill") ?? "all");
   const [showFilters, setShowFilters] = useState(false);
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 12;
 
   const params = new URLSearchParams();
   if (q) params.set("q", q);
@@ -54,6 +57,14 @@ function JobsPageInner() {
   );
 
   const { appliedIds, apply } = useApplications();
+
+  // Filter-setter wrappers that also reset to page 1
+  const withReset = <T,>(setter: (v: T) => void) => (v: T) => { setter(v); setPage(1); };
+  const setQ_ = withReset(setQ);
+  const setSource_ = withReset(setSource);
+  const setSeniority_ = withReset(setSeniority);
+  const setMinScore_ = withReset(setMinScore);
+  const setSkill_ = withReset(setSkill);
 
   const reset = () => {
     setQ("");
@@ -86,7 +97,7 @@ function JobsPageInner() {
           <Search className="absolute left-3.5 top-3.5 h-4 w-4 text-muted-foreground" />
           <Input
             value={q}
-            onChange={(e) => setQ(e.target.value)}
+            onChange={(e) => setQ_(e.target.value)}
             placeholder="Search title, company, description..."
             className="pl-10 h-12 text-base"
           />
@@ -116,7 +127,7 @@ function JobsPageInner() {
             <Card><CardContent className="p-4 grid grid-cols-1 md:grid-cols-4 gap-3">
               <div>
                 <label className="text-xs text-muted-foreground mb-1.5 block">Source</label>
-                <Select value={source} onValueChange={(v) => setSource(v ?? "all")}>
+                <Select value={source} onValueChange={(v) => setSource_(v ?? "all")}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All sources</SelectItem>
@@ -128,7 +139,7 @@ function JobsPageInner() {
               </div>
               <div>
                 <label className="text-xs text-muted-foreground mb-1.5 block">Seniority</label>
-                <Select value={seniority} onValueChange={(v) => setSeniority(v ?? "junior_or_unknown")}>
+                <Select value={seniority} onValueChange={(v) => setSeniority_(v ?? "junior_or_unknown")}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="junior_or_unknown">Junior / intern / unknown</SelectItem>
@@ -147,12 +158,12 @@ function JobsPageInner() {
                   min={0}
                   max={100}
                   value={minScore}
-                  onChange={(e) => setMinScore(e.target.value)}
+                  onChange={(e) => setMinScore_(e.target.value)}
                 />
               </div>
               <div>
                 <label className="text-xs text-muted-foreground mb-1.5 block">Skill</label>
-                <Select value={skill} onValueChange={(v) => setSkill(v ?? "all")}>
+                <Select value={skill} onValueChange={(v) => setSkill_(v ?? "all")}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent className="max-h-80">
                     <SelectItem value="all">Any skill</SelectItem>
@@ -177,8 +188,8 @@ function JobsPageInner() {
       ) : data?.items.length === 0 ? (
         <div className="py-16 text-center text-sm text-muted-foreground">No matches. Try resetting filters.</div>
       ) : (
-        <ul className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {(data?.items ?? []).map((j) => {
+        <ul className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+          {(data?.items ?? []).slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map((j) => {
             const isApplied = appliedIds.has(j.id);
             return (
             <li key={j.id}>
@@ -213,7 +224,7 @@ function JobsPageInner() {
                           <button
                             key={sk.skill}
                             type="button"
-                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); setSkill(sk.skill); }}
+                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); setSkill_(sk.skill); }}
                             className="px-2 py-0.5 rounded text-[10px] bg-foreground/5 text-muted-foreground hover:bg-foreground/10 hover:text-foreground transition-colors"
                           >
                             {sk.skill}
@@ -258,9 +269,13 @@ function JobsPageInner() {
       )}
 
       {data && data.items.length > 0 && (
-        <div className="text-center text-xs text-muted-foreground pt-2">
-          Showing {data.items.length} of {data.total}
-        </div>
+        <Pagination
+          page={page}
+          pageSize={PAGE_SIZE}
+          totalShown={data.items.length}
+          total={data.total}
+          onChange={(p) => { setPage(p); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+        />
       )}
     </div>
   );

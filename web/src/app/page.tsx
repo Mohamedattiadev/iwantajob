@@ -66,7 +66,7 @@ export default function Home() {
       />
 
       {/* Stat strip — compact key numbers */}
-      <section className="anim-in border-y border-foreground/10 py-5 flex flex-wrap gap-x-10 gap-y-3">
+      <section className="anim-in border-y border-foreground/10 py-5 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-6 text-center sm:text-left">
         <Stat label="jobs"        value={stats.data?.total} />
         <Stat label="real"        value={stats.data?.real} accent="emerald" />
         <Stat label="ready ≥70%"  value={readyJobs.length} accent="indigo" />
@@ -106,7 +106,7 @@ export default function Home() {
             href="/learn"
             cta={skillsRated ? `Continue (${skillsRated})` : "Start rating"}
             glow="violet"
-            className="lg:col-span-2"
+            className="lg:col-span-3"
           />
           <FeatureCard
             n="04" icon={<Send className="h-5 w-5" />}
@@ -114,7 +114,7 @@ export default function Home() {
             desc={apps.data?.length ? `${apps.data.length} tracked. Auto-dedupe.` : "One click apply. Never twice."}
             href="/apply" cta="View pipeline"
             glow="amber"
-            className="lg:col-span-2"
+            className="lg:col-span-3"
           />
           <FeatureCard
             n="05" icon={<Pencil className="h-5 w-5" />}

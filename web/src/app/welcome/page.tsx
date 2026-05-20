@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Upload, Sparkles, CheckCircle2 } from "lucide-react";
+import { ArrowRight, ArrowLeft, Upload, Sparkles, CheckCircle2, User, Target as TargetIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,6 +10,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { API, type Profile } from "@/lib/api";
+
+function blankProfile(): Profile {
+  return {
+    personal: { name: "", email: "", phone: "", location: "", links: {}, summary: "" },
+    education: [], experience: [], projects: [],
+    skills: {}, languages: [], certifications: [],
+  };
+}
 import { useOnboarded } from "@/lib/onboarding";
 import { Aurora, Gradient } from "@/components/eye-candy";
 
@@ -23,11 +31,34 @@ export default function Welcome() {
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // Step 1
+  const [name, setName] = useState("");
+
   // Step 2 answers
   const [goal, setGoal] = useState("");
   const [target, setTarget] = useState("");
   const [stack, setStack] = useState("");
   const [constraint, setConstraint] = useState("");
+
+  const persistName = async (override?: Profile): Promise<Profile | null> => {
+    const trimmed = name.trim();
+    if (!trimmed) return override ?? profile;
+    const base: Profile = override ?? profile ?? blankProfile();
+    if ((base.personal?.name || "").trim() === trimmed) return base;
+    const patched: Profile = {
+      ...base,
+      personal: { ...base.personal, name: trimmed },
+    };
+    try {
+      await fetch(`${API}/api/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: patched }),
+      });
+    } catch { /* silent — non-fatal */ }
+    setProfile(patched);
+    return patched;
+  };
 
   const upload = async (file: File) => {
     setUploading(true);
@@ -37,7 +68,14 @@ export default function Welcome() {
       const r = await fetch(`${API}/api/cv/upload`, { method: "POST", body: form });
       if (!r.ok) throw new Error(`${r.status}`);
       const body = (await r.json()) as { profile: Profile; meta: { skills_detected: number } };
-      setProfile(body.profile);
+      // Parsed name beats typed only if user left field empty
+      if (!name.trim() && body.profile.personal?.name) setName(body.profile.personal.name);
+      // Otherwise keep user-typed name (don't let parser clobber it)
+      const merged: Profile = name.trim()
+        ? { ...body.profile, personal: { ...body.profile.personal, name: name.trim() } }
+        : body.profile;
+      setProfile(merged);
+      await persistName(merged);
       toast.success(`Parsed: ${body.meta.skills_detected} skills detected`);
       setStep(2);
     } catch (e) {
@@ -73,32 +111,47 @@ export default function Welcome() {
       <Aurora />
       <div className="w-full max-w-3xl space-y-10 anim-in">
         <div className="text-center">
-          <Badge variant="outline" className="mb-4 text-[10px] font-mono uppercase tracking-[0.14em]">welcome to IWANTAJOB</Badge>
+          <Badge variant="outline" className="mb-4 text-[10px] font-mono uppercase tracking-[0.14em]">welcome to W/ORK</Badge>
           <h1 className="font-serif text-5xl sm:text-7xl font-normal tracking-tight leading-[0.95] text-balance">
             Let&apos;s set up your <Gradient>launchpad</Gradient>.
           </h1>
           <p className="text-muted-foreground mt-3">Takes 2 minutes. Skip anytime.</p>
         </div>
 
-        <Steps current={step} />
+        <Steps current={step} onGoto={(s) => { if (s < step) setStep(s as Step); }} />
 
         {step === 0 && (
           <Card accentColor="violet" showAccentLine showCornerGlow><CardContent className="p-8 space-y-5">
             <Sparkles className="h-8 w-8 text-indigo-400" />
-            <h2 className="text-2xl font-semibold">Hi. I'll do 3 things for you.</h2>
+            <h2 className="text-2xl font-semibold">Hi. I&apos;ll do 3 things for you.</h2>
             <ul className="space-y-2 text-sm text-muted-foreground list-disc pl-5">
               <li>Read your existing CV and extract everything I can.</li>
               <li>Ask 4 short questions to know what you actually want.</li>
               <li>Match you against real junior jobs scraped from 6 sources, ghost-filtered.</li>
             </ul>
-            <Button onClick={() => setStep(1)} size="lg">Let's go <ArrowRight className="ml-2 h-4 w-4" /></Button>
+            <Button onClick={() => setStep(1)} size="lg">Let&apos;s go <ArrowRight className="ml-2 h-4 w-4" /></Button>
           </CardContent></Card>
         )}
 
         {step === 1 && (
           <Card accentColor="sky" showAccentLine showCornerGlow><CardContent className="p-8 space-y-5">
-            <h2 className="text-2xl font-semibold">Step 1 — Upload your CV</h2>
-            <p className="text-sm text-muted-foreground">PDF works best. I parse name, contact, GitHub, education, and detect skills automatically. You can edit anything afterwards.</p>
+            <h2 className="text-2xl font-semibold">Step 1 — What&apos;s your name?</h2>
+            <p className="text-sm text-muted-foreground">Used to greet you and seed your CV header. You can change it anytime.</p>
+
+            <Field label="Your name">
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Mohamed Attia"
+                autoFocus
+                className="h-12 text-base"
+                onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) fileRef.current?.click(); }}
+              />
+            </Field>
+
+            <div className="pt-2 border-t border-foreground/10" />
+            <h3 className="text-sm font-semibold">Bootstrap from existing CV (optional)</h3>
+            <p className="text-xs text-muted-foreground -mt-2">PDF works best. I parse contact, GitHub, education, and detect skills. Skip if you&apos;d rather fill manually.</p>
             <input
               ref={fileRef}
               type="file"
@@ -106,12 +159,25 @@ export default function Welcome() {
               onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
               className="hidden"
             />
-            <div className="flex gap-3">
-              <Button onClick={() => fileRef.current?.click()} disabled={uploading} size="lg">
-                <Upload className="mr-2 h-4 w-4" />
-                {uploading ? "Parsing..." : "Upload CV PDF"}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+              <Button variant="ghost" size="lg" onClick={() => setStep(0)}>
+                <ArrowLeft className="mr-2 h-4 w-4" /> Back
               </Button>
-              <Button variant="outline" onClick={() => setStep(2)}>Skip — fill manually</Button>
+              <div className="flex flex-wrap gap-3">
+                <Button onClick={() => fileRef.current?.click()} disabled={uploading || !name.trim()} size="lg" title={!name.trim() ? "Enter your name first" : ""}>
+                  <Upload className="mr-2 h-4 w-4" />
+                  {uploading ? "Parsing..." : "Upload CV PDF"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="lg"
+                  disabled={!name.trim()}
+                  onClick={async () => { await persistName(); setStep(2); }}
+                  title={!name.trim() ? "Enter your name first" : ""}
+                >
+                  Skip — fill manually <ArrowRight className="ml-2 h-4 w-4" />
+                </Button>
+              </div>
             </div>
           </CardContent></Card>
         )}
@@ -137,9 +203,14 @@ export default function Welcome() {
             <Field label="Any hard constraints?">
               <Input value={constraint} onChange={(e) => setConstraint(e.target.value)} placeholder="e.g. visa needed, still in school, must be remote" />
             </Field>
-            <div className="flex gap-3 pt-2">
-              <Button onClick={saveAnswers} size="lg">Save & continue <ArrowRight className="ml-2 h-4 w-4" /></Button>
-              <Button variant="outline" onClick={() => setStep(3)}>Skip</Button>
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+              <Button variant="ghost" size="lg" onClick={() => setStep(1)}>
+                <ArrowLeft className="mr-2 h-4 w-4" /> Back
+              </Button>
+              <div className="flex gap-3">
+                <Button onClick={saveAnswers} size="lg">Save &amp; continue <ArrowRight className="ml-2 h-4 w-4" /></Button>
+                <Button variant="outline" size="lg" onClick={() => setStep(3)}>Skip</Button>
+              </div>
             </div>
           </CardContent></Card>
         )}
@@ -147,7 +218,9 @@ export default function Welcome() {
         {step === 3 && (
           <Card accentColor="emerald" showAccentLine showCornerGlow><CardContent className="p-8 space-y-5">
             <CheckCircle2 className="h-10 w-10 text-emerald-500" />
-            <h2 className="text-2xl font-semibold">You're set.</h2>
+            <h2 className="text-2xl font-semibold">
+              {name.trim() ? `You're set, ${name.trim().split(" ")[0]}.` : "You're set."}
+            </h2>
             <p className="text-sm text-muted-foreground">Your launchpad has four areas:</p>
             <ul className="space-y-2 text-sm">
               <li><b>CV</b> — edit profile, generate ATS-clean Markdown / HTML / LaTeX PDF.</li>
@@ -156,7 +229,12 @@ export default function Welcome() {
               <li><b>Apply</b> — one click marks a job applied. Auto-dedupes.</li>
             </ul>
             <p className="text-xs text-muted-foreground">The chat bubble (bottom-right) answers any question about your dashboard data.</p>
-            <Button onClick={done} size="lg">Open dashboard <ArrowRight className="ml-2 h-4 w-4" /></Button>
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+              <Button variant="ghost" size="lg" onClick={() => setStep(2)}>
+                <ArrowLeft className="mr-2 h-4 w-4" /> Back
+              </Button>
+              <Button onClick={done} size="lg">Open dashboard <ArrowRight className="ml-2 h-4 w-4" /></Button>
+            </div>
           </CardContent></Card>
         )}
       </div>
@@ -164,23 +242,46 @@ export default function Welcome() {
   );
 }
 
-function Steps({ current }: { current: number }) {
-  const labels = ["Hi", "Upload CV", "Goals", "Done"];
+function Steps({ current, onGoto }: { current: number; onGoto?: (i: number) => void }) {
+  const items = [
+    { label: "Hi",        icon: <Sparkles className="h-3 w-3" /> },
+    { label: "Your name", icon: <User className="h-3 w-3" /> },
+    { label: "Goals",     icon: <TargetIcon className="h-3 w-3" /> },
+    { label: "Done",      icon: <CheckCircle2 className="h-3 w-3" /> },
+  ];
   return (
-    <div className="flex items-center justify-center gap-3">
-      {labels.map((l, i) => (
-        <div key={l} className="flex items-center gap-3">
-          <div className={`h-7 w-7 rounded-full grid place-items-center text-xs font-mono font-bold ${
-            i < current ? "bg-emerald-500 text-white" :
-            i === current ? "bg-foreground text-background" :
-            "bg-muted text-muted-foreground"
-          }`}>
-            {i < current ? "✓" : i}
+    <div className="flex items-center justify-center gap-2 sm:gap-3 flex-wrap">
+      {items.map((it, i) => {
+        const done = i < current;
+        const active = i === current;
+        const clickable = !!onGoto && i < current;
+        return (
+          <div key={it.label} className="flex items-center gap-2 sm:gap-3">
+            <button
+              type="button"
+              onClick={() => clickable && onGoto?.(i)}
+              disabled={!clickable}
+              className={`group inline-flex items-center gap-2 px-2.5 h-8 rounded-full transition-all ${
+                active ? "bg-foreground text-background shadow-md" :
+                done   ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/25" :
+                         "bg-muted text-muted-foreground"
+              } ${clickable ? "cursor-pointer" : "cursor-default"}`}
+              title={clickable ? `Back to: ${it.label}` : it.label}
+            >
+              <span className={`h-5 w-5 rounded-full grid place-items-center text-[10px] font-mono font-bold ${
+                active ? "bg-background/20" : done ? "bg-emerald-500 text-white" : "bg-foreground/10"
+              }`}>
+                {done ? "✓" : i}
+              </span>
+              <span className="text-xs font-medium hidden sm:inline">{it.label}</span>
+              <span className="sm:hidden">{it.icon}</span>
+            </button>
+            {i < items.length - 1 && (
+              <div className={`h-px w-6 sm:w-10 ${i < current ? "bg-emerald-500/50" : "bg-border"}`} />
+            )}
           </div>
-          <span className={`text-sm ${i === current ? "font-medium" : "text-muted-foreground"}`}>{l}</span>
-          {i < labels.length - 1 && <div className="h-px w-8 bg-border" />}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

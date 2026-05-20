@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .profile import load
+from .cv import _split_bullets, _validate_template
 
 LEVEL_LABEL = {
     1: "Familiar",
@@ -70,36 +71,87 @@ def _escape(s: str) -> str:
     return "".join(out)
 
 
-PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
-\usepackage[utf8]{inputenc}
+_BASE_PACKAGES = r"""\usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage{textcomp}
-\usepackage[a4paper, margin=0.55in]{geometry}
 \usepackage[hidelinks]{hyperref}
 \usepackage{titlesec}
 \usepackage{enumitem}
 \usepackage{xcolor}
 \usepackage{paracol}
+"""
+
+
+def _preamble(template: str) -> str:
+    """Return preamble + accent commands varying by template."""
+    if template == "compact":
+        return r"""\documentclass[9pt,a4paper]{extarticle}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.45in]{geometry}
+\definecolor{accent}{HTML}{222222}
+\definecolor{ruleclr}{HTML}{555555}
+\definecolor{muted}{HTML}{555555}
+\titleformat{\section}{\normalsize\bfseries\color{accent}}{}{0pt}{\MakeUppercase}[\vspace{-3pt}{\color{ruleclr}\titlerule[0.5pt]}]
+\titlespacing*{\section}{0pt}{6pt}{2pt}
+\setlist[itemize]{leftmargin=10pt,nosep,topsep=1pt,partopsep=0pt,itemsep=0.5pt,label=\textbullet}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{14pt}\setlength{\columnseprule}{0pt}
+\renewcommand{\baselinestretch}{1.02}
+\hypersetup{colorlinks=true,urlcolor=accent}
+\newcommand{\entryhead}[4]{\textbf{#1}\hfill\textbf{#2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{1pt}}
+"""
+    if template == "modern":
+        return r"""\documentclass[10pt,a4paper]{article}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.6in]{geometry}
+\definecolor{accent}{HTML}{6D28D9}
+\definecolor{ruleclr}{HTML}{6D28D9}
+\definecolor{muted}{HTML}{525866}
+\titleformat{\section}{\large\bfseries\color{accent}}{}{0pt}{\MakeUppercase}[\vspace{-4pt}{\color{ruleclr}\titlerule[1.4pt]}]
+\titlespacing*{\section}{0pt}{12pt}{6pt}
+\setlist[itemize]{leftmargin=14pt,nosep,topsep=2pt,partopsep=0pt,itemsep=2pt,label={\color{accent}\textbf{\textrightarrow}}}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{20pt}\setlength{\columnseprule}{0pt}
+\renewcommand{\baselinestretch}{1.18}
+\hypersetup{colorlinks=true,urlcolor=accent}
+\newcommand{\entryhead}[4]{\textbf{\color{accent}#1}\hfill\textbf{#2}\\\textit{\color{muted}#3}\hfill\textit{\color{muted}#4}\par\vspace{2pt}}
+"""
+    if template == "elegant":
+        return r"""\documentclass[11pt,a4paper]{article}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.7in]{geometry}
+\definecolor{accent}{HTML}{1A1A1A}
+\definecolor{ruleclr}{HTML}{1A1A1A}
+\definecolor{muted}{HTML}{555555}
+\titleformat{\section}{\centering\normalsize\scshape\color{accent}}{}{0pt}{}[\vspace{-2pt}\begin{center}\rule{40pt}{0.5pt}\end{center}\vspace{-6pt}]
+\titlespacing*{\section}{0pt}{14pt}{6pt}
+\setlist[itemize]{leftmargin=18pt,nosep,topsep=3pt,partopsep=0pt,itemsep=3pt,label=\textbullet}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{22pt}\setlength{\columnseprule}{0pt}
+\renewcommand{\baselinestretch}{1.25}
+\hypersetup{colorlinks=true,urlcolor=accent}
+\newcommand{\entryhead}[4]{\textbf{#1}\hfill\textbf{#2}\\\textit{\color{muted}#3}\hfill\textit{\color{muted}#4}\par\vspace{3pt}}
+"""
+    # classic (default)
+    return r"""\documentclass[10pt,a4paper]{article}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.55in]{geometry}
 \definecolor{accent}{HTML}{0F2A47}
 \definecolor{ruleclr}{HTML}{222222}
 \definecolor{muted}{HTML}{555555}
 \titleformat{\section}{\large\bfseries\color{accent}}{}{0pt}{\MakeUppercase}[\vspace{-4pt}{\color{ruleclr}\titlerule[0.9pt]}]
 \titlespacing*{\section}{0pt}{10pt}{4pt}
 \setlist[itemize]{leftmargin=12pt,nosep,topsep=2pt,partopsep=0pt,itemsep=2pt,label=\textbullet}
-\pagenumbering{gobble}
-\setlength{\parindent}{0pt}
-\setlength{\columnsep}{18pt}
-\setlength{\columnseprule}{0pt}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{18pt}\setlength{\columnseprule}{0pt}
 \renewcommand{\baselinestretch}{1.10}
 \hypersetup{colorlinks=true,urlcolor=accent}
 \newcommand{\entryhead}[4]{\textbf{#1}\hfill\textbf{#2}\\\textit{\color{muted}#3}\hfill\textit{\color{muted}#4}\par\vspace{2pt}}
 """
 
 
-def render_tex(profile: dict[str, Any] | None = None, min_level: int = 3) -> str:
+# Back-compat alias (used by tests/other modules).
+PREAMBLE = _preamble("classic")
+
+
+def render_tex(profile: dict[str, Any] | None = None, min_level: int = 3, template: str | None = None) -> str:
     p = profile or load()
     pers = p.get("personal", {})
     e = _escape
+    tpl = _validate_template(template)
+    preamble = _preamble(tpl)
 
     name = e(pers.get("name") or "Your Name")
     title_line = e(pers.get("headline") or pers.get("title") or "")
@@ -120,7 +172,7 @@ def render_tex(profile: dict[str, Any] | None = None, min_level: int = 3) -> str
         contact_bits.append(rf"\href{{{links['portfolio']}}}{{Portfolio}}")
     contact = r" \ \textbar\ ".join(contact_bits)
 
-    body: list[str] = [PREAMBLE, r"\begin{document}", ""]
+    body: list[str] = [preamble, r"\begin{document}", ""]
     # Header banner — full width
     body.append(r"\begin{center}")
     body.append(rf"{{\Huge\bfseries\color{{accent}} {name}}}\\[3pt]")
@@ -145,7 +197,17 @@ def render_tex(profile: dict[str, Any] | None = None, min_level: int = 3) -> str
             if isinstance(it, dict) and "raw" in it and not any(
                 it.get(k) for k in ("role", "company", "name", "school", "degree", "bullets")
             ):
-                out.append(rf"\textbullet\ {e(it['raw'])}\par")
+                header, bullets = _split_bullets(it.get("raw") or "")
+                if header:
+                    out.append(rf"\textbf{{{e(header)}}}\par\vspace{{1pt}}")
+                if bullets:
+                    out.append(r"\begin{itemize}")
+                    for b in bullets:
+                        out.append(rf"  \item {e(b)}")
+                    out.append(r"\end{itemize}")
+                if not header and not bullets:
+                    out.append(rf"\textbullet\ {e(it.get('raw',''))}\par")
+                out.append(r"\vspace{4pt}")
                 continue
             if isinstance(it, dict):
                 left = it.get("role") or it.get("name") or it.get("degree") or ""
@@ -248,14 +310,22 @@ def render_tex(profile: dict[str, Any] | None = None, min_level: int = 3) -> str
     return "\n".join(body)
 
 
-def compile_pdf(tex_source: str) -> bytes | None:
-    """Compile .tex → PDF bytes via pdflatex. Returns None if pdflatex missing."""
+def compile_pdf(tex_source: str) -> bytes | None | tuple[None, str]:
+    """Compile .tex → PDF bytes via pdflatex.
+
+    Returns:
+        - bytes on success
+        - None if pdflatex binary missing (server-side issue, not user error)
+        - (None, error_log) tuple if pdflatex ran but failed — log surfaces to client
+    """
     if not shutil.which("pdflatex"):
         return None
     with tempfile.TemporaryDirectory() as td:
         tdp = Path(td)
         tex_path = tdp / "cv.tex"
         tex_path.write_text(tex_source, encoding="utf-8")
+        last_stderr = b""
+        last_stdout = b""
         for _ in range(2):  # twice for references
             r = subprocess.run(
                 ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "cv.tex"],
@@ -263,9 +333,20 @@ def compile_pdf(tex_source: str) -> bytes | None:
                 capture_output=True,
                 timeout=60,
             )
+            last_stderr, last_stdout = r.stderr, r.stdout
             if r.returncode != 0:
-                return None
+                # Pull the error region from the .log if it exists.
+                log = tdp / "cv.log"
+                err = ""
+                if log.exists():
+                    txt = log.read_text(errors="replace")
+                    # Show lines after the first "!" (LaTeX error marker)
+                    idx = txt.find("\n!")
+                    err = txt[idx:idx + 2000] if idx != -1 else txt[-2000:]
+                if not err:
+                    err = (last_stderr or last_stdout).decode(errors="replace")[-2000:]
+                return (None, err)
         pdf = tdp / "cv.pdf"
         if pdf.exists():
             return pdf.read_bytes()
-    return None
+    return (None, "pdflatex finished but produced no PDF.")
