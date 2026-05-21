@@ -12,6 +12,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { API, fetcher } from "@/lib/api";
+import {
+  sceneFingerprint, patchFreedrawForPen, shouldApplyIncomingScene,
+  PEN_PROFILES, PEN_KEYS, type PenKey,
+} from "@/lib/sketch";
 import { Minimap } from "@/components/skill-sketch";
 import { useSketchGestures } from "@/components/sketch-gestures";
 import "@excalidraw/excalidraw/index.css";
@@ -44,21 +48,6 @@ type ExcalApi = {
   updateScene: (data: { elements?: unknown[]; appState?: Record<string, unknown> }) => void;
   setActiveTool?: (tool: { type: string; locked?: boolean }) => void;
 };
-
-// Hash of an element array tuned for cheap change-detection: total count +
-// id of the most-recently-touched element. Survives reorders we don't care
-// about, and stays stable when no edits happened.
-function sceneFingerprint(els: readonly unknown[]): string {
-  let count = 0;
-  let lastId = "";
-  for (const raw of els) {
-    const e = raw as { id?: string; isDeleted?: boolean; updated?: number; version?: number } | null;
-    if (!e || e.isDeleted) continue;
-    count++;
-    if (e.id) lastId = e.id;
-  }
-  return `${count}:${lastId}`;
-}
 
 export default function SharedSketchPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = use(params);
@@ -245,8 +234,10 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
           const api = excalRef.current;
           if (!api) return;
           // Skip apply while the local pen/finger is mid-stroke — applying
-          // updateScene during a drag jitters the active stroke.
-          if (Date.now() < localDrawingUntil.current) return;
+          // updateScene during a drag jitters the active stroke. The gate
+          // window is set by pointerdown/up only (NOT pointermove) — see
+          // the effect below for why.
+          if (!shouldApplyIncomingScene(Date.now(), localDrawingUntil.current)) return;
           (api.updateScene as (d: { elements?: unknown[] }) => void)({ elements: msg.elements });
           lastSeenFingerprint.current = sceneFingerprint(msg.elements);
         } catch {}
@@ -267,16 +258,28 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     };
   }, [editMode, slug]);
 
-  // Mark a small "actively drawing" window on every pointerdown so the
-  // incoming-scene apply skips that frame and we don't interrupt strokes.
+  // Suppress incoming WS scenes only while the local user is actively
+  // mid-stroke. `pointerdown` arms a long window (long enough for a slow
+  // stroke), `pointerup` collapses it to a tiny grace so our own
+  // outgoing broadcast lands before we accept anyone else's.
+  // CRITICAL: do NOT listen on `pointermove` — passive hover on a touch
+  // device fires it constantly and would permanently suppress incoming
+  // scenes, which is the bug that broke sync on the iPad.
   useEffect(() => {
     if (!editMode) return;
-    const bump = () => { localDrawingUntil.current = Date.now() + 400; };
-    window.addEventListener("pointerdown", bump, { passive: true });
-    window.addEventListener("pointermove", bump, { passive: true });
+    let active = 0;
+    const down = () => { active++; localDrawingUntil.current = Number.MAX_SAFE_INTEGER; };
+    const up = () => {
+      active = Math.max(0, active - 1);
+      if (active === 0) localDrawingUntil.current = Date.now() + 200;
+    };
+    window.addEventListener("pointerdown", down, { passive: true });
+    window.addEventListener("pointerup", up, { passive: true });
+    window.addEventListener("pointercancel", up, { passive: true });
     return () => {
-      window.removeEventListener("pointerdown", bump);
-      window.removeEventListener("pointermove", bump);
+      window.removeEventListener("pointerdown", down);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
     };
   }, [editMode]);
 
@@ -286,7 +289,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   // brush want the natural velocity/Pencil-pressure taper, which is the
   // freedraw default — so we leave those untouched. No `pressures` rewriting:
   // overwriting the captured pressures caused a visible "snap" on pointer-up.
-  const penRef = useRef<PenPreset["key"]>("ballpoint");
+  const penRef = useRef<PenKey>("ballpoint");
   const patchedIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!editMode || !penMode) return;
@@ -294,23 +297,12 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
       const api = excalRef.current;
       if (!api) return;
       const els = api.getSceneElements() as ReadonlyArray<Record<string, unknown>>;
-      let mutated = false;
-      const next = els.map((el) => {
-        if (el.type !== "freedraw") return el;
-        const id = el.id as string;
-        if (patchedIdsRef.current.has(id)) return el;
-        const pts = el.points as Array<[number, number]> | undefined;
-        if (!pts || pts.length < 2) return el;
-        patchedIdsRef.current.add(id);
-        const pen = penRef.current;
-        if (pen === "ballpoint" || pen === "highlighter") {
-          mutated = true;
-          return { ...el, simulatePressure: false };
-        }
-        return el;
-      });
+      const { elements, newlyPatched, mutated } = patchFreedrawForPen(
+        els, penRef.current, patchedIdsRef.current,
+      );
+      for (const id of newlyPatched) patchedIdsRef.current.add(id);
       if (mutated) {
-        try { (api.updateScene as (d: { elements?: unknown[] }) => void)({ elements: next }); } catch {}
+        try { (api.updateScene as (d: { elements?: unknown[] }) => void)({ elements: [...elements] }); } catch {}
       }
     };
     window.addEventListener("pointerup", onUp, { passive: true });
@@ -394,53 +386,99 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
 
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-background" style={{ touchAction: "none", WebkitUserSelect: "none", userSelect: "none" }}>
-      <header className={`flex items-center px-4 py-2 border-b border-border/50 bg-card/60 backdrop-blur shrink-0 ${penMode ? "justify-center gap-4" : "justify-between"}`}>
-        <div className="inline-flex items-center gap-3 min-w-0">
-          <Link href="/" className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
-            <ArrowLeft className="h-3.5 w-3.5" /> Home
-          </Link>
-          <span className="h-4 w-px bg-border/60" />
-          <button
-            type="button"
-            onClick={() => setPickerOpen(true)}
-            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-foreground/15 hover:bg-foreground/5 text-xs"
-            title="Switch notebook"
-          >
-            <BookOpen className="h-3.5 w-3.5" />
-            <span className="font-semibold truncate max-w-[24ch]">{displayName}</span>
-            <span className="opacity-50">▾</span>
-          </button>
-          <span className="hidden sm:inline-flex items-center gap-1.5 text-xs">
-            {editMode
-              ? <Pencil className="h-3.5 w-3.5 text-primary" />
-              : <Eye className="h-3.5 w-3.5 text-muted-foreground" />}
-            <span className="font-mono uppercase tracking-wider text-muted-foreground">
-              {editMode ? (penMode ? "iPad (pen)" : "Shared (editing)") : "Shared (read-only)"}
-            </span>
-          </span>
-        </div>
-        <div className="inline-flex items-center gap-2">
-          {editMode && (
+      <header className={`relative flex items-center px-4 py-2 border-b border-border/50 bg-card/60 backdrop-blur shrink-0 ${penMode ? "justify-center" : "justify-between"}`}>
+        {penMode ? (
+          // Tablet header — one flat row, every chip in the center cluster.
+          // Using a single flex with justify-center guarantees true horizontal
+          // centering regardless of how many chips render.
+          <div className="inline-flex items-center gap-3 min-w-0">
+            <Link href="/" className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
+              <ArrowLeft className="h-3.5 w-3.5" /> Home
+            </Link>
+            <span className="h-4 w-px bg-border/60" />
             <button
               type="button"
-              onClick={manualSave}
-              disabled={saving}
-              className="inline-flex items-center gap-1 rounded-md border border-foreground/15 px-2 py-1 text-[11px] hover:bg-foreground/5 disabled:opacity-50"
-              title="Force save now (Ctrl/Cmd+S)"
+              onClick={() => setPickerOpen(true)}
+              className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-foreground/15 hover:bg-foreground/5 text-xs"
+              title="Switch notebook"
             >
-              <Save className="h-3 w-3" />
-              <span>{saving ? "Saving…" : "Save"}</span>
+              <BookOpen className="h-3.5 w-3.5" />
+              <span className="font-semibold truncate max-w-[24ch]">{displayName}</span>
+              <span className="opacity-50">▾</span>
             </button>
-          )}
-          {editMode && savedTick && (
-            <span className="text-[10px] text-emerald-500 font-mono inline-flex items-center gap-1">
-              <CheckCircle2 className="h-3 w-3" /> saved
+            <span className="inline-flex items-center gap-1.5 text-xs">
+              <Pencil className="h-3.5 w-3.5 text-primary" />
+              <span className="font-mono uppercase tracking-wider text-muted-foreground">iPad (pen)</span>
             </span>
-          )}
-          {editMode && !savedTick && (
-            <span className="text-[10px] text-muted-foreground font-mono">auto-saves</span>
-          )}
-        </div>
+            <span className="h-4 w-px bg-border/60" />
+            {editMode && (
+              <button
+                type="button"
+                onClick={manualSave}
+                disabled={saving}
+                className="inline-flex items-center gap-1 rounded-md border border-foreground/15 px-2 py-1 text-[11px] hover:bg-foreground/5 disabled:opacity-50"
+                title="Force save now"
+              >
+                <Save className="h-3 w-3" />
+                <span>{saving ? "Saving…" : "Save"}</span>
+              </button>
+            )}
+            {editMode && savedTick && (
+              <span className="text-[10px] text-emerald-500 font-mono inline-flex items-center gap-1">
+                <CheckCircle2 className="h-3 w-3" /> saved
+              </span>
+            )}
+          </div>
+        ) : (
+          <>
+            <div className="inline-flex items-center gap-3 min-w-0">
+              <Link href="/" className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
+                <ArrowLeft className="h-3.5 w-3.5" /> Home
+              </Link>
+              <span className="h-4 w-px bg-border/60" />
+              <button
+                type="button"
+                onClick={() => setPickerOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-foreground/15 hover:bg-foreground/5 text-xs"
+                title="Switch notebook"
+              >
+                <BookOpen className="h-3.5 w-3.5" />
+                <span className="font-semibold truncate max-w-[24ch]">{displayName}</span>
+                <span className="opacity-50">▾</span>
+              </button>
+              <span className="hidden sm:inline-flex items-center gap-1.5 text-xs">
+                {editMode
+                  ? <Pencil className="h-3.5 w-3.5 text-primary" />
+                  : <Eye className="h-3.5 w-3.5 text-muted-foreground" />}
+                <span className="font-mono uppercase tracking-wider text-muted-foreground">
+                  {editMode ? "Shared (editing)" : "Shared (read-only)"}
+                </span>
+              </span>
+            </div>
+            <div className="inline-flex items-center gap-2">
+              {editMode && (
+                <button
+                  type="button"
+                  onClick={manualSave}
+                  disabled={saving}
+                  className="inline-flex items-center gap-1 rounded-md border border-foreground/15 px-2 py-1 text-[11px] hover:bg-foreground/5 disabled:opacity-50"
+                  title="Force save now (Ctrl/Cmd+S)"
+                >
+                  <Save className="h-3 w-3" />
+                  <span>{saving ? "Saving…" : "Save"}</span>
+                </button>
+              )}
+              {editMode && savedTick && (
+                <span className="text-[10px] text-emerald-500 font-mono inline-flex items-center gap-1">
+                  <CheckCircle2 className="h-3 w-3" /> saved
+                </span>
+              )}
+              {editMode && !savedTick && (
+                <span className="text-[10px] text-muted-foreground font-mono">auto-saves</span>
+              )}
+            </div>
+          </>
+        )}
       </header>
       <div className="flex-1 min-h-0 relative">
         <Excalidraw
@@ -470,6 +508,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
         {editMode && (
           <Minimap
             size="lg"
+            defaultCorner={penMode ? "tr" : "br"}
             elements={miniData.els}
             appState={miniData.app}
             open={miniOpen}
@@ -510,7 +549,9 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
         {editMode && penMode && <GestureLayer getApi={() => excalRef.current} />}
         {editMode && !penMode && <ThicknessSlider getApi={() => excalRef.current} />}
         {editMode && (
-          <div className="absolute top-2 right-3 z-[65] inline-flex items-center gap-2">
+          // On tablet the top-right is now owned by the minimap; park the
+          // live/pen badges bottom-left so they never collide.
+          <div className={`absolute z-[65] inline-flex items-center gap-2 ${penMode ? "bottom-2 left-3" : "top-2 right-3"}`}>
             {penMode && (
               <span className="px-2 py-1 rounded-md bg-violet-500/15 border border-violet-500/40 text-violet-300 text-[10px] font-mono uppercase tracking-wider inline-flex items-center gap-1">
                 <Pencil className="h-3 w-3" /> pen mode
@@ -550,7 +591,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
 //   roughness 2 = sketchy (brush)
 //   opacity drops for highlighter to look translucent
 type PenPreset = {
-  key: "ballpoint" | "fountain" | "brush" | "highlighter";
+  key: PenKey;
   label: string;
   icon: React.ReactNode;
   width: number;
@@ -558,19 +599,24 @@ type PenPreset = {
   opacity: number;
   defaultColor?: string;
 };
-// Pen presets exaggerated so each one is clearly visibly different from
-// the others on the canvas. Excalidraw doesn't ship true fountain/brush
-// engines, so we lean on width + roughness + opacity to fake the look.
-const PEN_PRESETS: PenPreset[] = [
-  // ballpoint  — thin uniform line (no taper, post-patched to simulatePressure=false)
-  // fountain   — medium with natural velocity/Pencil-pressure taper
-  // brush      — thick, slightly translucent, taper kept
-  // highlighter — very thick, flat (no taper), translucent yellow
-  { key: "ballpoint",  label: "Ballpoint",   icon: <PenTool size={16} />,    width: 1.5, roughness: 0, opacity: 100 },
-  { key: "fountain",   label: "Fountain",    icon: <Feather size={16} />,    width: 4,   roughness: 0, opacity: 100 },
-  { key: "brush",      label: "Brush",       icon: <Brush size={16} />,      width: 12,  roughness: 0, opacity: 80 },
-  { key: "highlighter",label: "Highlighter", icon: <Highlighter size={16} />,width: 28,  roughness: 0, opacity: 28, defaultColor: "#fbbf24" },
-];
+// UI-side presets — pull numeric profile from the shared lib (so tests
+// stay in sync with what the pad actually applies) and decorate with the
+// icon + label that only belong in the UI.
+const PEN_PRESET_META: Record<PenKey, { label: string; icon: React.ReactNode }> = {
+  ballpoint:   { label: "Ballpoint",   icon: <PenTool size={16} /> },
+  fountain:    { label: "Fountain",    icon: <Feather size={16} /> },
+  brush:       { label: "Brush",       icon: <Brush size={16} /> },
+  highlighter: { label: "Highlighter", icon: <Highlighter size={16} /> },
+};
+const PEN_PRESETS: PenPreset[] = PEN_KEYS.map((key) => ({
+  key,
+  label: PEN_PRESET_META[key].label,
+  icon: PEN_PRESET_META[key].icon,
+  width: PEN_PROFILES[key].width,
+  roughness: PEN_PROFILES[key].roughness,
+  opacity: PEN_PROFILES[key].opacity,
+  defaultColor: PEN_PROFILES[key].defaultColor,
+}));
 
 // iPad-native control rail — pen variants + tool + colors + custom width.
 function IpadCtrlRail({ getApi, onToggleReadMode, readMode, onPenChange }: {

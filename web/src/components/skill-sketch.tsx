@@ -20,6 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { API, fetcher } from "@/lib/api";
 import useSWR from "swr";
 import { TEMPLATES, TEMPLATE_META, type TemplateKey } from "@/lib/sketch-templates";
+import { pickMinimapCornerStyle } from "@/lib/sketch";
 import "@excalidraw/excalidraw/index.css";
 
 type AiStyle = "flowchart" | "mindmap" | "tree" | "sequence" | "comparison" | "matrix" | "swimlane" | "venn" | "freeform";
@@ -1345,7 +1346,7 @@ function ExcalDropdownItem({ icon, label, hint, onClick }: { icon: React.ReactNo
 }
 
 export function Minimap({
-  elements, appState, open, onToggle, onNavigate, size = "sm",
+  elements, appState, open, onToggle, onNavigate, size = "sm", defaultCorner = "br",
 }: {
   elements: readonly unknown[];
   appState: Record<string, unknown>;
@@ -1353,6 +1354,7 @@ export function Minimap({
   onToggle: () => void;
   onNavigate: (worldX: number, worldY: number) => void;
   size?: "sm" | "lg";
+  defaultCorner?: "tl" | "tr" | "bl" | "br";
 }) {
   const W = size === "lg" ? 320 : 220;
   const H = size === "lg" ? 220 : 150;
@@ -1436,7 +1438,7 @@ export function Minimap({
 
   const style: React.CSSProperties = pos
     ? { position: "absolute", left: pos.left, top: pos.top, zIndex: 4 }
-    : { position: "absolute", bottom: 12, right: 12, zIndex: 4 };
+    : { position: "absolute", ...pickMinimapCornerStyle(defaultCorner), zIndex: 4 };
 
   return (
     <div ref={rootRef} className="excal-minimap select-none" style={style}>
