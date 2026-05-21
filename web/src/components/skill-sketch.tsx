@@ -19,7 +19,7 @@ import NextLink from "next/link";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
-import { API, fetcher } from "@/lib/api";
+import { API, fetcher, primeEtag } from "@/lib/api";
 import useSWR from "swr";
 import { TEMPLATES, TEMPLATE_META, type TemplateKey } from "@/lib/sketch-templates";
 import { pickMinimapCornerStyle, shouldApplyIncomingScene, computeFitAllAppState } from "@/lib/sketch";
@@ -383,7 +383,14 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     // 500 ms, and calling mutate from save was reigniting the
     // save → refetch → apply → onChange feedback loop that React
     // caught as "Maximum update depth exceeded".
-    if (r.ok) { setSaved(true); setTimeout(() => setSaved(false), 1500); }
+    if (r.ok) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+      // Preempt next-poll ETag miss. Backend echoes the freshly-saved
+      // doc's ETag; cache it so the imminent SWR poll returns 304.
+      const newEtag = r.headers.get("etag");
+      if (newEtag) primeEtag(`/api/drawings/${slug}`, newEtag, (payload as { elements?: unknown[] }));
+    }
   }, [skill, slug]);
 
   // Manual save: bypass the debounce + dedupe and force-flush the live scene.
@@ -412,6 +419,8 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       last.current = body;
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
+      const newEtag = r.headers.get("etag");
+      if (newEtag) primeEtag(`/api/drawings/${slug}`, newEtag, JSON.parse(body).data);
       toast.success("Saved");
     } catch (e) {
       toast.error("Save failed", { description: String(e) });

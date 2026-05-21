@@ -10,6 +10,7 @@ from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
 from pydantic import BaseModel
 from typing import Any
@@ -168,6 +169,10 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # gzip every response >= 500 B. The /api/drawings/{slug} ETag-miss
+    # path returns 250+ KB of JSON; gzipping drops that to ~25 KB
+    # without touching the client (browsers decode automatically).
+    app.add_middleware(GZipMiddleware, minimum_size=500)
 
     # ── LAN auth token ───────────────────────────────────────────────────
     # If SKETCH_AUTH_TOKEN is set in the environment, every request to a
@@ -1280,8 +1285,21 @@ Return STRICT JSON only — no prose, no markdown — in this exact shape:
 
     @app.put("/api/drawings/{name}")
     def api_drawing_put(name: str, body: DrawingIn):
+        import hashlib
+        import json as _json
         drawings_mod.save(name, body.data)
-        return {"ok": True}
+        # Echo the ETag of the freshly-stored doc so the saver can seed
+        # its local cache. Eliminates the inevitable next-poll ETag
+        # miss + 25 KB full body that would otherwise fire 0–500 ms
+        # after every PUT.
+        merged = drawings_mod.load(name) or {}
+        payload = _json.dumps(merged, sort_keys=True, separators=(",", ":")).encode()
+        etag = '"' + hashlib.sha1(payload).hexdigest() + '"'
+        return Response(
+            content=_json.dumps({"ok": True}),
+            media_type="application/json",
+            headers={"ETag": etag},
+        )
 
     @app.delete("/api/drawings/{name}", status_code=204)
     def api_drawing_delete(name: str):

@@ -11,7 +11,7 @@ import {
   PenTool, Highlighter, Brush, Feather, Palette,
 } from "lucide-react";
 import { toast } from "sonner";
-import { API, fetcher } from "@/lib/api";
+import { API, fetcher, primeEtag } from "@/lib/api";
 import { authHeaders, readSketchToken } from "@/lib/auth";
 import {
   sceneFingerprint, patchFreedrawForPen, shouldApplyIncomingScene,
@@ -228,7 +228,13 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     const r = await fetch(`${API}/api/drawings/${encodeURIComponent(slug)}`, {
       method: "PUT", headers: { "Content-Type": "application/json", ...authHeaders() }, body,
     });
-    if (r.ok) { setSavedTick(true); setTimeout(() => setSavedTick(false), 1200); mutate(); }
+    if (r.ok) {
+      setSavedTick(true);
+      setTimeout(() => setSavedTick(false), 1200);
+      const newEtag = r.headers.get("etag");
+      if (newEtag) primeEtag(`/api/drawings/${encodeURIComponent(slug)}`, newEtag, payload);
+      mutate();
+    }
   }, [data?.title, mutate, slug]);
 
   const manualSave = async () => {
@@ -253,6 +259,8 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
       lastBody.current = body;
       setSavedTick(true);
       setTimeout(() => setSavedTick(false), 1200);
+      const newEtag = r.headers.get("etag");
+      if (newEtag) primeEtag(`/api/drawings/${encodeURIComponent(slug)}`, newEtag, JSON.parse(body).data);
       mutate();
       toast.success("Saved");
     } catch (e) {

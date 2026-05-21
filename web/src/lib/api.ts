@@ -20,6 +20,18 @@ export const API = resolveApi();
 // the cached body on 304. Cuts /api/drawings poll bandwidth ~20x.
 const etagCache = new Map<string, { etag: string; body: unknown }>();
 
+// Let any module seed an ETag for a URL — used by `save()` after a PUT
+// to preempt the inevitable post-save ETag-miss GET on the same key.
+// `body` here is whatever the local code committed; doesn't have to
+// match the server's canonical bytes exactly because the next fetcher
+// call will still go to the network with `If-None-Match`. If the
+// server's ETag matches we get 304 and return this body; if not, we
+// receive a fresh 200 with the new body. Either way, no torn state.
+export function primeEtag(url: string, etag: string, body: unknown) {
+  if (!etag) return;
+  etagCache.set(url, { etag, body });
+}
+
 export const fetcher = async <T = unknown>(url: string): Promise<T> => {
   const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
   const t = ctrl ? setTimeout(() => ctrl.abort(), 8000) : null;
