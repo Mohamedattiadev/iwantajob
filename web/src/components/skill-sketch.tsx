@@ -365,6 +365,17 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     return () => window.removeEventListener("keydown", onKey);
   }, [manualSave]);
 
+  // Excalidraw's official collab pattern (lifted from
+  // excalidraw-app/collab/Collab.tsx). One counter is shared between
+  // outgoing broadcasts and incoming applies: we only emit when the
+  // local scene version exceeds it, and we set it to the reconciled
+  // version on every remote apply. That is the single source of truth
+  // for "did anything actually change?" and replaces our home-grown
+  // fingerprint + lastEditAt + applyingRemoteUntil heuristics.
+  const excalModRef = useRef<ExcalMod | null>(null);
+  useEffect(() => { excalModRef.current = excalMod; }, [excalMod]);
+  const lastBroadcastedOrReceivedSceneVersion = useRef(-1);
+
   const miniThrottle = useRef(0);
   const lastEditAt = useRef(0);
   const lastSeenFingerprint = useRef("");
@@ -439,29 +450,26 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     // Excalidraw — otherwise the empty onChange that fires right before
     // `appliedFor` flips can race the apply and overwrite the doc.
     if (appliedFor.current !== slug) return;
-    // Inline fingerprint (count + last visible id) so iPad pulls cleanly.
-    let cnt = 0; let lid = "";
-    for (const raw of elements) {
-      const e = raw as { id?: string; isDeleted?: boolean } | null;
-      if (!e || e.isDeleted) continue;
-      cnt++;
-      if (e.id) lid = e.id;
-    }
-    const fp = `${cnt}:${lid}`;
-    // Echo suppression: only skip when this onChange's fingerprint matches
-    // the scene we just applied from the remote. If the local user added a
-    // stroke, fingerprint differs and we broadcast — fixes the bug where a
-    // burst of incoming strokes kept extending the time window and locked
-    // out simultaneous local edits.
-    if (Date.now() < applyingRemoteUntil.current && fp === lastSeenFingerprint.current) {
-      const now0 = Date.now();
-      if (now0 - miniThrottle.current > 280) {
-        miniThrottle.current = now0;
-        setMiniData({ els: elements, app: appState as Record<string, unknown> });
+    // Excalidraw's collab gate: only broadcast when the scene version
+    // has actually advanced past what we last sent or received.
+    // Echo from `updateScene({...captureUpdate: NEVER})` lands here
+    // but with the same version we set on apply → return immediately.
+    // Local mutation increments element.version → scene version
+    // grows → we broadcast. Same counter for both directions = no
+    // timing windows, no fingerprint heuristics.
+    const mod = excalModRef.current;
+    if (mod) {
+      const sceneVersion = mod.getSceneVersion(elements as never);
+      if (sceneVersion <= lastBroadcastedOrReceivedSceneVersion.current) {
+        const now0 = Date.now();
+        if (now0 - miniThrottle.current > 280) {
+          miniThrottle.current = now0;
+          setMiniData({ els: elements, app: appState as Record<string, unknown> });
+        }
+        return;
       }
-      return;
+      lastBroadcastedOrReceivedSceneVersion.current = sceneVersion;
     }
-    lastSeenFingerprint.current = fp;
     lastEditAt.current = Date.now();
     if (t.current) clearTimeout(t.current);
     // Both sides autosave now — backend reconciles elements by (id, version)
@@ -547,16 +555,28 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
             if (!next) return;
             const a = excalRef.current;
             if (!a) return;
-            applyingRemoteUntil.current = Date.now() + 80;
-            try { (a.updateScene as unknown as (d: { elements?: unknown[] }) => void)({ elements: next }); } catch {}
-            let cnt = 0; let lid = "";
-            for (const raw of next) {
-              const e = raw as { id?: string; isDeleted?: boolean } | null;
-              if (!e || e.isDeleted) continue;
-              cnt++;
-              if (e.id) lid = e.id;
-            }
-            lastSeenFingerprint.current = `${cnt}:${lid}`;
+            const mod = excalModRef.current;
+            // Reconcile remote against local using Excalidraw's own
+            // function (higher version wins, lower versionNonce
+            // tiebreak). Apply with `captureUpdate: NEVER` so the
+            // remote update doesn't land on undo stack and so it
+            // doesn't echo back into our local onChange as a "real"
+            // edit. Bump the shared scene-version counter so the
+            // resulting onChange short-circuits.
+            try {
+              if (mod) {
+                const local = a.getSceneElements() as never;
+                const appState = a.getAppState() as never;
+                const reconciled = mod.reconcileElements(local, next as never, appState);
+                (a.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
+                  elements: reconciled as unknown as unknown[],
+                  captureUpdate: mod.CaptureUpdateAction.NEVER,
+                });
+                lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
+              } else {
+                (a.updateScene as unknown as (d: { elements?: unknown[] }) => void)({ elements: next });
+              }
+            } catch {}
           });
         } catch {}
       };

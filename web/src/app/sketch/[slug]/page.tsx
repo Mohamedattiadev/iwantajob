@@ -43,8 +43,15 @@ function deriveLabel(ua?: string): string {
   return browser ? `${device} · ${browser}` : device;
 }
 
+type ExcalMod = typeof import("@excalidraw/excalidraw");
+let excalModPromise: Promise<ExcalMod> | null = null;
+function loadExcal(): Promise<ExcalMod> {
+  if (!excalModPromise) excalModPromise = import("@excalidraw/excalidraw");
+  return excalModPromise;
+}
+
 const Excalidraw = dynamic(
-  async () => (await import("@excalidraw/excalidraw")).Excalidraw,
+  async () => (await loadExcal()).Excalidraw,
   {
     ssr: false,
     loading: () => (
@@ -107,6 +114,14 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   }, [data, editMode, penMode]);
 
   const excalRef = useRef<ExcalApi | null>(null);
+  // Excalidraw module — loaded lazily for `reconcileElements`,
+  // `getSceneVersion`, and `CaptureUpdateAction` (the official collab
+  // primitives we now use instead of timing heuristics).
+  const [excalMod, setExcalMod] = useState<ExcalMod | null>(null);
+  const excalModRef = useRef<ExcalMod | null>(null);
+  useEffect(() => { loadExcal().then(setExcalMod).catch(() => {}); }, []);
+  useEffect(() => { excalModRef.current = excalMod; }, [excalMod]);
+  const lastBroadcastedOrReceivedSceneVersion = useRef(-1);
   const lastBody = useRef("");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -311,16 +326,20 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     // fires it on mount) would PUT empty elements and wipe the drawing on
     // every reload.
     if (appliedFor.current !== slug) return;
-    // Echo suppression — only skip when this onChange's fingerprint equals
-    // the scene we just applied from the remote. Local edits change the
-    // fingerprint and broadcast normally, even while a burst of remote
-    // updates is still arriving (was the simultaneous-edit deadlock).
-    const fp = sceneFingerprint(elements);
-    if (Date.now() < applyingRemoteUntil.current && fp === lastSeenFingerprint.current) {
-      return;
+    // Excalidraw's collab gate (see Collab.tsx in the official repo):
+    // single counter shared between sends and receives. Scene version
+    // sums every element.version, so any genuine local edit advances
+    // it. Echo from `updateScene({...captureUpdate: NEVER})` lands
+    // with the version we set on apply → returns here, no broadcast.
+    const mod = excalModRef.current;
+    if (mod) {
+      const sceneVersion = mod.getSceneVersion(elements as never);
+      if (sceneVersion <= lastBroadcastedOrReceivedSceneVersion.current) {
+        return;
+      }
+      lastBroadcastedOrReceivedSceneVersion.current = sceneVersion;
     }
     lastEditAt.current = Date.now();
-    lastSeenFingerprint.current = fp;
     const tnow = Date.now();
     if (tnow - miniThrottle.current > 120) {
       miniThrottle.current = tnow;
@@ -403,9 +422,21 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
             if (!next) return;
             const a = excalRef.current;
             if (!a) return;
-            applyingRemoteUntil.current = Date.now() + 80;
-            try { (a.updateScene as (d: { elements?: unknown[] }) => void)({ elements: next }); } catch {}
-            lastSeenFingerprint.current = sceneFingerprint(next);
+            const mod = excalModRef.current;
+            try {
+              if (mod) {
+                const local = a.getSceneElements() as never;
+                const appState = a.getAppState() as never;
+                const reconciled = mod.reconcileElements(local, next as never, appState);
+                (a.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
+                  elements: reconciled as unknown as unknown[],
+                  captureUpdate: mod.CaptureUpdateAction.NEVER,
+                });
+                lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
+              } else {
+                (a.updateScene as (d: { elements?: unknown[] }) => void)({ elements: next });
+              }
+            } catch {}
           });
         } catch {}
       };
