@@ -150,6 +150,21 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   // Reset the applied flag when slug changes so the next data arrival
   // re-applies for the new notebook.
   useEffect(() => { appliedFor.current = ""; lastBody.current = ""; }, [slug]);
+
+  // Pen-mode boot: when iPad opens via QR (`?pen=1&mode=edit`), turn
+  // on penMode + select freedraw so Apple Pencil writes immediately.
+  // Runs once the Excalidraw API is mounted (no `setTimeout` race).
+  useEffect(() => {
+    if (!excalReady || !penMode || !editMode) return;
+    const api = excalRef.current;
+    if (!api) return;
+    try {
+      api.updateScene({
+        appState: { penMode: true, penDetected: true, currentItemStrokeWidth: 2 },
+      });
+      api.setActiveTool?.({ type: "freedraw" });
+    } catch {}
+  }, [excalReady, penMode, editMode]);
   const [savedTick, setSavedTick] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -210,6 +225,16 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   // window closes (trailing-edge). Without this, the receiver sees a stale
   // mid-stroke scene whenever the stroke ends inside a throttle gap.
   const pendingSend = useRef<{ elements: readonly unknown[]; bg?: string } | null>(null);
+  // Per-tab random senderId + monotonically increasing seq so peers
+  // can drop their own loopbacks and out-of-order frames
+  // deterministically, independent of timing heuristics.
+  const senderId = useRef<string>(
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2),
+  );
+  const seqRef = useRef(0);
+  const lastSeqBySender = useRef<Map<string, number>>(new Map());
   const trailingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // rAF handle for batching incoming-scene applies to one per frame, so
   // bursty incoming messages don't trigger N synchronous React renders.
@@ -269,6 +294,8 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
         elements: p.elements,
         appState: { viewBackgroundColor: p.bg },
         ts: Date.now(),
+        senderId: senderId.current,
+        seq: ++seqRef.current,
       }));
     } catch {}
   }, []);
@@ -303,20 +330,19 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     saveTimer.current = setTimeout(() => {
       save({ elements: [...elements], appState: appState as Record<string, unknown>, files });
     }, 1500);
-    // Realtime broadcast — leading-edge 33ms (~30 msg/s) with trailing
-    // flush so the final mid-stroke / end-of-stroke frame always lands
-    // even if it falls inside a throttle gap. 33ms matches the laptop
-    // sender — asymmetric throttles (tablet 16ms, laptop 33ms) flooded
-    // the laptop's echo-suppression window and made laptop→tablet
-    // sync drop frames after a few strokes.
+    // Realtime broadcast — leading-edge 16ms (~60 msg/s) with trailing
+    // flush. With per-message senderId+seq the receiver discards
+    // out-of-order frames deterministically, so a higher rate no
+    // longer risks deadlocks and the laptop gets every Apple-Pencil
+    // sample as it arrives. Trailing flush keeps the final frame.
     const now = Date.now();
     const bg = (appState as { viewBackgroundColor?: string })?.viewBackgroundColor;
     pendingSend.current = { elements, bg };
-    if (now - wsSendThrottle.current >= 33 && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+    if (now - wsSendThrottle.current >= 16 && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       flushPending();
     } else if (!trailingTimer.current) {
       // Schedule a trailing flush at the next throttle boundary.
-      const wait = Math.max(8, 33 - (now - wsSendThrottle.current));
+      const wait = Math.max(4, 16 - (now - wsSendThrottle.current));
       trailingTimer.current = setTimeout(() => {
         trailingTimer.current = null;
         flushPending();
@@ -346,13 +372,20 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
       wsRef.current = ws;
       ws.onmessage = (ev) => {
         try {
-          const msg = JSON.parse(ev.data) as { type: string; elements?: unknown[]; count?: number };
+          const msg = JSON.parse(ev.data) as { type: string; elements?: unknown[]; count?: number; senderId?: string; seq?: number };
           if (msg.type === "peers") {
             // server count includes us — show other-peer count.
             setLivePeers(Math.max(0, (msg.count ?? 1) - 1));
             return;
           }
           if (msg.type !== "scene" || !Array.isArray(msg.elements)) return;
+          // Drop own loopback frames + stale/out-of-order frames.
+          if (msg.senderId === senderId.current) return;
+          if (msg.senderId && typeof msg.seq === "number") {
+            const last = lastSeqBySender.current.get(msg.senderId) ?? 0;
+            if (msg.seq <= last) return;
+            lastSeqBySender.current.set(msg.senderId, msg.seq);
+          }
           const api = excalRef.current;
           if (!api) return;
           // Gate: skip incoming scene only if we just emitted a local edit
@@ -649,19 +682,12 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
           excalidrawAPI={(api) => {
             excalRef.current = api as ExcalApi;
             setExcalReady(true);
-            // GoodNotes-feel: when iPad opens via QR (`?pen=1`):
-            // 1. Force penMode on so finger pans / Apple Pencil draws.
-            // 2. Default tool = freedraw, ready to write immediately.
-            if (penMode && editMode) {
-              setTimeout(() => {
-                try {
-                  (api as ExcalApi).updateScene({
-                    appState: { penMode: true, penDetected: true, currentItemStrokeWidth: 2 },
-                  });
-                  (api as ExcalApi).setActiveTool?.({ type: "freedraw" });
-                } catch {}
-              }, 50);
-            }
+            // The earlier `setTimeout(50)` hop here was the source of
+            // the React "setState on a component that is not yet
+            // mounted" warning on iPad — the callback fired after
+            // dev-mode HMR unmounted the canvas. Pen-mode init now
+            // lives in a separate effect keyed on `excalReady` so
+            // React state machinery handles teardown correctly.
           }}
         />
         {editMode && (

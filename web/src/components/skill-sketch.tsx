@@ -374,6 +374,17 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   const trailingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const incomingRaf = useRef<number | null>(null);
   const incomingPending = useRef<unknown[] | null>(null);
+  // Per-tab random senderId + monotonically increasing seq so peers
+  // can drop their own loopbacks and out-of-order frames deterministically,
+  // independent of timing heuristics. Survives the timing-window
+  // edge cases that broke laptop→tablet sync.
+  const senderId = useRef<string>(
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2),
+  );
+  const seqRef = useRef(0);
+  const lastSeqBySender = useRef<Map<string, number>>(new Map());
   const flushPending = useCallback(() => {
     if (trailingTimer.current) { clearTimeout(trailingTimer.current); trailingTimer.current = null; }
     const p = pendingSend.current;
@@ -388,6 +399,8 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
         elements: p.elements,
         appState: { viewBackgroundColor: p.bg },
         ts: Date.now(),
+        senderId: senderId.current,
+        seq: ++seqRef.current,
       }));
     } catch {}
   }, []);
@@ -468,12 +481,14 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     // is what made remote rendering feel choppy).
     const bg = (appState as { viewBackgroundColor?: string })?.viewBackgroundColor;
     pendingSend.current = { elements, bg };
-    // 33ms ≈ 30 msg/s. Halves JSON.stringify cost vs 60Hz and is still
-    // visually smooth on the receiver. Trailing flush keeps final frame.
-    if (now - wsSendThrottle.current >= 33 && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+    // 16ms ≈ 60 msg/s. With seq-based dedup the receiver discards
+    // out-of-order frames, so a higher rate doesn't risk deadlocks
+    // — it just lets fast Apple-Pencil strokes paint smoothly on
+    // the laptop. Trailing flush keeps the final frame.
+    if (now - wsSendThrottle.current >= 16 && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       flushPending();
     } else if (!trailingTimer.current) {
-      const wait = Math.max(8, 33 - (now - wsSendThrottle.current));
+      const wait = Math.max(4, 16 - (now - wsSendThrottle.current));
       trailingTimer.current = setTimeout(() => {
         trailingTimer.current = null;
         flushPending();
@@ -502,13 +517,22 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       wsRef.current = ws;
       ws.onmessage = (ev) => {
         try {
-          const msg = JSON.parse(ev.data) as { type: string; elements?: unknown[]; count?: number };
+          const msg = JSON.parse(ev.data) as { type: string; elements?: unknown[]; count?: number; senderId?: string; seq?: number };
           if (msg.type === "peers") {
             // Subtract 1 because the server counts ourselves in the room.
             setLivePeers(Math.max(0, (msg.count ?? 1) - 1));
             return;
           }
           if (msg.type !== "scene" || !Array.isArray(msg.elements)) return;
+          // Drop own loopback frames (server should already skip the
+          // sender; defense in depth) and stale/out-of-order frames
+          // from any peer.
+          if (msg.senderId === senderId.current) return;
+          if (msg.senderId && typeof msg.seq === "number") {
+            const last = lastSeqBySender.current.get(msg.senderId) ?? 0;
+            if (msg.seq <= last) return;
+            lastSeqBySender.current.set(msg.senderId, msg.seq);
+          }
           const api = excalRef.current;
           if (!api) return;
           if (!shouldApplyIncomingScene(Date.now(), lastEditAt.current)) return;
@@ -918,8 +942,22 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
           framesCount={miniData.els.filter((e) => (e as { type?: string }).type === "frame" && !(e as { isDeleted?: boolean }).isDeleted).length}
           presenting={presenting}
           onPresentToggle={() => {
-            if (presenting) { setPresentIdx(null); return; }
+            if (presenting) { setPresentIdx(null); setPreviewOpen(false); return; }
+            const api = excalRef.current;
+            if (!api) { toast.info("Canvas not ready yet."); return; }
+            const frames = (api.getSceneElements() as Array<Record<string, unknown>>)
+              .filter((e) => e.type === "frame" && !e.isDeleted);
+            if (!frames.length) {
+              toast.info("Add a Frame first (More tools → Frame), then press Play.");
+              setPreviewOpen(true);
+              return;
+            }
+            // Open the preview panel AND start on frame 0. Was: only
+            // opened the panel and waited for the user to click a
+            // thumbnail — which is the "start button does nothing"
+            // bug reported.
             setPreviewOpen(true);
+            showFrame(0);
           }}
           penOn={penMode}
           onTogglePen={togglePen}
