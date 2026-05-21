@@ -378,18 +378,23 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     if (mod) {
       try {
         const sceneVersion = mod.getSceneVersion(elements as never);
-        if (sceneVersion > lastBroadcastedOrReceivedSceneVersion.current && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        if (sceneVersion > lastBroadcastedOrReceivedSceneVersion.current) {
+          lastBroadcastedOrReceivedSceneVersion.current = sceneVersion;
           const bg = (appState as { viewBackgroundColor?: string })?.viewBackgroundColor;
           pendingSend.current = { elements, bg };
-          const now = Date.now();
-          if (now - wsSendThrottle.current >= 16) {
-            flushPending();
-          } else if (!trailingTimer.current) {
-            const wait = Math.max(4, 16 - (now - wsSendThrottle.current));
-            trailingTimer.current = setTimeout(() => {
-              trailingTimer.current = null;
+          // Run the throttle dance only if the socket is open;
+          // otherwise rely on ws.onopen to drain pendingSend.
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            const now = Date.now();
+            if (now - wsSendThrottle.current >= 16) {
               flushPending();
-            }, wait);
+            } else if (!trailingTimer.current) {
+              const wait = Math.max(4, 16 - (now - wsSendThrottle.current));
+              trailingTimer.current = setTimeout(() => {
+                trailingTimer.current = null;
+                flushPending();
+              }, wait);
+            }
           }
         }
       } catch {}
@@ -455,6 +460,22 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
           });
         } catch {}
       };
+      ws.onopen = () => {
+        // Flush latest scene on (re)connect — same reason as the
+        // laptop: strokes drawn while the socket was still connecting
+        // would otherwise sit in pendingSend forever.
+        const a = excalRef.current;
+        const mod = excalModRef.current;
+        if (a && mod) {
+          try {
+            const getAll = (a as unknown as { getSceneElementsIncludingDeleted?: () => readonly unknown[] }).getSceneElementsIncludingDeleted;
+            const all = getAll ? getAll.call(a) : a.getSceneElements();
+            const bg = (a.getAppState() as { viewBackgroundColor?: string }).viewBackgroundColor;
+            pendingSend.current = { elements: all as readonly unknown[], bg };
+            flushPending();
+          } catch {}
+        }
+      };
       ws.onclose = () => {
         wsRef.current = null;
         setLivePeers(0);
@@ -469,7 +490,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
       try { ws?.close(); } catch {}
       wsRef.current = null;
     };
-  }, [editMode, slug]);
+  }, [editMode, slug, flushPending]);
 
   // Suppress incoming WS scenes only while the local user is actively
   // mid-stroke. `pointerdown` arms a long window (long enough for a slow

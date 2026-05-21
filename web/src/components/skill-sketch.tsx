@@ -156,6 +156,42 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     setMiniData({ els: els as readonly unknown[], app: (doc.appState ?? {}) as Record<string, unknown> });
   }, [doc]);
   const [miniOpen, setMiniOpen] = useState(true);
+  // Cursor indicator dot in the laptop minimap — mirrors the tablet
+  // behaviour the user liked. Throttled via rAF so a 60Hz mousemove
+  // doesn't trigger 60Hz React renders.
+  const canvasWrapRef = useRef<HTMLDivElement | null>(null);
+  const [cursorWorld, setCursorWorld] = useState<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    const el = canvasWrapRef.current;
+    if (!el) return;
+    let raf = 0;
+    let lastClient: { x: number; y: number } | null = null;
+    const tick = () => {
+      raf = 0;
+      const c = lastClient;
+      if (!c) return;
+      const api = excalRef.current;
+      if (!api) return;
+      const s = api.getAppState() as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
+      const zoom = s.zoom?.value ?? 1;
+      const rect = el.getBoundingClientRect();
+      const x = (c.x - rect.left) / zoom - (s.scrollX ?? 0);
+      const y = (c.y - rect.top) / zoom - (s.scrollY ?? 0);
+      setCursorWorld({ x, y });
+    };
+    const onMove = (e: PointerEvent) => {
+      lastClient = { x: e.clientX, y: e.clientY };
+      if (raf === 0) raf = requestAnimationFrame(tick);
+    };
+    const onLeave = () => { lastClient = null; setCursorWorld(null); };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerleave", onLeave);
+    return () => {
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerleave", onLeave);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
   const last = useRef("");
   const t = useRef<ReturnType<typeof setTimeout> | null>(null);
   const excalRef = useRef<ExcalApi | null>(null);
@@ -502,25 +538,32 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     }
     // Realtime broadcast — Excalidraw collab pattern. Only emit when
     // scene version advances past last broadcast/receive. Tracking
-    // here also doubles as the SWR-poll reapply gate.
+    // here also doubles as the SWR-poll reapply gate. Note: we
+    // update `pendingSend` even if the socket isn't open yet; the
+    // ws.onopen handler will flush it as soon as the connection is
+    // ready, so strokes drawn during the WS handshake aren't lost.
     const mod = excalModRef.current;
     if (mod) {
       try {
         const sceneVersion = mod.getSceneVersion(elements as never);
-        if (sceneVersion > lastBroadcastedOrReceivedSceneVersion.current && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        if (sceneVersion > lastBroadcastedOrReceivedSceneVersion.current) {
           lastBroadcastedOrReceivedSceneVersion.current = sceneVersion;
           const bg = (appState as { viewBackgroundColor?: string })?.viewBackgroundColor;
           pendingSend.current = { elements, bg };
-          // Leading-edge 16 ms with trailing flush — keeps stroke
-          // tail frames from being dropped inside a throttle gap.
-          if (now - wsSendThrottle.current >= 16) {
-            flushPending();
-          } else if (!trailingTimer.current) {
-            const wait = Math.max(4, 16 - (now - wsSendThrottle.current));
-            trailingTimer.current = setTimeout(() => {
-              trailingTimer.current = null;
+          // Only run the throttle/trailing-flush dance when WS is
+          // actually open; otherwise rely on onopen to drain pending.
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            // Leading-edge 16 ms with trailing flush — keeps stroke
+            // tail frames from being dropped inside a throttle gap.
+            if (now - wsSendThrottle.current >= 16) {
               flushPending();
-            }, wait);
+            } else if (!trailingTimer.current) {
+              const wait = Math.max(4, 16 - (now - wsSendThrottle.current));
+              trailingTimer.current = setTimeout(() => {
+                trailingTimer.current = null;
+                flushPending();
+              }, wait);
+            }
           }
         }
       } catch {}
@@ -590,6 +633,24 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
             } catch {}
           });
         } catch {}
+      };
+      ws.onopen = () => {
+        // On (re)connect, flush the latest scene from this client so a
+        // peer that joined first immediately sees what we already drew.
+        // Without this, strokes made while the socket was still
+        // connecting silently dropped and only appeared after the next
+        // local edit / next SWR poll.
+        const a = excalRef.current;
+        const mod = excalModRef.current;
+        if (a && mod) {
+          try {
+            const getAll = (a as unknown as { getSceneElementsIncludingDeleted?: () => readonly unknown[] }).getSceneElementsIncludingDeleted;
+            const all = getAll ? getAll.call(a) : a.getSceneElements();
+            const bg = (a.getAppState() as { viewBackgroundColor?: string }).viewBackgroundColor;
+            pendingSend.current = { elements: all as readonly unknown[], bg };
+            flushPending();
+          } catch {}
+        }
       };
       ws.onclose = () => {
         wsRef.current = null;
@@ -663,6 +724,34 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
 
   const reset = async () => {
     if (!confirm(`Clear all elements on ${skill} sketch?`)) return;
+    const api = excalRef.current;
+    const mod = excalModRef.current;
+    if (api && mod) {
+      // Tombstone every live element instead of PUT-ing []: the
+      // backend (and Excalidraw's collab reconciler) merge by id
+      // and would otherwise prefer existing live elements over a
+      // missing-from-peer one. Bumped version + fresh versionNonce
+      // guarantees reconcile picks the deleted record.
+      const getAll = (api as unknown as { getSceneElementsIncludingDeleted?: () => readonly unknown[] }).getSceneElementsIncludingDeleted;
+      const live = (getAll ? getAll.call(api) : api.getSceneElements()) as ReadonlyArray<Record<string, unknown>>;
+      const tombstoned = live.map((e) => ({
+        ...e,
+        isDeleted: true,
+        version: ((typeof e.version === "number" ? e.version : 0) as number) + 1,
+        versionNonce: Math.floor(Math.random() * 0x7fffffff),
+      }));
+      try {
+        (api.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
+          elements: tombstoned,
+          captureUpdate: mod.CaptureUpdateAction.IMMEDIATELY,
+        });
+      } catch {}
+      // onChange will fire from updateScene → autosave + WS broadcast
+      // propagate the tombstones to the peer.
+      return;
+    }
+    // Fallback if Excalidraw isn't mounted yet: blow the doc away
+    // server-side directly.
     await fetch(`${API}/api/drawings/${slug}`, {
       method: "PUT", headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ data: { title: skill, elements: [], appState: {}, files: {} } }),
@@ -913,7 +1002,10 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
         </div>
       )}
 
-      <div className={`relative rounded-xl overflow-hidden border border-foreground/10 bg-card ${full ? "flex-1" : "h-[70vh]"}`}>
+      <div
+        ref={canvasWrapRef}
+        className={`relative rounded-xl overflow-hidden border border-foreground/10 bg-card ${full ? "flex-1" : "h-[70vh]"}`}
+      >
         <Excalidraw
           key={slug}
           initialData={initialData}
@@ -1029,6 +1121,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
         <Minimap
           elements={miniData.els}
           appState={miniData.app}
+          cursor={cursorWorld}
           open={miniOpen}
           onToggle={() => setMiniOpen((v) => !v)}
           onNavigate={onMiniNav}
@@ -1739,10 +1832,11 @@ type MinimapProps = {
   onFitAll?: () => void;
   size?: "sm" | "lg";
   defaultCorner?: "tl" | "tr" | "bl" | "br";
+  cursor?: { x: number; y: number } | null;
 };
 
 function MinimapImpl({
-  elements, appState, open, onToggle, onNavigate, onZoom, onFitAll, size = "sm", defaultCorner = "br",
+  elements, appState, open, onToggle, onNavigate, onZoom, onFitAll, size = "sm", defaultCorner = "br", cursor,
 }: MinimapProps) {
   const W = size === "lg" ? 320 : 220;
   const H = size === "lg" ? 220 : 150;
@@ -1951,6 +2045,14 @@ function MinimapImpl({
               fill="none" stroke="#6965db"
               strokeWidth={1.5} strokeDasharray="3 2" opacity={0.95}
             />
+            {cursor && (
+              // Local cursor dot — matches the tablet-side feel the
+              // user explicitly asked for on the laptop too.
+              <circle
+                cx={toX(cursor.x)} cy={toY(cursor.y)} r={3}
+                fill="#f59e0b" stroke="#fff" strokeWidth={1} opacity={0.95}
+              />
+            )}
           </svg>
         )}
       </div>
@@ -1991,6 +2093,13 @@ function minimapPropsEqual(a: MinimapProps, b: MinimapProps): boolean {
   const zoomA = Math.round((av.zoom?.value ?? 1) * 1000);
   const zoomB = Math.round((bv.zoom?.value ?? 1) * 1000);
   if (zoomA !== zoomB) return false;
+  // Cursor dot — re-render when it moves more than 0.5 px in world
+  // coords, when it appears, or when it disappears.
+  if (!!a.cursor !== !!b.cursor) return false;
+  if (a.cursor && b.cursor) {
+    if (Math.round(a.cursor.x * 2) !== Math.round(b.cursor.x * 2)) return false;
+    if (Math.round(a.cursor.y * 2) !== Math.round(b.cursor.y * 2)) return false;
+  }
   return true;
 }
 export const Minimap = memo(MinimapImpl, minimapPropsEqual);
