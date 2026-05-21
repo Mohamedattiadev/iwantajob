@@ -72,7 +72,7 @@ type ExcalApi = {
   setActiveTool?: (tool: { type: string; locked?: boolean }) => void;
 };
 
-export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: string; homeHref?: string; defaultFull?: boolean }) {
+export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscreenButton = false }: { skill: string; homeHref?: string; defaultFull?: boolean; hideFullscreenButton?: boolean }) {
   const slug = `skill-${skillSlug(skill)}`;
   // Adaptive poll: 500 ms while a peer is connected (need fast sync),
   // 3 s otherwise, paused when the tab is hidden. Even with 304s the
@@ -117,6 +117,15 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   const [laserLock, setLaserLock] = useState(false);
   const laserLockRef = useRef(false);
   useEffect(() => { laserLockRef.current = laserLock; }, [laserLock]);
+  // View-only mode — toggles Excalidraw's `viewModeEnabled` so the
+  // canvas becomes read-only (useful when presenting frames so a
+  // stray click doesn't move shapes).
+  const [viewOnly, setViewOnly] = useState(false);
+  useEffect(() => {
+    const a = excalRef.current;
+    if (!a) return;
+    try { a.updateScene({ appState: { viewModeEnabled: viewOnly } }); } catch {}
+  }, [viewOnly]);
   const persistedLaserIdsRef = useRef<Set<string>>(new Set());
   const toggleLaserLock = useCallback(() => {
     const a = excalRef.current;
@@ -147,46 +156,38 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   // are converted from CSS px → world coords using current zoom +
   // scroll. We restrict to the canvas wrap so toolbar clicks don't
   // get caught.
-  useEffect(() => {
-    const wrap = canvasWrapRef.current;
-    if (!wrap) return;
-    let pts: Array<[number, number]> = [];
-    let baseX = 0, baseY = 0;
-    let drawing = false;
-    const inLaserNow = () => {
-      const a = excalRef.current;
-      if (!a) return false;
-      const t = (a.getAppState() as { activeTool?: { type?: string } }).activeTool?.type;
-      return t === "laser";
-    };
-    const toWorld = (clientX: number, clientY: number) => {
-      const a = excalRef.current!;
-      const app = a.getAppState() as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
-      const zoom = app.zoom?.value ?? 1;
-      const rect = wrap.getBoundingClientRect();
-      return [
-        (clientX - rect.left) / zoom - (app.scrollX ?? 0),
-        (clientY - rect.top) / zoom - (app.scrollY ?? 0),
-      ] as [number, number];
-    };
-    const onDown = (e: PointerEvent) => {
-      if (!laserLockRef.current || !inLaserNow()) return;
-      drawing = true;
-      const [x, y] = toWorld(e.clientX, e.clientY);
-      baseX = x; baseY = y;
-      pts = [[0, 0]];
-    };
-    const onMove = (e: PointerEvent) => {
-      if (!drawing) return;
-      const [x, y] = toWorld(e.clientX, e.clientY);
-      pts.push([x - baseX, y - baseY]);
-    };
-    const onUp = () => {
-      if (!drawing) return;
-      drawing = false;
+  // Pointer-trail capture for laser-lock. Uses Excalidraw's own
+  // `onPointerUpdate` callback (wired via the `<Excalidraw>` prop
+  // below) so we get reliable world-coord pointer samples without
+  // having to fight setPointerCapture on the native canvas.
+  const laserPtsRef = useRef<Array<[number, number]>>([]);
+  const laserBaseRef = useRef<[number, number]>([0, 0]);
+  const laserDrawingRef = useRef(false);
+  const handleLaserPointerUpdate = useCallback((payload: {
+    pointer: { x: number; y: number; tool: "pointer" | "laser" };
+    button: "down" | "up";
+  }) => {
+    if (!laserLockRef.current) return;
+    if (payload.pointer.tool !== "laser") return;
+    const { x, y } = payload.pointer;
+    if (payload.button === "down") {
+      laserDrawingRef.current = true;
+      laserBaseRef.current = [x, y];
+      laserPtsRef.current = [[0, 0]];
+      return;
+    }
+    if (laserDrawingRef.current) {
+      laserPtsRef.current.push([x - laserBaseRef.current[0], y - laserBaseRef.current[1]]);
+    }
+    if (payload.button === "up" && laserDrawingRef.current) {
+      laserDrawingRef.current = false;
+      const pts = laserPtsRef.current.slice();
+      laserPtsRef.current = [];
       if (pts.length < 2) return;
       const a = excalRef.current;
       if (!a) return;
+      const baseX = laserBaseRef.current[0];
+      const baseY = laserBaseRef.current[1];
       const id = (typeof crypto !== "undefined" && "randomUUID" in crypto
         ? crypto.randomUUID() : `laser-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
       const xs = pts.map((p) => p[0]);
@@ -229,18 +230,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
         a.updateScene({ elements: [...els, stroke] as never });
         persistedLaserIdsRef.current.add(id);
       } catch {}
-      pts = [];
-    };
-    wrap.addEventListener("pointerdown", onDown);
-    wrap.addEventListener("pointermove", onMove);
-    wrap.addEventListener("pointerup", onUp);
-    wrap.addEventListener("pointercancel", onUp);
-    return () => {
-      wrap.removeEventListener("pointerdown", onDown);
-      wrap.removeEventListener("pointermove", onMove);
-      wrap.removeEventListener("pointerup", onUp);
-      wrap.removeEventListener("pointercancel", onUp);
-    };
+    }
   }, []);
   const bookPageRef = useRef(0);
   useEffect(() => { bookPageRef.current = bookPage; }, [bookPage]);
@@ -1701,6 +1691,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
           key={slug}
           initialData={initialData}
           onChange={onChange}
+          onPointerUpdate={handleLaserPointerUpdate}
           theme={resolvedTheme === "light" ? "light" : "dark"}
           aiEnabled={false}
           excalidrawAPI={excalApiCallback}
@@ -1717,6 +1708,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
           onCopyJson={copyShareJson}
           full={full}
           onToggleFull={() => setFull((v) => !v)}
+          hideFullscreenButton={hideFullscreenButton}
           framesCount={miniData.els.filter((e) => (e as { type?: string }).type === "frame" && !(e as { isDeleted?: boolean }).isDeleted).length}
           presenting={presenting}
           onPresentToggle={() => {
@@ -1803,9 +1795,11 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
             panelOpen={previewOpen}
             onToggleFocus={toggleSlideFocus}
             focused={slideFocus}
+            viewOnly={viewOnly}
+            onToggleViewOnly={() => setViewOnly((v) => !v)}
           />
         )}
-        <Minimap
+        {!viewOnly && <Minimap
           elements={miniData.els}
           appState={miniData.app}
           cursor={cursorWorld}
@@ -1828,7 +1822,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
               });
             } catch {}
           }}
-        />
+        />}
         {chatOpen && (
           <SketchChatPanel
             skill={skill}
@@ -2764,6 +2758,7 @@ function TopRightTools({
   penOn, onTogglePen, padUrl, padCount, viewerCount, onSave, saving, savedTick,
   pendingPads, onApprovePad, onDenyPad, paperMode, onPaperMode,
   onZoomDelta, onZoomReset, zoomPct, laserLock, onToggleLaserLock,
+  hideFullscreenButton,
 }: {
   onAi: () => void;
   onChat: () => void;
@@ -2794,6 +2789,7 @@ function TopRightTools({
   zoomPct: number;
   laserLock: boolean;
   onToggleLaserLock: () => void;
+  hideFullscreenButton?: boolean;
 }) {
   const [open, setOpen] = useState<null | "ai" | "export" | "pad" | "paper">(null);
   useEffect(() => {
@@ -2867,9 +2863,11 @@ function TopRightTools({
       >
         <Zap className="h-3.5 w-3.5" />
       </button>
-      <button onClick={onToggleFull} className="excal-btn" title={full ? "Exit fullscreen (F)" : "Fullscreen (F)"}>
-        {full ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
-      </button>
+      {!hideFullscreenButton && (
+        <button onClick={onToggleFull} className="excal-btn" title={full ? "Exit fullscreen (F)" : "Fullscreen (F)"}>
+          {full ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+        </button>
+      )}
     </div>
   );
 }
@@ -3276,6 +3274,7 @@ function FrameThumb({ frame, kids }: { frame: FrameEl; kids: SceneEl[] }) {
 
 function PresentOverlay({
   index, onPrev, onNext, onExit, onTogglePanel, panelOpen, onToggleFocus, focused,
+  viewOnly, onToggleViewOnly,
 }: {
   index: number;
   onPrev: () => void;
@@ -3285,6 +3284,8 @@ function PresentOverlay({
   panelOpen: boolean;
   onToggleFocus: () => void;
   focused: boolean;
+  viewOnly: boolean;
+  onToggleViewOnly: () => void;
 }) {
   return (
     <div className="excal-present-bar absolute bottom-4 left-1/2 -translate-x-1/2 z-50 inline-flex items-center gap-1">
@@ -3309,6 +3310,13 @@ function PresentOverlay({
         className={`excal-present-btn ${focused ? "is-active" : ""}`}
       >
         {focused ? <ZoomOut className="h-4 w-4" /> : <ZoomIn className="h-4 w-4" />}
+      </button>
+      <button
+        onClick={onToggleViewOnly}
+        title={viewOnly ? "Exit view mode (edit again)" : "View mode (read-only)"}
+        className={`excal-present-btn ${viewOnly ? "is-active" : ""}`}
+      >
+        <Eye className="h-4 w-4" />
       </button>
       <span className="excal-present-sep" />
       <button onClick={onExit} title="Stop presentation (Esc)" className="excal-present-btn excal-present-btn--danger">
