@@ -209,7 +209,29 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   // empty while the minimap, fed straight off `doc`, shows the full scene.
   // This effect pushes elements into Excalidraw exactly once per slug.
   const [excalReady, setExcalReady] = useState(false);
+  // Stable callback so Excalidraw doesn't see a new prop reference
+  // every SkillSketch render. Calling `setExcalReady(true)` on every
+  // call is fine — React bails on identical state — but the inline
+  // arrow form was a new function each render, which could (and did,
+  // in some Excalidraw paths) trigger an internal re-subscribe that
+  // emitted during render and starved React's update budget. Going
+  // through a ref guarantees we only flip once.
+  const readyOnce = useRef(false);
+  const excalApiCallback = useCallback((api: unknown) => {
+    excalRef.current = api as ExcalApi;
+    if (!readyOnce.current) {
+      readyOnce.current = true;
+      setExcalReady(true);
+    }
+  }, []);
   const appliedFor = useRef<string>("");
+  // Apply server scene ONCE per slug on first read. Subsequent SWR
+  // polls don't push into Excalidraw — the realtime path is the WS
+  // receive handler (which already calls reconcile + updateScene
+  // out-of-band). Polling for re-apply was triggering Excalidraw's
+  // internal store to emit while React was committing this same
+  // tree, hence the recurring "Maximum update depth" stack ending
+  // inside MainMenu's `Set.forEach` over its subscribers.
   useEffect(() => {
     if (!doc || !excalReady) return;
     const api = excalRef.current;
@@ -231,27 +253,33 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       }
       return;
     }
-    // Subsequent SWR refreshes: reconcile remote against local so a
-    // peer's saved strokes land here without clobbering our own
-    // unsaved edits. Same primitives the official Excalidraw collab
-    // path uses, only gated by polling instead of WebSocket fanout.
+    // Subsequent SWR refreshes: reconcile remote against local off
+    // the React commit phase so updateScene's internal store emit
+    // doesn't loop back into the MainMenu render (was the source of
+    // the recurring "Maximum update depth" crashes). The setTimeout
+    // hop pushes the reconcile into a fresh task, after commit.
     const mod = excalModRef.current;
     if (!mod) return;
-    try {
-      const remoteVer = mod.getSceneVersion(remoteEls as never);
-      if (remoteVer <= lastBroadcastedOrReceivedSceneVersion.current) return;
-      const local = api.getSceneElements() as never;
-      const appState = api.getAppState() as never;
-      const restored = (mod.restoreElements as (r: unknown, e: unknown) => unknown)(remoteEls, local);
-      const reconciled = mod.reconcileElements(local, restored as never, appState);
-      lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
-      applyingRemoteRef.current = true;
-      (api.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
-        elements: reconciled as unknown as unknown[],
-        captureUpdate: mod.CaptureUpdateAction.NEVER,
-      });
-      setTimeout(() => { applyingRemoteRef.current = false; }, 0);
-    } catch { applyingRemoteRef.current = false; }
+    const remoteVer = (() => { try { return mod.getSceneVersion(remoteEls as never); } catch { return -1; } })();
+    if (remoteVer <= lastBroadcastedOrReceivedSceneVersion.current) return;
+    const tid = setTimeout(() => {
+      const a = excalRef.current;
+      if (!a) return;
+      try {
+        const local = a.getSceneElements() as never;
+        const appState = a.getAppState() as never;
+        const restored = (mod.restoreElements as (r: unknown, e: unknown) => unknown)(remoteEls, local);
+        const reconciled = mod.reconcileElements(local, restored as never, appState);
+        lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
+        applyingRemoteRef.current = true;
+        (a.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
+          elements: reconciled as unknown as unknown[],
+          captureUpdate: mod.CaptureUpdateAction.NEVER,
+        });
+        setTimeout(() => { applyingRemoteRef.current = false; }, 0);
+      } catch { applyingRemoteRef.current = false; }
+    }, 0);
+    return () => clearTimeout(tid);
   }, [slug, doc, excalReady]);
   useEffect(() => { appliedFor.current = ""; lastBroadcastedOrReceivedSceneVersion.current = -1; }, [slug]);
 
@@ -1077,7 +1105,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
           onChange={onChange}
           theme={resolvedTheme === "light" ? "light" : "dark"}
           aiEnabled={false}
-          excalidrawAPI={(api) => { excalRef.current = api as ExcalApi; setExcalReady(true); }}
+          excalidrawAPI={excalApiCallback}
         >
           {excalMod && (() => {
             const MM = excalMod.MainMenu as unknown as React.ComponentType<{ children?: React.ReactNode }> & {
