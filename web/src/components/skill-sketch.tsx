@@ -257,6 +257,12 @@ export function SkillSketch({ skill }: { skill: string }) {
   const lastEditAt = useRef(0);
   const lastSeenFingerprint = useRef("");
   const wsRef = useRef<WebSocket | null>(null);
+  // Window during which onChange events are coming from updateScene-of-a-
+  // remote-payload, not from local user input. See identical comment in
+  // src/app/sketch/[slug]/page.tsx — without this guard, applying an
+  // incoming WS scene would set lastEditAt = now, which then blocks the
+  // very next incoming scene and breaks one-way sync after a single stroke.
+  const applyingRemoteUntil = useRef(0);
   // Prevent stale save timers from a previous skill firing after navigation
   // and overwriting the new skill's data (or worse, the iPad's drawing on
   // the previous skill). Clear on slug change + on unmount.
@@ -282,7 +288,6 @@ export function SkillSketch({ skill }: { skill: string }) {
     // Without this, Excalidraw's mount-time empty onChange would PUT empty
     // elements to the backend and wipe the drawing on every reload.
     if (!doc) return;
-    lastEditAt.current = Date.now();
     // Inline fingerprint (count + last visible id) so iPad pulls cleanly.
     let cnt = 0; let lid = "";
     for (const raw of elements) {
@@ -292,6 +297,17 @@ export function SkillSketch({ skill }: { skill: string }) {
       if (e.id) lid = e.id;
     }
     lastSeenFingerprint.current = `${cnt}:${lid}`;
+    // Remote-applied frame? Update preview only; don't mark as a local edit
+    // and don't echo back to the server.
+    if (Date.now() < applyingRemoteUntil.current) {
+      const now0 = Date.now();
+      if (now0 - miniThrottle.current > 120) {
+        miniThrottle.current = now0;
+        setMiniData({ els: elements, app: appState as Record<string, unknown> });
+      }
+      return;
+    }
+    lastEditAt.current = Date.now();
     if (t.current) clearTimeout(t.current);
     // Suspend autosave while iPad (or any peer) is connected — iPad owns
     // writes during a collab session so we don't race-overwrite the table.
@@ -350,6 +366,7 @@ export function SkillSketch({ skill }: { skill: string }) {
           const api = excalRef.current;
           if (!api) return;
           if (!shouldApplyIncomingScene(Date.now(), lastEditAt.current)) return;
+          applyingRemoteUntil.current = Date.now() + 80;
           (api.updateScene as unknown as (d: { elements?: unknown[] }) => void)({ elements: msg.elements });
           let cnt = 0; let lid = "";
           for (const raw of msg.elements) {

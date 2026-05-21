@@ -167,6 +167,12 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   const wsSendThrottle = useRef(0);
   const lastEditAt = useRef(0);
   const lastSeenFingerprint = useRef("");
+  // Excalidraw fires onChange whenever the scene mutates — including when
+  // WE called updateScene to apply an incoming WS payload. Without this
+  // guard, the remote-applied frame would set lastEditAt = now, which then
+  // gates out the NEXT incoming scene (laptop → iPad gets stuck after one
+  // stroke). Set this window around every updateScene-from-remote call.
+  const applyingRemoteUntil = useRef(0);
   const [livePeers, setLivePeers] = useState(0);
   const [miniData, setMiniData] = useState<{ els: readonly unknown[]; app: Record<string, unknown> }>({ els: [], app: {} });
   const miniThrottle = useRef(0);
@@ -179,6 +185,12 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     // fires it on mount) would PUT empty elements and wipe the drawing on
     // every reload.
     if (appliedFor.current !== slug) return;
+    // Remote-applied frame? Don't mark as local edit and don't echo back.
+    // (Mini-map preview still updates below.)
+    if (Date.now() < applyingRemoteUntil.current) {
+      lastSeenFingerprint.current = sceneFingerprint(elements);
+      return;
+    }
     lastEditAt.current = Date.now();
     lastSeenFingerprint.current = sceneFingerprint(elements);
     const tnow = Date.now();
@@ -236,6 +248,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
           // within the last 100ms. Avoids clobbering our own freshly-drawn
           // strokes; otherwise always apply so remote edits land.
           if (!shouldApplyIncomingScene(Date.now(), lastEditAt.current)) return;
+          applyingRemoteUntil.current = Date.now() + 80;
           (api.updateScene as (d: { elements?: unknown[] }) => void)({ elements: msg.elements });
           lastSeenFingerprint.current = sceneFingerprint(msg.elements);
         } catch {}
