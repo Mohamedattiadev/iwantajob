@@ -5,6 +5,7 @@ import {
   parseSketchMode,
   shouldApplyIncomingScene,
   pickMinimapCornerStyle,
+  computeFitAllAppState,
   PEN_PROFILES,
   PEN_KEYS,
   type PenKey,
@@ -219,17 +220,21 @@ describe("parseSketchMode", () => {
 });
 
 describe("shouldApplyIncomingScene", () => {
-  it("applies when now is past suppressUntil", () => {
-    expect(shouldApplyIncomingScene(1000, 500)).toBe(true);
-  });
-  it("blocks while now is before suppressUntil", () => {
-    expect(shouldApplyIncomingScene(500, 1000)).toBe(false);
-  });
-  it("applies at the boundary (now === suppressUntil)", () => {
-    expect(shouldApplyIncomingScene(1000, 1000)).toBe(true);
-  });
-  it("default zero-window never blocks", () => {
+  it("always applies before any local edit (lastLocalEditAt=0)", () => {
     expect(shouldApplyIncomingScene(Date.now(), 0)).toBe(true);
+  });
+  it("blocks if a local edit fired within the default 100ms window", () => {
+    expect(shouldApplyIncomingScene(1050, 1000)).toBe(false);
+  });
+  it("applies once the local-edit window has elapsed", () => {
+    expect(shouldApplyIncomingScene(1200, 1000)).toBe(true);
+  });
+  it("applies at the boundary (now - lastEdit === windowMs)", () => {
+    expect(shouldApplyIncomingScene(1100, 1000)).toBe(true);
+  });
+  it("honors a custom window", () => {
+    expect(shouldApplyIncomingScene(1500, 1000, 600)).toBe(false);
+    expect(shouldApplyIncomingScene(1600, 1000, 600)).toBe(true);
   });
 });
 
@@ -257,5 +262,82 @@ describe("pickMinimapCornerStyle", () => {
       expect(hasTop && hasBottom).toBe(false);
       expect(hasLeft && hasRight).toBe(false);
     }
+  });
+});
+
+describe("computeFitAllAppState", () => {
+  it("returns null for an empty scene", () => {
+    expect(computeFitAllAppState([], { width: 800, height: 600 })).toBeNull();
+  });
+
+  it("returns null if every element is deleted or geometry-less", () => {
+    const els = [{ isDeleted: true, x: 0, y: 0, width: 10, height: 10 }, { /* no geom */ }];
+    expect(computeFitAllAppState(els, { width: 800, height: 600 })).toBeNull();
+  });
+
+  it("centers a single element in the viewport (scroll math)", () => {
+    // Element at (100,100) size 200x100. Viewport 800x600, padding 60, maxZoom 2.
+    // Scene bbox = 200x100. Fit zoom = min(2, (800-120)/200, (600-120)/100) = min(2, 3.4, 4.8) = 2.
+    // Center cx=200, cy=150. scrollX = 800/(2*2) - 200 = 200 - 200 = 0.
+    //                          scrollY = 600/(2*2) - 150 = 150 - 150 = 0.
+    const r = computeFitAllAppState(
+      [{ x: 100, y: 100, width: 200, height: 100 }],
+      { width: 800, height: 600 },
+    );
+    expect(r).not.toBeNull();
+    expect(r!.zoom).toBe(2);
+    expect(r!.scrollX).toBe(0);
+    expect(r!.scrollY).toBe(0);
+  });
+
+  it("downscales when the scene is larger than the viewport", () => {
+    const r = computeFitAllAppState(
+      [{ x: 0, y: 0, width: 4000, height: 3000 }],
+      { width: 800, height: 600 },
+    );
+    expect(r).not.toBeNull();
+    expect(r!.zoom).toBeLessThan(1);
+    expect(r!.zoom).toBeGreaterThan(0);
+  });
+
+  it("respects the maxZoom cap when the scene is tiny", () => {
+    const r = computeFitAllAppState(
+      [{ x: 0, y: 0, width: 1, height: 1 }],
+      { width: 800, height: 600 },
+      60, 2,
+    );
+    expect(r!.zoom).toBe(2);
+  });
+
+  it("never returns a zoom below the floor (0.1)", () => {
+    const r = computeFitAllAppState(
+      [{ x: 0, y: 0, width: 1e9, height: 1e9 }],
+      { width: 800, height: 600 },
+    );
+    expect(r!.zoom).toBeGreaterThanOrEqual(0.1);
+  });
+
+  it("ignores deleted elements when computing the bbox", () => {
+    const a = computeFitAllAppState(
+      [
+        { x: 0, y: 0, width: 100, height: 100 },
+        { x: 10_000, y: 10_000, width: 50, height: 50, isDeleted: true },
+      ],
+      { width: 800, height: 600 },
+    );
+    const b = computeFitAllAppState(
+      [{ x: 0, y: 0, width: 100, height: 100 }],
+      { width: 800, height: 600 },
+    );
+    expect(a).toEqual(b);
+  });
+
+  it("treats elements with no width/height as 1×1 (defensive)", () => {
+    const r = computeFitAllAppState(
+      [{ x: 0, y: 0 }, { x: 100, y: 50 }],
+      { width: 800, height: 600 },
+    );
+    expect(r).not.toBeNull();
+    expect(r!.zoom).toBeGreaterThan(0);
   });
 });

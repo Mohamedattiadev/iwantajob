@@ -80,16 +80,20 @@ export function parseSketchMode(search: URLSearchParams): { editMode: boolean; p
 }
 
 // Decide whether an incoming realtime scene should be applied. The earlier
-// implementation set `localDrawingUntil` on every pointermove (including
-// passive hover events), which permanently suppressed incoming scenes on a
-// touch device and broke sync. This helper centralizes the rule: only block
-// while the local user is mid-stroke (pointerdown..pointerup) plus a short
-// grace window after release so the local broadcast lands first.
+// implementation tied this to pointer events, which broke sync on touch
+// devices (pointermove fired constantly, sometimes pointerup never landed
+// after a Pencil lift → gate permanently closed). New rule: skip only if
+// the LOCAL onChange fired within the last `windowMs` — meaning we just
+// produced an edit and don't want a possibly-stale incoming scene to
+// clobber it. `lastLocalEditAt = 0` means we never edited locally yet, so
+// we always apply incoming.
 export function shouldApplyIncomingScene(
   now: number,
-  suppressUntil: number,
+  lastLocalEditAt: number,
+  windowMs: number = 100,
 ): boolean {
-  return now >= suppressUntil;
+  if (lastLocalEditAt === 0) return true;
+  return now - lastLocalEditAt >= windowMs;
 }
 
 // Minimap corner placement — pure helper so the corner CSS is testable
@@ -106,4 +110,44 @@ export function pickMinimapCornerStyle(corner: MinimapCorner = "br"): {
     case "br":
     default:   return { bottom: 12, right: 12 };
   }
+}
+
+// "Fit all" — compute the Excalidraw appState that centers the whole
+// scene in the current viewport with a uniform padding. Returns null if
+// the scene has no usable elements (empty / all deleted / no geometry).
+// Excalidraw screen-coord formula: screen_x = (world_x + scrollX) * zoom.
+type GeomEl = {
+  x?: number; y?: number; width?: number; height?: number; isDeleted?: boolean;
+};
+export function computeFitAllAppState(
+  elements: ReadonlyArray<GeomEl | null>,
+  viewport: { width: number; height: number },
+  padding: number = 60,
+  maxZoom: number = 2,
+): { zoom: number; scrollX: number; scrollY: number } | null {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const e of elements) {
+    if (!e || e.isDeleted) continue;
+    if (typeof e.x !== "number" || typeof e.y !== "number") continue;
+    const w = typeof e.width === "number" ? e.width : 1;
+    const h = typeof e.height === "number" ? e.height : 1;
+    minX = Math.min(minX, e.x); minY = Math.min(minY, e.y);
+    maxX = Math.max(maxX, e.x + w); maxY = Math.max(maxY, e.y + h);
+  }
+  if (!isFinite(minX)) return null;
+  const sceneW = Math.max(1, maxX - minX);
+  const sceneH = Math.max(1, maxY - minY);
+  const vw = viewport.width || 1;
+  const vh = viewport.height || 1;
+  const zoom = Math.max(
+    0.1,
+    Math.min(maxZoom, (vw - 2 * padding) / sceneW, (vh - 2 * padding) / sceneH),
+  );
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  return {
+    zoom,
+    scrollX: vw / (2 * zoom) - cx,
+    scrollY: vh / (2 * zoom) - cy,
+  };
 }

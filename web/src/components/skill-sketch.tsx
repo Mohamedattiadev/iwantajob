@@ -20,7 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { API, fetcher } from "@/lib/api";
 import useSWR from "swr";
 import { TEMPLATES, TEMPLATE_META, type TemplateKey } from "@/lib/sketch-templates";
-import { pickMinimapCornerStyle } from "@/lib/sketch";
+import { pickMinimapCornerStyle, shouldApplyIncomingScene, computeFitAllAppState } from "@/lib/sketch";
 import "@excalidraw/excalidraw/index.css";
 
 type AiStyle = "flowchart" | "mindmap" | "tree" | "sequence" | "comparison" | "matrix" | "swimlane" | "venn" | "freeform";
@@ -257,7 +257,6 @@ export function SkillSketch({ skill }: { skill: string }) {
   const lastEditAt = useRef(0);
   const lastSeenFingerprint = useRef("");
   const wsRef = useRef<WebSocket | null>(null);
-  const localDrawingUntil = useRef(0);
   // Prevent stale save timers from a previous skill firing after navigation
   // and overwriting the new skill's data (or worse, the iPad's drawing on
   // the previous skill). Clear on slug change + on unmount.
@@ -350,7 +349,7 @@ export function SkillSketch({ skill }: { skill: string }) {
           if (msg.type !== "scene" || !Array.isArray(msg.elements)) return;
           const api = excalRef.current;
           if (!api) return;
-          if (Date.now() < localDrawingUntil.current) return;
+          if (!shouldApplyIncomingScene(Date.now(), lastEditAt.current)) return;
           (api.updateScene as unknown as (d: { elements?: unknown[] }) => void)({ elements: msg.elements });
           let cnt = 0; let lid = "";
           for (const raw of msg.elements) {
@@ -377,16 +376,6 @@ export function SkillSketch({ skill }: { skill: string }) {
       wsRef.current = null;
     };
   }, [slug]);
-
-  useEffect(() => {
-    const bump = () => { localDrawingUntil.current = Date.now() + 400; };
-    window.addEventListener("pointerdown", bump, { passive: true });
-    window.addEventListener("pointermove", bump, { passive: true });
-    return () => {
-      window.removeEventListener("pointerdown", bump);
-      window.removeEventListener("pointermove", bump);
-    };
-  }, []);
 
   const onMiniNav = (worldX: number, worldY: number) => {
     const api = excalRef.current as (ExcalApi & {
@@ -744,6 +733,21 @@ export function SkillSketch({ skill }: { skill: string }) {
           open={miniOpen}
           onToggle={() => setMiniOpen((v) => !v)}
           onNavigate={onMiniNav}
+          onFitAll={() => {
+            const api = excalRef.current;
+            if (!api) return;
+            const app = api.getAppState() as { width?: number; height?: number };
+            const next = computeFitAllAppState(
+              api.getSceneElements() as Array<{ x?: number; y?: number; width?: number; height?: number; isDeleted?: boolean }>,
+              { width: app.width ?? 0, height: app.height ?? 0 },
+            );
+            if (!next) return;
+            try {
+              (api.updateScene as (d: { appState?: Record<string, unknown> }) => void)({
+                appState: { zoom: { value: next.zoom }, scrollX: next.scrollX, scrollY: next.scrollY },
+              });
+            } catch {}
+          }}
         />
         {chatOpen && (
           <SketchChatPanel
@@ -1346,13 +1350,14 @@ function ExcalDropdownItem({ icon, label, hint, onClick }: { icon: React.ReactNo
 }
 
 export function Minimap({
-  elements, appState, open, onToggle, onNavigate, size = "sm", defaultCorner = "br",
+  elements, appState, open, onToggle, onNavigate, onFitAll, size = "sm", defaultCorner = "br",
 }: {
   elements: readonly unknown[];
   appState: Record<string, unknown>;
   open: boolean;
   onToggle: () => void;
   onNavigate: (worldX: number, worldY: number) => void;
+  onFitAll?: () => void;
   size?: "sm" | "lg";
   defaultCorner?: "tl" | "tr" | "bl" | "br";
 }) {
@@ -1402,14 +1407,31 @@ export function Minimap({
   const toX = (x: number) => offX + (x - bbox.minX) * scale;
   const toY = (y: number) => offY + (y - bbox.minY) * scale;
 
-  const onClick = (e: React.MouseEvent<SVGSVGElement>) => {
+  const toWorld = (e: { clientX: number; clientY: number; currentTarget: Element }) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top;
-    const worldX = bbox.minX + (px - offX) / scale;
-    const worldY = bbox.minY + (py - offY) / scale;
+    return {
+      worldX: bbox.minX + (px - offX) / scale,
+      worldY: bbox.minY + (py - offY) / scale,
+    };
+  };
+  // Drag-pan: pointerdown inside the svg starts a drag; every move
+  // forwards a new world coord to onNavigate so the main canvas pans
+  // continuously while the finger/mouse is held.
+  const svgDrag = useRef(false);
+  const onSvgDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    svgDrag.current = true;
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+    const { worldX, worldY } = toWorld(e);
     onNavigate(worldX, worldY);
   };
+  const onSvgMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (!svgDrag.current) return;
+    const { worldX, worldY } = toWorld(e);
+    onNavigate(worldX, worldY);
+  };
+  const onSvgUp = () => { svgDrag.current = false; };
 
   // Draggable: default-parked at bottom-right via `right`/`bottom`; first drag
   // switches to absolute `left`/`top` and stays where the user drops it.
@@ -1453,16 +1475,35 @@ export function Minimap({
           <span className="excal-island-title">
             <MapIcon className="h-3 w-3" /> minimap · {items.length}
           </span>
-          <button
-            onClick={onToggle}
-            className="excal-island-btn"
-            title={open ? "Hide minimap" : "Show minimap"}
-          >
-            <ChevronDown className={`h-3 w-3 transition-transform ${open ? "" : "rotate-180"}`} />
-          </button>
+          <span className="inline-flex items-center gap-1">
+            {onFitAll && (
+              <button
+                onClick={onFitAll}
+                className="excal-island-btn"
+                title="Fit all"
+              >
+                <Maximize2 className="h-3 w-3" />
+              </button>
+            )}
+            <button
+              onClick={onToggle}
+              className="excal-island-btn"
+              title={open ? "Hide minimap" : "Show minimap"}
+            >
+              <ChevronDown className={`h-3 w-3 transition-transform ${open ? "" : "rotate-180"}`} />
+            </button>
+          </span>
         </div>
         {open && (
-          <svg width={W} height={H} onClick={onClick} className="excal-minimap-svg">
+          <svg
+            width={W} height={H}
+            onPointerDown={onSvgDown}
+            onPointerMove={onSvgMove}
+            onPointerUp={onSvgUp}
+            onPointerCancel={onSvgUp}
+            className="excal-minimap-svg"
+            style={{ touchAction: "none" }}
+          >
             {items.map((it, i) => {
               const x = toX(it.x);
               const y = toY(it.y);

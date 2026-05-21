@@ -14,7 +14,7 @@ import { toast } from "sonner";
 import { API, fetcher } from "@/lib/api";
 import {
   sceneFingerprint, patchFreedrawForPen, shouldApplyIncomingScene,
-  PEN_PROFILES, PEN_KEYS, type PenKey,
+  computeFitAllAppState, PEN_PROFILES, PEN_KEYS, type PenKey,
 } from "@/lib/sketch";
 import { Minimap } from "@/components/skill-sketch";
 import { useSketchGestures } from "@/components/sketch-gestures";
@@ -167,7 +167,6 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   const wsSendThrottle = useRef(0);
   const lastEditAt = useRef(0);
   const lastSeenFingerprint = useRef("");
-  const localDrawingUntil = useRef(0);
   const [livePeers, setLivePeers] = useState(0);
   const [miniData, setMiniData] = useState<{ els: readonly unknown[]; app: Record<string, unknown> }>({ els: [], app: {} });
   const miniThrottle = useRef(0);
@@ -233,11 +232,10 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
           if (msg.type !== "scene" || !Array.isArray(msg.elements)) return;
           const api = excalRef.current;
           if (!api) return;
-          // Skip apply while the local pen/finger is mid-stroke — applying
-          // updateScene during a drag jitters the active stroke. The gate
-          // window is set by pointerdown/up only (NOT pointermove) — see
-          // the effect below for why.
-          if (!shouldApplyIncomingScene(Date.now(), localDrawingUntil.current)) return;
+          // Gate: skip incoming scene only if we just emitted a local edit
+          // within the last 100ms. Avoids clobbering our own freshly-drawn
+          // strokes; otherwise always apply so remote edits land.
+          if (!shouldApplyIncomingScene(Date.now(), lastEditAt.current)) return;
           (api.updateScene as (d: { elements?: unknown[] }) => void)({ elements: msg.elements });
           lastSeenFingerprint.current = sceneFingerprint(msg.elements);
         } catch {}
@@ -265,23 +263,8 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   // CRITICAL: do NOT listen on `pointermove` — passive hover on a touch
   // device fires it constantly and would permanently suppress incoming
   // scenes, which is the bug that broke sync on the iPad.
-  useEffect(() => {
-    if (!editMode) return;
-    let active = 0;
-    const down = () => { active++; localDrawingUntil.current = Number.MAX_SAFE_INTEGER; };
-    const up = () => {
-      active = Math.max(0, active - 1);
-      if (active === 0) localDrawingUntil.current = Date.now() + 200;
-    };
-    window.addEventListener("pointerdown", down, { passive: true });
-    window.addEventListener("pointerup", up, { passive: true });
-    window.addEventListener("pointercancel", up, { passive: true });
-    return () => {
-      window.removeEventListener("pointerdown", down);
-      window.removeEventListener("pointerup", up);
-      window.removeEventListener("pointercancel", up);
-    };
-  }, [editMode]);
+  // (Gate is now entirely driven by `lastEditAt` inside onChange — no
+  // window pointer listeners needed. Keeping `localDrawingUntil` removed.)
 
   // Pen post-processor — Excalidraw freedraw can't switch its perfect-freehand
   // `simulatePressure` via appState, so we patch newly-finished strokes here.
@@ -428,6 +411,11 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
                 <CheckCircle2 className="h-3 w-3" /> saved
               </span>
             )}
+            <span className="h-4 w-px bg-border/60" />
+            <span className="px-2 py-1 rounded-md bg-foreground/5 border border-foreground/10 inline-flex items-center gap-1 text-[10px] font-mono">
+              <span className={`h-1.5 w-1.5 rounded-full ${livePeers > 0 ? "bg-emerald-500 animate-pulse" : "bg-zinc-500"}`} />
+              <span className="text-muted-foreground">{livePeers > 0 ? `live · ${livePeers}` : "solo"}</span>
+            </span>
           </div>
         ) : (
           <>
@@ -513,6 +501,25 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
             appState={miniData.app}
             open={miniOpen}
             onToggle={() => setMiniOpen((v) => !v)}
+            onFitAll={() => {
+              const api = excalRef.current;
+              if (!api) return;
+              const app = api.getAppState() as { width?: number; height?: number };
+              const next = computeFitAllAppState(
+                api.getSceneElements() as Array<{ x?: number; y?: number; width?: number; height?: number; isDeleted?: boolean }>,
+                { width: app.width ?? 0, height: app.height ?? 0 },
+              );
+              if (!next) return;
+              try {
+                api.updateScene({
+                  appState: {
+                    zoom: { value: next.zoom },
+                    scrollX: next.scrollX,
+                    scrollY: next.scrollY,
+                  },
+                });
+              } catch {}
+            }}
             onNavigate={(worldX, worldY) => {
               const api = excalRef.current;
               if (!api) return;
@@ -548,15 +555,11 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
         )}
         {editMode && penMode && <GestureLayer getApi={() => excalRef.current} />}
         {editMode && !penMode && <ThicknessSlider getApi={() => excalRef.current} />}
-        {editMode && (
-          // On tablet the top-right is now owned by the minimap; park the
-          // live/pen badges bottom-left so they never collide.
-          <div className={`absolute z-[65] inline-flex items-center gap-2 ${penMode ? "bottom-2 left-3" : "top-2 right-3"}`}>
-            {penMode && (
-              <span className="px-2 py-1 rounded-md bg-violet-500/15 border border-violet-500/40 text-violet-300 text-[10px] font-mono uppercase tracking-wider inline-flex items-center gap-1">
-                <Pencil className="h-3 w-3" /> pen mode
-              </span>
-            )}
+        {editMode && !penMode && (
+          // Laptop view keeps the floating badge cluster top-right.
+          // Tablet view promotes both pen-mode + live indicators into the
+          // centered header (see above) so this absolute block is hidden.
+          <div className="absolute z-[65] inline-flex items-center gap-2 top-2 right-3">
             <span className="px-2 py-1 rounded-md bg-foreground/5 border border-foreground/10 inline-flex items-center gap-1 text-[10px] font-mono">
               <span className={`h-1.5 w-1.5 rounded-full ${livePeers > 0 ? "bg-emerald-500 animate-pulse" : "bg-zinc-500"}`} />
               <span className="text-muted-foreground">{livePeers > 0 ? `live · ${livePeers}` : "solo"}</span>
