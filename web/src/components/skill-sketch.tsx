@@ -518,14 +518,11 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     appState: unknown,
     files: Record<string, unknown>,
   ) => {
-    // Block save until the server's scene has been seen at least once.
-    // Without this, Excalidraw's mount-time empty onChange would PUT empty
-    // elements to the backend and wipe the drawing on every reload.
-    if (!doc) return;
-    // Block until the server's scene has been applied to Excalidraw,
-    // otherwise the empty onChange that fires right before
-    // `appliedFor` flips can race the apply and overwrite the doc.
-    if (appliedFor.current !== slug) return;
+    // No early guards on `doc` / `appliedFor` — the backend's
+    // id+version reconciliation makes an empty/early PUT a no-op
+    // (incoming has no ids, existing elements always win), and the
+    // user-reported autosave-stuck symptom traces straight back to
+    // these gates blocking PUTs that should have fired.
     lastEditAt.current = Date.now();
     if (t.current) clearTimeout(t.current);
     // Both sides autosave — backend reconciles by (id, version) so
@@ -724,6 +721,45 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   };
 
 
+  // Synchronously flush a pending save — used by reset + beforeunload
+  // so a quick reload doesn't drop the most recent edit on the floor.
+  const flushSaveNow = useCallback(async () => {
+    const api = excalRef.current;
+    if (!api) return;
+    if (t.current) { clearTimeout(t.current); t.current = null; }
+    try {
+      const getAll = (api as unknown as { getSceneElementsIncludingDeleted?: () => readonly unknown[] }).getSceneElementsIncludingDeleted;
+      const all = getAll ? getAll.call(api) : api.getSceneElements();
+      last.current = ""; // bypass dedupe so even a forced re-save lands
+      await save({ elements: [...all], appState: api.getAppState() as Record<string, unknown>, files: api.getFiles() });
+    } catch {}
+  }, [save]);
+
+  // Best-effort flush on tab close / nav / hide. `sendBeacon` works
+  // when fetch wouldn't, and `visibilitychange` covers iOS swipe-to-
+  // background which never fires `beforeunload`.
+  useEffect(() => {
+    const beaconSave = () => {
+      const api = excalRef.current;
+      if (!api) return;
+      try {
+        const getAll = (api as unknown as { getSceneElementsIncludingDeleted?: () => readonly unknown[] }).getSceneElementsIncludingDeleted;
+        const all = getAll ? getAll.call(api) : api.getSceneElements();
+        const body = JSON.stringify({
+          data: { title: skill, elements: [...all], appState: api.getAppState(), files: api.getFiles() },
+        });
+        navigator.sendBeacon?.(`${API}/api/drawings/${encodeURIComponent(slug)}`, new Blob([body], { type: "application/json" }));
+      } catch {}
+    };
+    const onHidden = () => { if (document.visibilityState === "hidden") beaconSave(); };
+    window.addEventListener("beforeunload", beaconSave);
+    document.addEventListener("visibilitychange", onHidden);
+    return () => {
+      window.removeEventListener("beforeunload", beaconSave);
+      document.removeEventListener("visibilitychange", onHidden);
+    };
+  }, [skill, slug]);
+
   const reset = async () => {
     if (!confirm(`Clear all elements on ${skill} sketch?`)) return;
     const api = excalRef.current;
@@ -748,8 +784,17 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
           captureUpdate: mod.CaptureUpdateAction.IMMEDIATELY,
         });
       } catch {}
-      // onChange will fire from updateScene → autosave + WS broadcast
-      // propagate the tombstones to the peer.
+      // Force-save immediately so a quick reload can't drop the
+      // tombstones before the debounce fires. Without this, the
+      // user's clear gets lost on F5 and old strokes come back.
+      try {
+        last.current = ""; // bypass dedupe
+        await save({
+          elements: tombstoned as unknown as object[],
+          appState: api.getAppState() as Record<string, unknown>,
+          files: api.getFiles(),
+        });
+      } catch {}
       return;
     }
     // Fallback if Excalidraw isn't mounted yet: blow the doc away
