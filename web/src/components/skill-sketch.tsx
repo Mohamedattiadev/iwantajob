@@ -98,11 +98,66 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   type PaperMode = "plain" | "grid" | "dots" | "lines";
   const [paperMode, setPaperMode] = useState<PaperMode>("plain");
   // Layout mode — `board` is the default infinite canvas; `book`
-  // overlays A4-shaped page guides so the user can plan content
-  // page-by-page. Doesn't change anything Excalidraw stores —
-  // purely a visual guide + a `Page` quick-zoom nav.
+  // is GoodNotes-style paged. In book mode entry, we snap the
+  // viewport to fit page 0 and bind ←/→ to flip pages.
   type LayoutMode = "board" | "book";
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("board");
+  const [bookPage, setBookPage] = useState(0);
+  const bookPageRef = useRef(0);
+  useEffect(() => { bookPageRef.current = bookPage; }, [bookPage]);
+  // Fit viewport to a given page index — centers the page in view
+  // with 32 px padding. Matches the "tap-to-zoom-to-page" feel.
+  const goToBookPage = useCallback((idx: number) => {
+    const clamped = Math.max(0, Math.min(BOOK_PAGE_COUNT - 1, idx));
+    setBookPage(clamped);
+    const api = excalRef.current;
+    if (!api) return;
+    const app = api.getAppState() as { width?: number; height?: number };
+    const vw = app.width ?? window.innerWidth;
+    const vh = app.height ?? window.innerHeight;
+    const padding = 32;
+    const top = bookPageTop(clamped);
+    const zoom = Math.max(0.05, Math.min(2,
+      (vw - padding * 2) / BOOK_PAGE_W,
+      (vh - padding * 2) / BOOK_PAGE_H,
+    ));
+    // Center page in viewport: world coords of page center,
+    // map back to scrollX/Y given the new zoom.
+    const cx = BOOK_PAGE_W / 2;
+    const cy = top + BOOK_PAGE_H / 2;
+    api.updateScene({
+      appState: {
+        zoom: { value: zoom },
+        scrollX: vw / (2 * zoom) - cx,
+        scrollY: vh / (2 * zoom) - cy,
+      },
+    });
+  }, []);
+  // Snap to page 0 on entering book mode.
+  useEffect(() => {
+    if (layoutMode !== "book") return;
+    const t = setTimeout(() => goToBookPage(0), 50);
+    return () => clearTimeout(t);
+  }, [layoutMode, goToBookPage]);
+  // ←/→ + PageUp/Down keys flip pages while in book mode. Don't
+  // hijack when focus is in an input/textarea or when the user is
+  // typing in an Excalidraw text element.
+  useEffect(() => {
+    if (layoutMode !== "book") return;
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || (e.target as HTMLElement)?.isContentEditable) return;
+      if (e.key === "ArrowRight" || e.key === "PageDown") {
+        e.preventDefault();
+        goToBookPage(bookPageRef.current + 1);
+      } else if (e.key === "ArrowLeft" || e.key === "PageUp") {
+        e.preventDefault();
+        goToBookPage(bookPageRef.current - 1);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [layoutMode, goToBookPage]);
   // Whenever paperMode changes, force Excalidraw's viewBackgroundColor
   // to transparent (so the wrapper pattern shows) or back to white.
   useEffect(() => {
@@ -309,7 +364,6 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
         )}
         <MM.DefaultItems.SearchMenu />
         <MM.DefaultItems.LoadScene />
-        <MM.DefaultItems.SaveAsImage />
         <MM.DefaultItems.Help />
         <MM.Separator />
         <SidebarRow label="Paper">
@@ -1283,7 +1337,43 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
           <PaperBackdrop mode={paperMode} appState={miniData.app} />
         )}
         {layoutMode === "book" && (
-          <BookPagesOverlay appState={miniData.app} />
+          <>
+            <BookPagesOverlay appState={miniData.app} />
+            {/* Page nav widget — bottom-center, like GoodNotes */}
+            <div
+              style={{
+                position: "absolute",
+                bottom: 12,
+                left: "50%",
+                transform: "translateX(-50%)",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                padding: "4px 6px",
+                borderRadius: 999,
+                background: "color-mix(in oklab, var(--background) 80%, transparent)",
+                backdropFilter: "blur(8px)",
+                boxShadow: "0 2px 8px rgba(0,0,0,0.25), 0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent)",
+                zIndex: 5,
+                fontSize: 12,
+                color: "var(--foreground)",
+              }}
+            >
+              <button
+                onClick={() => goToBookPage(bookPage - 1)}
+                title="Previous page (←)"
+                style={{ border: "none", background: "transparent", color: "inherit", cursor: "pointer", padding: "4px 6px", borderRadius: 999 }}
+              ><ChevronLeft className="h-3.5 w-3.5" /></button>
+              <span style={{ fontVariantNumeric: "tabular-nums", padding: "0 6px", minWidth: 56, textAlign: "center" }}>
+                Page {bookPage + 1} / {BOOK_PAGE_COUNT}
+              </span>
+              <button
+                onClick={() => goToBookPage(bookPage + 1)}
+                title="Next page (→)"
+                style={{ border: "none", background: "transparent", color: "inherit", cursor: "pointer", padding: "4px 6px", borderRadius: 999 }}
+              ><ChevronRight className="h-3.5 w-3.5" /></button>
+            </div>
+          </>
         )}
         <Excalidraw
           key={slug}
@@ -1470,11 +1560,18 @@ export function SketchPreloader() {
 // Compact horizontal row injected into Excalidraw MainMenu — label
 // on the left, icon buttons inline. Saves vertical space vs the
 // default MM.Item-per-option layout.
+// Native-looking row inside Excalidraw MainMenu — uses their own
+// CSS vars so the styling tracks light/dark mode + theme changes.
 function SidebarRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="excal-sidebar-row" style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px" }}>
-      <span style={{ fontSize: 11, opacity: 0.7, minWidth: 44 }}>{label}</span>
-      <div style={{ display: "flex", gap: 4 }}>{children}</div>
+    <div
+      style={{
+        display: "flex", alignItems: "center", gap: 8, padding: "6px 10px",
+        fontSize: 12, color: "var(--text-primary-color)",
+      }}
+    >
+      <span style={{ minWidth: 48, opacity: 0.75 }}>{label}</span>
+      <div style={{ display: "inline-flex", gap: 4 }}>{children}</div>
     </div>
   );
 }
@@ -1492,15 +1589,23 @@ function SidebarIconBtn({
       style={{
         display: "inline-flex", alignItems: "center", justifyContent: "center",
         width: 28, height: 28, borderRadius: 8,
-        border: active
-          ? "1.5px solid var(--color-primary, #6965db)"
-          : "1px solid color-mix(in oklab, var(--foreground) 12%, transparent)",
+        border: "1px solid var(--button-bg, color-mix(in oklab, var(--foreground) 10%, transparent))",
         background: active
-          ? "color-mix(in oklab, var(--color-primary, #6965db) 18%, transparent)"
-          : "transparent",
-        color: active ? "var(--color-primary, #6965db)" : "var(--foreground)",
+          ? "var(--color-primary-light, color-mix(in oklab, var(--color-primary, #6965db) 22%, transparent))"
+          : "var(--island-bg-color, transparent)",
+        color: active ? "var(--color-primary, #6965db)" : "var(--text-primary-color, currentColor)",
         cursor: "pointer",
-        transition: "background 120ms ease, border-color 120ms ease",
+        transition: "background 120ms ease, border-color 120ms ease, color 120ms ease",
+      }}
+      onMouseEnter={(e) => {
+        if (active) return;
+        (e.currentTarget as HTMLButtonElement).style.background =
+          "var(--button-hover-bg, color-mix(in oklab, var(--foreground) 8%, transparent))";
+      }}
+      onMouseLeave={(e) => {
+        if (active) return;
+        (e.currentTarget as HTMLButtonElement).style.background =
+          "var(--island-bg-color, transparent)";
       }}
     >
       {children}
@@ -1508,20 +1613,26 @@ function SidebarIconBtn({
   );
 }
 
+// Page geometry constants — shared by overlay + page nav handlers.
+const BOOK_PAGE_W = 794;
+const BOOK_PAGE_H = 1123;
+const BOOK_PAGE_GAP = 24;
+const BOOK_PAGE_COUNT = 12;
+function bookPageTop(idx: number): number {
+  return idx * (BOOK_PAGE_H + BOOK_PAGE_GAP);
+}
+
 // Visual page guides for "book" mode. A4 portrait at world-space
-// (~794×1123 css px @ 96dpi). Five pages stacked vertically, with
+// (~794×1123 css px @ 96dpi). Twelve pages stacked vertically, with
 // a 24px gap, starting at (0,0) in world coords.
 function BookPagesOverlay({ appState }: { appState: Record<string, unknown> }) {
   const s = appState as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
   const zoom = s.zoom?.value ?? 1;
   const sx = (s.scrollX ?? 0) * zoom;
   const sy = (s.scrollY ?? 0) * zoom;
-  const PAGE_W = 794;
-  const PAGE_H = 1123;
-  const GAP = 24;
   const pages = [];
-  for (let i = 0; i < 6; i++) {
-    const top = i * (PAGE_H + GAP);
+  for (let i = 0; i < BOOK_PAGE_COUNT; i++) {
+    const top = bookPageTop(i);
     pages.push(
       <div
         key={i}
@@ -1529,14 +1640,25 @@ function BookPagesOverlay({ appState }: { appState: Record<string, unknown> }) {
           position: "absolute",
           left: sx,
           top: sy + top * zoom,
-          width: PAGE_W * zoom,
-          height: PAGE_H * zoom,
+          width: BOOK_PAGE_W * zoom,
+          height: BOOK_PAGE_H * zoom,
           borderRadius: 4 * zoom,
-          background: "color-mix(in oklab, var(--background) 80%, transparent)",
-          boxShadow: "0 1px 3px rgba(0,0,0,0.18), 0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent)",
+          background: "color-mix(in oklab, var(--background) 85%, transparent)",
+          boxShadow:
+            "0 2px 8px rgba(0,0,0,0.18), 0 0 0 1px color-mix(in oklab, var(--foreground) 14%, transparent)",
           pointerEvents: "none",
         }}
-      />,
+      >
+        {/* Page number badge */}
+        <div
+          style={{
+            position: "absolute",
+            top: 8 * zoom, right: 12 * zoom,
+            fontSize: 11 * zoom, opacity: 0.5,
+            color: "var(--foreground)",
+          }}
+        >{i + 1}</div>
+      </div>,
     );
   }
   return (
