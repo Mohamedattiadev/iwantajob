@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
 from pydantic import BaseModel
@@ -1258,11 +1258,25 @@ Return STRICT JSON only — no prose, no markdown — in this exact shape:
         return drawings_mod.list_all()
 
     @app.get("/api/drawings/{name}")
-    def api_drawing_get(name: str):
+    def api_drawing_get(name: str, request: Request):
+        import hashlib
+        import json as _json
         data = drawings_mod.load(name)
         if data is None:
-            return {"slug": name, "title": name, "elements": [], "appState": {}, "files": {}}
-        return data
+            data = {"slug": name, "title": name, "elements": [], "appState": {}, "files": {}}
+        # ETag = sha1 of the canonical payload. SWR polls every 500 ms;
+        # an If-None-Match hit returns 304 with no body, cutting per-
+        # poll bandwidth from ~40 KB to ~200 B.
+        payload = _json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+        etag = '"' + hashlib.sha1(payload).hexdigest() + '"'
+        inm = request.headers.get("if-none-match")
+        if inm and inm == etag:
+            return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
+        return Response(
+            content=payload,
+            media_type="application/json",
+            headers={"ETag": etag, "Cache-Control": "no-cache"},
+        )
 
     @app.put("/api/drawings/{name}")
     def api_drawing_put(name: str, body: DrawingIn):
