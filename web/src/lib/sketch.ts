@@ -24,19 +24,29 @@ export const PEN_PROFILES: Record<PenKey, PenProfile> = {
 
 export const PEN_KEYS: readonly PenKey[] = ["ballpoint", "fountain", "brush", "highlighter"];
 
-// Cheap change-detection: live (non-deleted) element count + id of the
-// last live element in iteration order. Stable across no-op re-renders;
-// changes when a stroke is added or removed.
+// Cheap change-detection: live (non-deleted) element count + an
+// order-independent xor-sum of cheap id hashes. Stable across no-op
+// re-renders and across `updateScene` paths that reorder elements (iOS
+// Excalidraw does this), so echo suppression doesn't false-positive
+// when a remote scene is applied and re-emitted by `onChange` with a
+// different element order. Bumping format → callers comparing strings
+// continue to work; just both sides must use this same function.
+function cheapStringHash(s: string): number {
+  // djb2 trimmed to 32-bit.
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return h >>> 0;
+}
 export function sceneFingerprint(els: readonly unknown[]): string {
   let count = 0;
-  let lastId = "";
+  let xor = 0;
   for (const raw of els) {
     const e = raw as { id?: string; isDeleted?: boolean } | null;
     if (!e || e.isDeleted) continue;
     count++;
-    if (e.id) lastId = e.id;
+    if (e.id) xor = (xor ^ cheapStringHash(e.id)) >>> 0;
   }
-  return `${count}:${lastId}`;
+  return `${count}:${xor.toString(36)}`;
 }
 
 // Iterate scene elements and patch the freedraw ones that haven't been

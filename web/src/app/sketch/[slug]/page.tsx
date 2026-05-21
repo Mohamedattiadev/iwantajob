@@ -285,18 +285,20 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     saveTimer.current = setTimeout(() => {
       save({ elements: [...elements], appState: appState as Record<string, unknown>, files });
     }, 1500);
-    // Realtime broadcast — leading-edge 16ms (~60 msg/s) with trailing
+    // Realtime broadcast — leading-edge 33ms (~30 msg/s) with trailing
     // flush so the final mid-stroke / end-of-stroke frame always lands
-    // even if it falls inside a throttle gap. This is what made the
-    // remote stroke "stutter" feel — last frame dropped.
+    // even if it falls inside a throttle gap. 33ms matches the laptop
+    // sender — asymmetric throttles (tablet 16ms, laptop 33ms) flooded
+    // the laptop's echo-suppression window and made laptop→tablet
+    // sync drop frames after a few strokes.
     const now = Date.now();
     const bg = (appState as { viewBackgroundColor?: string })?.viewBackgroundColor;
     pendingSend.current = { elements, bg };
-    if (now - wsSendThrottle.current >= 16 && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+    if (now - wsSendThrottle.current >= 33 && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       flushPending();
     } else if (!trailingTimer.current) {
       // Schedule a trailing flush at the next throttle boundary.
-      const wait = Math.max(4, 16 - (now - wsSendThrottle.current));
+      const wait = Math.max(8, 33 - (now - wsSendThrottle.current));
       trailingTimer.current = setTimeout(() => {
         trailingTimer.current = null;
         flushPending();

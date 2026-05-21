@@ -12,35 +12,31 @@ import {
 } from "./sketch";
 
 describe("sceneFingerprint", () => {
-  it("returns 0:'' for empty", () => {
-    expect(sceneFingerprint([])).toBe("0:");
+  it("returns 0:0 for empty", () => {
+    expect(sceneFingerprint([])).toBe("0:0");
   });
 
-  it("counts live elements and reports the last id", () => {
-    const els = [
-      { id: "a" },
-      { id: "b" },
-      { id: "c" },
-    ];
-    expect(sceneFingerprint(els)).toBe("3:c");
+  it("starts with the live count", () => {
+    const els = [{ id: "a" }, { id: "b" }, { id: "c" }];
+    expect(sceneFingerprint(els).startsWith("3:")).toBe(true);
   });
 
-  it("skips deleted elements in count and last-id", () => {
+  it("skips deleted elements from the count", () => {
     const els = [
       { id: "a" },
       { id: "b", isDeleted: true },
       { id: "c" },
     ];
-    expect(sceneFingerprint(els)).toBe("2:c");
+    expect(sceneFingerprint(els).startsWith("2:")).toBe(true);
   });
 
   it("treats null entries as deleted", () => {
-    expect(sceneFingerprint([null, { id: "x" }, null])).toBe("1:x");
+    expect(sceneFingerprint([null, { id: "x" }, null]).startsWith("1:")).toBe(true);
   });
 
-  it("element without id is counted but doesn't set lastId", () => {
-    const els = [{ id: "a" }, { /* no id */ }];
-    expect(sceneFingerprint(els)).toBe("2:a");
+  it("element without id contributes to count but not the hash", () => {
+    const withNoId = sceneFingerprint([{ id: "a" }, { /* no id */ }]);
+    expect(withNoId.startsWith("2:")).toBe(true);
   });
 
   it("changes when an element is added", () => {
@@ -49,9 +45,31 @@ describe("sceneFingerprint", () => {
     expect(before).not.toBe(after);
   });
 
-  it("changes when the last id changes", () => {
+  it("changes when any id changes (last or not)", () => {
     expect(sceneFingerprint([{ id: "a" }, { id: "b" }]))
       .not.toBe(sceneFingerprint([{ id: "a" }, { id: "c" }]));
+  });
+
+  // Critical for the laptop↔tablet sync: iOS Excalidraw reorders
+  // elements after `updateScene`, so a receiver-emitted onChange would
+  // produce a different fingerprint than the one the sender broadcast
+  // if the fingerprint depended on iteration order. Order-independent
+  // hash kills the echo-suppression false-positive that caused the
+  // one-way (laptop→tablet) sync bug.
+  it("is order-independent (reorder yields same fingerprint)", () => {
+    const a = sceneFingerprint([{ id: "x" }, { id: "y" }, { id: "z" }]);
+    const b = sceneFingerprint([{ id: "z" }, { id: "x" }, { id: "y" }]);
+    expect(a).toBe(b);
+  });
+
+  it("is order-independent with a mix of deleted entries", () => {
+    const a = sceneFingerprint([
+      { id: "a" }, { id: "b", isDeleted: true }, { id: "c" },
+    ]);
+    const b = sceneFingerprint([
+      { id: "c" }, { id: "a" }, { id: "b", isDeleted: true },
+    ]);
+    expect(a).toBe(b);
   });
 });
 
