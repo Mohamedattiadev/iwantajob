@@ -23,6 +23,26 @@ import "@excalidraw/excalidraw/index.css";
 
 type DrawingListItem = { slug: string; title: string; category?: string; updated_at?: number };
 
+// Heuristic label from UA — laptop renders this in the accept/deny toast.
+// Keeps the toast short: "iPad · Safari", "iPhone · Chrome", "Android".
+function deriveLabel(ua?: string): string {
+  if (!ua) return "Tablet";
+  const u = ua.toLowerCase();
+  let device = "Tablet";
+  if (u.includes("ipad")) device = "iPad";
+  else if (u.includes("iphone")) device = "iPhone";
+  else if (u.includes("android")) device = u.includes("mobile") ? "Android phone" : "Android tablet";
+  else if (u.includes("macintosh")) device = "Mac";
+  else if (u.includes("windows")) device = "Windows";
+  else if (u.includes("linux")) device = "Linux";
+  let browser = "";
+  if (u.includes("crios") || u.includes("chrome")) browser = "Chrome";
+  else if (u.includes("fxios") || u.includes("firefox")) browser = "Firefox";
+  else if (u.includes("edg")) browser = "Edge";
+  else if (u.includes("safari")) browser = "Safari";
+  return browser ? `${device} · ${browser}` : device;
+}
+
 const Excalidraw = dynamic(
   async () => (await import("@excalidraw/excalidraw")).Excalidraw,
   {
@@ -168,6 +188,44 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   const wsSendThrottle = useRef(0);
   const lastEditAt = useRef(0);
   const lastSeenFingerprint = useRef("");
+  // Pending payload kept so we always flush the last frame after throttle
+  // window closes (trailing-edge). Without this, the receiver sees a stale
+  // mid-stroke scene whenever the stroke ends inside a throttle gap.
+  const pendingSend = useRef<{ elements: readonly unknown[]; bg?: string } | null>(null);
+  const trailingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // rAF handle for batching incoming-scene applies to one per frame, so
+  // bursty incoming messages don't trigger N synchronous React renders.
+  const incomingRaf = useRef<number | null>(null);
+  const incomingPending = useRef<unknown[] | null>(null);
+  // Admin-approval gate. Pad starts pending; laptop accept/deny via the
+  // notification toast wired into SkillSketch. While pending or denied,
+  // we lock editing locally so the pad can't change the shared scene.
+  const [approval, setApproval] = useState<"pending" | "approved" | "denied">(
+    penMode ? "pending" : "approved",
+  );
+  const approvalRef = useRef(approval);
+  // Imperative viewMode toggle. Excalidraw reads `viewModeEnabled` from
+  // appState only — flipping the React prop does nothing at runtime. Push
+  // the new value through updateScene whenever approval changes so the
+  // pad becomes truly writable on approve and truly locked on deny.
+  // Without this the canvas stayed in view mode after the host accepted
+  // (the "freezes after PIN" bug).
+  useEffect(() => {
+    if (!excalReady || !penMode) return;
+    const api = excalRef.current;
+    if (!api) return;
+    const locked = approval !== "approved";
+    try {
+      api.updateScene({
+        appState: {
+          viewModeEnabled: locked,
+          ...(locked ? {} : { penMode: true, penDetected: true }),
+        },
+      });
+      if (!locked) api.setActiveTool?.({ type: "freedraw" });
+    } catch {}
+  }, [approval, excalReady, penMode]);
+  useEffect(() => { approvalRef.current = approval; }, [approval]);
   // Excalidraw fires onChange whenever the scene mutates — including when
   // WE called updateScene to apply an incoming WS payload. Without this
   // guard, the remote-applied frame would set lastEditAt = now, which then
@@ -179,21 +237,45 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   const miniThrottle = useRef(0);
   const [miniOpen, setMiniOpen] = useState(true);
 
+  const flushPending = useCallback(() => {
+    if (trailingTimer.current) { clearTimeout(trailingTimer.current); trailingTimer.current = null; }
+    const p = pendingSend.current;
+    if (!p) return;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    pendingSend.current = null;
+    wsSendThrottle.current = Date.now();
+    try {
+      ws.send(JSON.stringify({
+        type: "scene",
+        elements: p.elements,
+        appState: { viewBackgroundColor: p.bg },
+        ts: Date.now(),
+      }));
+    } catch {}
+  }, []);
+
   const onChange = useCallback((elements: readonly unknown[], appState: unknown, files: Record<string, unknown>) => {
     if (!editMode) return;
+    // Pad is not yet approved by host — drop all edits (Excalidraw still
+    // updates visually because viewModeEnabled is the real lock; we keep
+    // this as a belt-and-braces guard against autosave + broadcast).
+    if (penMode && approvalRef.current !== "approved") return;
     // Critical guard: don't autosave before the server's scene has been
     // applied to Excalidraw. Otherwise the initial empty onChange (Excalidraw
     // fires it on mount) would PUT empty elements and wipe the drawing on
     // every reload.
     if (appliedFor.current !== slug) return;
-    // Remote-applied frame? Don't mark as local edit and don't echo back.
-    // (Mini-map preview still updates below.)
-    if (Date.now() < applyingRemoteUntil.current) {
-      lastSeenFingerprint.current = sceneFingerprint(elements);
+    // Echo suppression — only skip when this onChange's fingerprint equals
+    // the scene we just applied from the remote. Local edits change the
+    // fingerprint and broadcast normally, even while a burst of remote
+    // updates is still arriving (was the simultaneous-edit deadlock).
+    const fp = sceneFingerprint(elements);
+    if (Date.now() < applyingRemoteUntil.current && fp === lastSeenFingerprint.current) {
       return;
     }
     lastEditAt.current = Date.now();
-    lastSeenFingerprint.current = sceneFingerprint(elements);
+    lastSeenFingerprint.current = fp;
     const tnow = Date.now();
     if (tnow - miniThrottle.current > 120) {
       miniThrottle.current = tnow;
@@ -203,20 +285,24 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     saveTimer.current = setTimeout(() => {
       save({ elements: [...elements], appState: appState as Record<string, unknown>, files });
     }, 1500);
-    // Realtime broadcast — 30ms ≈ 33 msg/s for snappier remote rendering.
+    // Realtime broadcast — leading-edge 16ms (~60 msg/s) with trailing
+    // flush so the final mid-stroke / end-of-stroke frame always lands
+    // even if it falls inside a throttle gap. This is what made the
+    // remote stroke "stutter" feel — last frame dropped.
     const now = Date.now();
-    if (now - wsSendThrottle.current >= 30 && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsSendThrottle.current = now;
-      try {
-        wsRef.current.send(JSON.stringify({
-          type: "scene",
-          elements,
-          appState: { viewBackgroundColor: (appState as { viewBackgroundColor?: string })?.viewBackgroundColor },
-          ts: now,
-        }));
-      } catch {}
+    const bg = (appState as { viewBackgroundColor?: string })?.viewBackgroundColor;
+    pendingSend.current = { elements, bg };
+    if (now - wsSendThrottle.current >= 16 && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      flushPending();
+    } else if (!trailingTimer.current) {
+      // Schedule a trailing flush at the next throttle boundary.
+      const wait = Math.max(4, 16 - (now - wsSendThrottle.current));
+      trailingTimer.current = setTimeout(() => {
+        trailingTimer.current = null;
+        flushPending();
+      }, wait);
     }
-  }, [editMode, save]);
+  }, [editMode, save, penMode, flushPending]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !editMode) return;
@@ -250,9 +336,21 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
           // within the last 100ms. Avoids clobbering our own freshly-drawn
           // strokes; otherwise always apply so remote edits land.
           if (!shouldApplyIncomingScene(Date.now(), lastEditAt.current)) return;
-          applyingRemoteUntil.current = Date.now() + 80;
-          (api.updateScene as (d: { elements?: unknown[] }) => void)({ elements: msg.elements });
-          lastSeenFingerprint.current = sceneFingerprint(msg.elements);
+          // Coalesce burst into one updateScene per animation frame —
+          // when sender sends 60/s we'd otherwise re-render React 60×.
+          incomingPending.current = msg.elements;
+          if (incomingRaf.current != null) return;
+          incomingRaf.current = requestAnimationFrame(() => {
+            incomingRaf.current = null;
+            const next = incomingPending.current;
+            incomingPending.current = null;
+            if (!next) return;
+            const a = excalRef.current;
+            if (!a) return;
+            applyingRemoteUntil.current = Date.now() + 80;
+            try { (a.updateScene as (d: { elements?: unknown[] }) => void)({ elements: next }); } catch {}
+            lastSeenFingerprint.current = sceneFingerprint(next);
+          });
         } catch {}
       };
       ws.onclose = () => {
@@ -314,22 +412,55 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   // Presence heartbeat — declare ourselves as `pad` if pen=1 (the QR link sets
   // this), otherwise as a passive viewer. Lets the host laptop badge the iPad
   // icon with "1 connected" when this page is alive.
-  const sessionIdRef = useRef<string>("");
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (!sessionIdRef.current) {
-      sessionIdRef.current = (crypto.randomUUID?.() ?? `s-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`);
+  const newSid = () => crypto.randomUUID?.() ?? `s-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+  const [sessionId, setSessionId] = useState<string>("");
+  useEffect(() => { if (!sessionId) setSessionId(newSid()); }, [sessionId]);
+  // Tablet hook for "request access again" — rotate sid so server marks
+  // the new entry pending, and laptop's presence poll picks it up as a
+  // fresh pad and re-toasts the accept/deny prompt.
+  const requestAccessAgain = useCallback(() => {
+    const prev = sessionId;
+    if (prev) {
+      fetch(`/api/presence/${encodeURIComponent(slug)}?sessionId=${encodeURIComponent(prev)}`, {
+        method: "DELETE", headers: authHeaders(),
+      }).catch(() => {});
     }
-    const sid = sessionIdRef.current;
+    setApproval("pending");
+    setSessionId(newSid());
+  }, [sessionId, slug]);
+  useEffect(() => {
+    if (typeof window === "undefined" || !sessionId) return;
+    const sid = sessionId;
     const role = penMode ? "pad" : editMode ? "viewer" : "viewer";
+    // Build device fingerprint once — laptop displays it in the accept toast
+    // so the host knows which physical tablet is asking to join.
+    const nav = typeof navigator !== "undefined" ? navigator : undefined;
+    const scr = typeof screen !== "undefined" ? screen : undefined;
+    const device = nav ? {
+      userAgent: nav.userAgent,
+      platform: (nav as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ?? nav.platform,
+      screen: scr ? `${scr.width}x${scr.height}` : undefined,
+      pixelRatio: typeof window !== "undefined" ? window.devicePixelRatio : undefined,
+      language: nav.language,
+      touch: typeof window !== "undefined" && ("ontouchstart" in window || nav.maxTouchPoints > 0),
+    } : undefined;
+    // Friendlier label than just "iPad" — e.g. "iPad · Safari" so the
+    // operator can disambiguate when multiple devices try to connect.
+    const label = role === "pad" ? deriveLabel(nav?.userAgent) : undefined;
     const beat = () => {
       fetch(`/api/presence/${encodeURIComponent(slug)}`, {
         method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ sessionId: sid, role }),
-      }).catch(() => {});
+        body: JSON.stringify({ sessionId: sid, role, label, device }),
+      })
+        .then((r) => r.ok ? r.json() : null)
+        .then((j: { self?: { approval?: "pending" | "approved" | "denied" } } | null) => {
+          if (!j?.self?.approval) return;
+          setApproval(j.self.approval);
+        })
+        .catch(() => {});
     };
     beat();
-    const id = setInterval(beat, 5000);
+    const id = setInterval(beat, 4000);
     const onUnload = () => {
       try {
         fetch(`/api/presence/${encodeURIComponent(slug)}?sessionId=${encodeURIComponent(sid)}`, { method: "DELETE", keepalive: true }).catch(() => {});
@@ -337,7 +468,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     };
     window.addEventListener("pagehide", onUnload);
     return () => { clearInterval(id); window.removeEventListener("pagehide", onUnload); onUnload(); };
-  }, [slug, penMode, editMode]);
+  }, [slug, penMode, editMode, sessionId]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -488,7 +619,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
       <div className="flex-1 min-h-0 relative">
         <Excalidraw
           initialData={initialData}
-          viewModeEnabled={!editMode}
+          viewModeEnabled={!editMode || (penMode && approval !== "approved")}
           onChange={editMode ? onChange : undefined}
           theme="dark"
           aiEnabled={false}
@@ -587,6 +718,30 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
           <div className="absolute top-2 left-1/2 -translate-x-1/2 z-[70] px-3 py-1.5 rounded-md bg-amber-500/15 text-amber-400 text-[11px] font-mono inline-flex items-center gap-1.5 border border-amber-500/30 max-w-[90vw] break-all">
             <AlertTriangle className="h-3 w-3 shrink-0" />
             <span>offline — local only ({String((error as Error)?.message ?? error).slice(0, 80)})</span>
+          </div>
+        )}
+        {penMode && approval !== "approved" && (
+          <div className="absolute inset-0 z-[85] grid place-items-center bg-background/40 backdrop-blur-[2px] pointer-events-none">
+            <div className="pointer-events-auto rounded-2xl border border-foreground/15 bg-card/95 backdrop-blur p-5 w-[340px] shadow-2xl text-center">
+              <div className="inline-flex items-center gap-2 mb-3">
+                <span className={`h-2 w-2 rounded-full ${approval === "denied" ? "bg-red-500" : "bg-amber-500 animate-pulse"}`} />
+                <div className="text-xs font-mono uppercase tracking-wider text-muted-foreground">
+                  {approval === "denied" ? "Access denied" : "Waiting for laptop"}
+                </div>
+              </div>
+              <div className="text-sm text-foreground/90 mb-4">
+                {approval === "denied"
+                  ? "Host rejected this tablet. Tap below to retry with a fresh session."
+                  : "Tablet is connected. Accept the pair request on the laptop to start drawing."}
+              </div>
+              <button
+                type="button"
+                onClick={requestAccessAgain}
+                className="w-full text-[11px] font-mono text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+              >
+                rotate session & try again
+              </button>
+            </div>
           </div>
         )}
         {pickerOpen && (

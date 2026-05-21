@@ -10,6 +10,8 @@ import { CommandPalette } from "@/components/command-palette";
 import { AmbientBackground } from "@/components/ambient-bg";
 import { PageWidthProvider } from "@/components/page-width";
 import { TodoDrawer } from "@/components/todo-drawer";
+import { ScratchFab } from "@/components/scratch-fab";
+import { SwrProvider } from "@/components/swr-provider";
 
 const sansFont = Inter({
   variable: "--font-sans",
@@ -75,15 +77,18 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col bg-background text-foreground">
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
           <PageWidthProvider>
-            <AmbientBackground />
-            <OnboardingGate>
-              <Nav />
-              <main className="app-main flex-1 w-full mx-auto flex flex-col min-h-0">{children}</main>
-              <ChatWidget />
-              <TodoDrawer />
-              <CommandPalette />
-            </OnboardingGate>
-            <Toaster richColors closeButton position="bottom-right" />
+            <SwrProvider>
+              <AmbientBackground />
+              <OnboardingGate>
+                <Nav />
+                <main className="app-main flex-1 w-full mx-auto flex flex-col min-h-0">{children}</main>
+                <ChatWidget />
+                <TodoDrawer />
+                <ScratchFab />
+                <CommandPalette />
+              </OnboardingGate>
+              <Toaster richColors closeButton position="bottom-right" />
+            </SwrProvider>
           </PageWidthProvider>
         </ThemeProvider>
       </body>

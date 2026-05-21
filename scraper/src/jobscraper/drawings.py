@@ -112,11 +112,62 @@ def load(name: str) -> dict[str, Any] | None:
         return None
 
 
+def _reconcile_elements(
+    local: list[dict[str, Any]],
+    remote: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Union elements by id, keeping the higher-versioned copy.
+
+    This is Excalidraw's standard reconciliation rule and is what makes
+    concurrent saves (laptop + tablet PUTting at the same time, each with
+    only their own most-recent strokes) safe — strokes from either side
+    survive instead of the last writer clobbering the other.
+
+    Tiebreaker: (version, versionNonce). Tombstones (`isDeleted: true`)
+    are preserved so a delete on one client propagates correctly.
+    """
+    by_id: dict[str, dict[str, Any]] = {}
+
+    def _key(el: dict[str, Any]) -> tuple[int, int]:
+        v = el.get("version")
+        n = el.get("versionNonce")
+        return (int(v) if isinstance(v, (int, float)) else 0,
+                int(n) if isinstance(n, (int, float)) else 0)
+
+    def _absorb(els: list[dict[str, Any]]) -> None:
+        for el in els:
+            if not isinstance(el, dict):
+                continue
+            eid = el.get("id")
+            if not isinstance(eid, str):
+                continue
+            prev = by_id.get(eid)
+            if prev is None or _key(el) > _key(prev):
+                by_id[eid] = el
+
+    _absorb(remote)  # existing server scene first
+    _absorb(local)   # then incoming write — wins on equal version
+    return list(by_id.values())
+
+
 def save(name: str, data: dict[str, Any]) -> None:
     slug = _slug(name)
     category, _ = _category_from_slug(slug)
     title = str(data.get("title") or slug)[:200]
-    payload = json.dumps(data, ensure_ascii=False)
+
+    # Merge incoming elements with whatever is already on disk so concurrent
+    # saves from laptop + tablet don't clobber each other. WebSocket sync
+    # usually keeps both sides in lock-step, but if a PUT lands during a
+    # gap (mid-stroke broadcast not yet delivered) the merge keeps both
+    # parties' edits intact.
+    merged = dict(data)
+    incoming = data.get("elements") if isinstance(data.get("elements"), list) else []
+    existing_doc = load(name) or {}
+    existing_els = existing_doc.get("elements") if isinstance(existing_doc.get("elements"), list) else []
+    if incoming or existing_els:
+        merged["elements"] = _reconcile_elements(list(incoming), list(existing_els))
+
+    payload = json.dumps(merged, ensure_ascii=False)
 
     with session_scope() as s:
         row = s.scalar(select(Drawing).where(Drawing.slug == slug))
@@ -130,7 +181,7 @@ def save(name: str, data: dict[str, Any]) -> None:
 
     _legacy_path(name).write_text(payload, encoding="utf-8")
 
-    native = _to_excalidraw_native(data)
+    native = _to_excalidraw_native(merged)
     _excalidraw_path(slug).write_text(json.dumps(native, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

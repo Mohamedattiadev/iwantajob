@@ -12,8 +12,9 @@ import {
   Eye, Pencil, Image as ImageIcon, FileCode, Copy,
   Network, ArrowDown, Columns3, Grid2x2, Play, Square,
   PanelRightOpen, ZoomIn, ZoomOut,
-  Tablet, ExternalLink, Save, Users,
+  Tablet, ExternalLink, Save, Users, ArrowLeft,
 } from "lucide-react";
+import NextLink from "next/link";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -60,11 +61,11 @@ type ExcalApi = {
   setActiveTool?: (tool: { type: string; locked?: boolean }) => void;
 };
 
-export function SkillSketch({ skill }: { skill: string }) {
+export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: string; homeHref?: string; defaultFull?: boolean }) {
   const slug = `skill-${skillSlug(skill)}`;
   const { data: doc, mutate } = useSWR<DrawingDoc>(`/api/drawings/${slug}`, fetcher);
   const { resolvedTheme } = useTheme();
-  const [full, setFull] = useState(false);
+  const [full, setFull] = useState(defaultFull);
   const [saved, setSaved] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
@@ -136,10 +137,37 @@ export function SkillSketch({ skill }: { skill: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [presenting, presentIdx, showFrame]);
   const [miniData, setMiniData] = useState<{ els: readonly unknown[]; app: Record<string, unknown> }>({ els: [], app: {} });
+  // Seed the minimap from the loaded doc so it shows real geometry before
+  // the user touches the canvas — otherwise the minimap reads 0 elements
+  // on every fresh page load until the first onChange.
+  useEffect(() => {
+    if (!doc) return;
+    const els = Array.isArray(doc.elements) ? doc.elements : [];
+    setMiniData({ els: els as readonly unknown[], app: (doc.appState ?? {}) as Record<string, unknown> });
+  }, [doc]);
   const [miniOpen, setMiniOpen] = useState(true);
   const last = useRef("");
   const t = useRef<ReturnType<typeof setTimeout> | null>(null);
   const excalRef = useRef<ExcalApi | null>(null);
+  // Excalidraw consumes `initialData` only on mount, so if SWR returns the
+  // doc AFTER mount (the SWRConfig dedupe + no-revalidate-on-focus path
+  // makes this almost always the case on warm caches) the canvas stays
+  // empty while the minimap, fed straight off `doc`, shows the full scene.
+  // This effect pushes elements into Excalidraw exactly once per slug.
+  const [excalReady, setExcalReady] = useState(false);
+  const appliedFor = useRef<string>("");
+  useEffect(() => {
+    if (!doc || !excalReady) return;
+    if (appliedFor.current === slug) return;
+    appliedFor.current = slug;
+    const api = excalRef.current;
+    if (!api) return;
+    const els = Array.isArray(doc.elements) ? doc.elements : [];
+    try {
+      (api.updateScene as (d: { elements?: unknown[] }) => void)({ elements: els as unknown[] });
+    } catch {}
+  }, [slug, doc, excalReady]);
+  useEffect(() => { appliedFor.current = ""; }, [slug]);
 
   const initialData = useMemo(() => {
     if (!doc) return undefined;
@@ -213,8 +241,34 @@ export function SkillSketch({ skill }: { skill: string }) {
   // Presence: heartbeat as host every 5s and poll counts so the iPad icon can
   // show a connection badge. Stable sessionId per tab so reloads don't spawn
   // ghost peers.
-  const [presence, setPresence] = useState<{ host: number; pad: number; viewer: number; total: number }>({ host: 0, pad: 0, viewer: 0, total: 0 });
+  type PresenceDevice = {
+    userAgent?: string;
+    platform?: string;
+    screen?: string;
+    pixelRatio?: number;
+    language?: string;
+    touch?: boolean;
+    ip?: string;
+    pin?: string;
+  };
+  type PadApproval = "pending" | "approved" | "denied";
+  type PresencePad = { sessionId: string; approval: PadApproval; label?: string; ts: number; firstSeen?: number; device?: PresenceDevice };
+  const [presence, setPresence] = useState<{ host: number; pad: number; viewer: number; total: number; pads: PresencePad[] }>({ host: 0, pad: 0, viewer: 0, total: 0, pads: [] });
+  const slugRef = useRef(slug);
+  useEffect(() => { slugRef.current = slug; }, [slug]);
   const sessionIdRef = useRef<string>("");
+  const decidePad = useCallback(async (sessionId: string, next: "approved" | "denied") => {
+    try {
+      await fetch(`/api/presence/${encodeURIComponent(slugRef.current)}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({
+          sessionId,
+          approval: next,
+          hostSessionId: sessionIdRef.current,
+        }),
+      });
+    } catch {}
+  }, []);
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (!sessionIdRef.current) {
@@ -227,21 +281,78 @@ export function SkillSketch({ skill }: { skill: string }) {
           method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() },
           body: JSON.stringify({ sessionId: sid, role: "host" }),
         });
-        if (r.ok) setPresence(await r.json());
+        if (!r.ok) return;
+        const j = (await r.json()) as typeof presence;
+        setPresence(j);
+        // Phase 1: surface every pending pad. Use sonner's `id` to dedupe
+        // so re-polling doesn't stack toasts AND the toast can't be lost
+        // by an accidental dismiss — every poll re-asserts it while the
+        // pad is still pending.
+        for (const p of j.pads ?? []) {
+          if (p.approval !== "pending") continue;
+          const padSid = p.sessionId;
+          const d = p.device ?? {};
+          const padLabel = p.label ?? "Tablet";
+          const meta: string[] = [];
+          if (d.ip) meta.push(d.ip);
+          if (d.screen) meta.push(d.screen);
+          if (d.language) meta.push(d.language);
+          toast.custom(() => (
+            <div className="rounded-xl border border-foreground/15 bg-card/95 backdrop-blur shadow-2xl w-[320px] p-4">
+              <div className="flex items-start gap-2 mb-2">
+                <div className="h-2 w-2 rounded-full bg-amber-500 animate-pulse mt-1.5" />
+                <div>
+                  <div className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
+                    Pair request
+                  </div>
+                  <div className="text-sm font-semibold mt-0.5">{padLabel}</div>
+                </div>
+              </div>
+              {meta.length > 0 && (
+                <div className="text-[11px] font-mono text-muted-foreground mb-3 truncate">
+                  {meta.join(" · ")}
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => decidePad(padSid, "denied")}
+                  className="flex-1 px-3 py-2 rounded-md border border-foreground/15 text-xs hover:bg-foreground/5"
+                >
+                  Deny
+                </button>
+                <button
+                  onClick={() => decidePad(padSid, "approved")}
+                  className="flex-1 px-3 py-2 rounded-md bg-primary text-primary-foreground text-xs font-semibold"
+                >
+                  Accept
+                </button>
+              </div>
+            </div>
+          ), { id: `req-${padSid}`, duration: Infinity });
+        }
+        // Dismiss request toasts for pads that left "pending" state.
+        for (const p of j.pads ?? []) {
+          if (p.approval !== "pending") toast.dismiss(`req-${p.sessionId}`);
+        }
+        // Dismiss request toasts for pads that vanished entirely.
+        const live = new Set((j.pads ?? []).map((p) => p.sessionId));
+        for (const p of j.pads ?? []) {
+          if (!live.has(p.sessionId)) toast.dismiss(`req-${p.sessionId}`);
+        }
       } catch {}
     };
     beat();
-    const id = setInterval(beat, 5000);
+    const id = setInterval(beat, 4000);
     const onUnload = () => {
+      // DELETE with keepalive is reliable on page hide in modern browsers
+      // and avoids the prior POST-without-body which the route 400s on.
       try {
-        navigator.sendBeacon?.(`/api/presence/${encodeURIComponent(slug)}?sessionId=${encodeURIComponent(sid)}`);
-        // sendBeacon only POSTs — also fire a fire-and-forget DELETE
         fetch(`/api/presence/${encodeURIComponent(slug)}?sessionId=${encodeURIComponent(sid)}`, { method: "DELETE", keepalive: true }).catch(() => {});
       } catch {}
     };
     window.addEventListener("beforeunload", onUnload);
     return () => { clearInterval(id); window.removeEventListener("beforeunload", onUnload); onUnload(); };
-  }, [slug]);
+  }, [slug, decidePad]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -258,6 +369,28 @@ export function SkillSketch({ skill }: { skill: string }) {
   const lastEditAt = useRef(0);
   const lastSeenFingerprint = useRef("");
   const wsRef = useRef<WebSocket | null>(null);
+  const wsSendThrottle = useRef(0);
+  const pendingSend = useRef<{ elements: readonly unknown[]; bg?: string } | null>(null);
+  const trailingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const incomingRaf = useRef<number | null>(null);
+  const incomingPending = useRef<unknown[] | null>(null);
+  const flushPending = useCallback(() => {
+    if (trailingTimer.current) { clearTimeout(trailingTimer.current); trailingTimer.current = null; }
+    const p = pendingSend.current;
+    if (!p) return;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    pendingSend.current = null;
+    wsSendThrottle.current = Date.now();
+    try {
+      ws.send(JSON.stringify({
+        type: "scene",
+        elements: p.elements,
+        appState: { viewBackgroundColor: p.bg },
+        ts: Date.now(),
+      }));
+    } catch {}
+  }, []);
   // Window during which onChange events are coming from updateScene-of-a-
   // remote-payload, not from local user input. See identical comment in
   // src/app/sketch/[slug]/page.tsx — without this guard, applying an
@@ -289,6 +422,10 @@ export function SkillSketch({ skill }: { skill: string }) {
     // Without this, Excalidraw's mount-time empty onChange would PUT empty
     // elements to the backend and wipe the drawing on every reload.
     if (!doc) return;
+    // Also block until we've actually applied the server scene into
+    // Excalidraw — otherwise the empty onChange that fires right before
+    // `appliedFor` flips can race the apply and overwrite the doc.
+    if (appliedFor.current !== slug) return;
     // Inline fingerprint (count + last visible id) so iPad pulls cleanly.
     let cnt = 0; let lid = "";
     for (const raw of elements) {
@@ -297,48 +434,52 @@ export function SkillSketch({ skill }: { skill: string }) {
       cnt++;
       if (e.id) lid = e.id;
     }
-    lastSeenFingerprint.current = `${cnt}:${lid}`;
-    // Remote-applied frame? Update preview only; don't mark as a local edit
-    // and don't echo back to the server.
-    if (Date.now() < applyingRemoteUntil.current) {
+    const fp = `${cnt}:${lid}`;
+    // Echo suppression: only skip when this onChange's fingerprint matches
+    // the scene we just applied from the remote. If the local user added a
+    // stroke, fingerprint differs and we broadcast — fixes the bug where a
+    // burst of incoming strokes kept extending the time window and locked
+    // out simultaneous local edits.
+    if (Date.now() < applyingRemoteUntil.current && fp === lastSeenFingerprint.current) {
       const now0 = Date.now();
-      if (now0 - miniThrottle.current > 120) {
+      if (now0 - miniThrottle.current > 280) {
         miniThrottle.current = now0;
         setMiniData({ els: elements, app: appState as Record<string, unknown> });
       }
       return;
     }
+    lastSeenFingerprint.current = fp;
     lastEditAt.current = Date.now();
     if (t.current) clearTimeout(t.current);
-    // Suspend autosave while iPad (or any peer) is connected — iPad owns
-    // writes during a collab session so we don't race-overwrite the table.
-    // Re-check inside the timer callback too, because peer count can flip
-    // between the timer being armed and the callback firing.
-    if (livePeersRef.current === 0) {
-      t.current = setTimeout(() => {
-        if (livePeersRef.current > 0) return;
-        save({ elements: [...elements], appState: appState as Record<string, unknown>, files });
-      }, DEBOUNCE_MS);
-    }
+    // Both sides autosave now — backend reconciles elements by (id, version)
+    // so concurrent PUTs from laptop + tablet merge instead of overwriting.
+    // This unblocks the "tablet save wipes laptop strokes" data loss path.
+    t.current = setTimeout(() => {
+      save({ elements: [...elements], appState: appState as Record<string, unknown>, files });
+    }, DEBOUNCE_MS);
     const now = Date.now();
-    if (now - miniThrottle.current > 120) {
+    if (now - miniThrottle.current > 280) {
       miniThrottle.current = now;
       setMiniData({ els: elements, app: appState as Record<string, unknown> });
     }
     // Outgoing broadcast stays on regardless of peers — iPad needs to see
-    // laptop strokes too. Only DB autosave is suspended (above) so writes
-    // don't race; the iPad applies our scene and re-saves on its next debounce.
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      try {
-        wsRef.current.send(JSON.stringify({
-          type: "scene",
-          elements,
-          appState: { viewBackgroundColor: (appState as { viewBackgroundColor?: string })?.viewBackgroundColor },
-          ts: now,
-        }));
-      } catch {}
+    // laptop strokes too. Leading-edge 16ms + trailing flush so the final
+    // stroke frame always lands on the receiver (the missing trailing send
+    // is what made remote rendering feel choppy).
+    const bg = (appState as { viewBackgroundColor?: string })?.viewBackgroundColor;
+    pendingSend.current = { elements, bg };
+    // 33ms ≈ 30 msg/s. Halves JSON.stringify cost vs 60Hz and is still
+    // visually smooth on the receiver. Trailing flush keeps final frame.
+    if (now - wsSendThrottle.current >= 33 && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      flushPending();
+    } else if (!trailingTimer.current) {
+      const wait = Math.max(8, 33 - (now - wsSendThrottle.current));
+      trailingTimer.current = setTimeout(() => {
+        trailingTimer.current = null;
+        flushPending();
+      }, wait);
     }
-  }, [save]);
+  }, [save, flushPending]);
 
   // Realtime collab WebSocket — pairs with the FastAPI `/ws/drawings/{slug}`
   // room. Outgoing throttled (~150ms); incoming applied via updateScene
@@ -368,16 +509,28 @@ export function SkillSketch({ skill }: { skill: string }) {
           const api = excalRef.current;
           if (!api) return;
           if (!shouldApplyIncomingScene(Date.now(), lastEditAt.current)) return;
-          applyingRemoteUntil.current = Date.now() + 80;
-          (api.updateScene as unknown as (d: { elements?: unknown[] }) => void)({ elements: msg.elements });
-          let cnt = 0; let lid = "";
-          for (const raw of msg.elements) {
-            const e = raw as { id?: string; isDeleted?: boolean } | null;
-            if (!e || e.isDeleted) continue;
-            cnt++;
-            if (e.id) lid = e.id;
-          }
-          lastSeenFingerprint.current = `${cnt}:${lid}`;
+          // Coalesce bursty incoming scenes (iPad sends ~60/s during a
+          // stroke) into one updateScene per animation frame.
+          incomingPending.current = msg.elements;
+          if (incomingRaf.current != null) return;
+          incomingRaf.current = requestAnimationFrame(() => {
+            incomingRaf.current = null;
+            const next = incomingPending.current;
+            incomingPending.current = null;
+            if (!next) return;
+            const a = excalRef.current;
+            if (!a) return;
+            applyingRemoteUntil.current = Date.now() + 80;
+            try { (a.updateScene as unknown as (d: { elements?: unknown[] }) => void)({ elements: next }); } catch {}
+            let cnt = 0; let lid = "";
+            for (const raw of next) {
+              const e = raw as { id?: string; isDeleted?: boolean } | null;
+              if (!e || e.isDeleted) continue;
+              cnt++;
+              if (e.id) lid = e.id;
+            }
+            lastSeenFingerprint.current = `${cnt}:${lid}`;
+          });
         } catch {}
       };
       ws.onclose = () => {
@@ -631,8 +784,16 @@ export function SkillSketch({ skill }: { skill: string }) {
     <div className={full ? "fixed inset-0 z-50 bg-background p-3 flex flex-col gap-2" : "flex flex-col gap-2"}>
       {!full && (
         <div className="flex items-center gap-3 text-xs">
+          {homeHref && (
+            <NextLink
+              href={homeHref}
+              className="inline-flex items-center gap-1.5 text-muted-foreground hover:text-foreground"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" /> Home
+            </NextLink>
+          )}
           <span className="text-muted-foreground">
-            Sketch · {livePeers > 0 ? "live (iPad owns saves)" : "auto-saves"}
+            Sketch · {livePeers > 0 ? `live · ${livePeers} peer${livePeers === 1 ? "" : "s"}` : "auto-saves"}
           </span>
           <button
             type="button"
@@ -665,7 +826,7 @@ export function SkillSketch({ skill }: { skill: string }) {
           onChange={onChange}
           theme={resolvedTheme === "light" ? "light" : "dark"}
           aiEnabled={false}
-          excalidrawAPI={(api) => { excalRef.current = api as ExcalApi; }}
+          excalidrawAPI={(api) => { excalRef.current = api as ExcalApi; setExcalReady(true); }}
         >
           {excalMod && (() => {
             const MM = excalMod.MainMenu as unknown as React.ComponentType<{ children?: React.ReactNode }> & {
@@ -685,6 +846,14 @@ export function SkillSketch({ skill }: { skill: string }) {
             };
             return (
               <MM>
+                {homeHref && (
+                  <>
+                    <MM.ItemLink href={homeHref} icon={<ArrowLeft style={{ width: 14, height: 14 }} />}>
+                      Home
+                    </MM.ItemLink>
+                    <MM.Separator />
+                  </>
+                )}
                 <MM.DefaultItems.SearchMenu />
                 <MM.DefaultItems.LoadScene />
                 <MM.DefaultItems.SaveAsImage />
@@ -718,6 +887,9 @@ export function SkillSketch({ skill }: { skill: string }) {
           padUrl={typeof window !== "undefined" ? appendTokenToUrl(`${window.location.origin}/sketch/${slug}?mode=edit&pen=1`) : ""}
           padCount={presence.pad}
           viewerCount={presence.viewer}
+          pendingPads={presence.pads}
+          onApprovePad={(sid) => decidePad(sid, "approved")}
+          onDenyPad={(sid) => decidePad(sid, "denied")}
           onSave={manualSave}
           saving={saving}
           savedTick={saved}
@@ -855,6 +1027,7 @@ function TopRightTools({
   onAi, onChat, onTemplate, onExportPng, onExportSvg, onCopyJson,
   full, onToggleFull, framesCount, presenting, onPresentToggle,
   penOn, onTogglePen, padUrl, padCount, viewerCount, onSave, saving, savedTick,
+  pendingPads, onApprovePad, onDenyPad,
 }: {
   onAi: () => void;
   onChat: () => void;
@@ -875,6 +1048,9 @@ function TopRightTools({
   onSave: () => void;
   saving: boolean;
   savedTick: boolean;
+  pendingPads: Array<{ sessionId: string; approval: "pending" | "approved" | "denied"; label?: string; device?: { ip?: string; screen?: string; language?: string } }>;
+  onApprovePad: (sessionId: string) => void;
+  onDenyPad: (sessionId: string) => void;
 }) {
   const [open, setOpen] = useState<null | "ai" | "export" | "pad">(null);
   useEffect(() => {
@@ -947,6 +1123,9 @@ function TopRightTools({
           url={padUrl}
           padCount={padCount}
           viewerCount={viewerCount}
+          pendingPads={pendingPads}
+          onApprovePad={onApprovePad}
+          onDenyPad={onDenyPad}
         />
       </ExcalDropdown>
       <button onClick={onToggleFull} className="excal-btn" title={full ? "Exit fullscreen (F)" : "Fullscreen (F)"}>
@@ -1136,8 +1315,11 @@ function PresentPreviewPanel({
   );
 }
 
-function PadPanel({ penOn, onTogglePen, url, padCount, viewerCount }: {
+function PadPanel({ penOn, onTogglePen, url, padCount, viewerCount, pendingPads, onApprovePad, onDenyPad }: {
   penOn: boolean; onTogglePen: () => void; url: string; padCount: number; viewerCount: number;
+  pendingPads: Array<{ sessionId: string; approval: "pending" | "approved" | "denied"; label?: string; device?: { ip?: string; screen?: string; language?: string } }>;
+  onApprovePad: (sessionId: string) => void;
+  onDenyPad: (sessionId: string) => void;
 }) {
   const [qr, setQr] = useState<string>("");
   const [lanUrl, setLanUrl] = useState<string>(url);
@@ -1244,6 +1426,38 @@ function PadPanel({ penOn, onTogglePen, url, padCount, viewerCount }: {
           <span>Open</span>
         </a>
       </div>
+      {pendingPads.filter((p) => p.approval === "pending").length > 0 && (
+        <div className="mt-3 space-y-2">
+          {pendingPads
+            .filter((p) => p.approval === "pending")
+            .map((p) => (
+              <div key={p.sessionId} className="rounded-md border border-foreground/10 bg-foreground/5 p-2.5">
+                <div className="flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider text-muted-foreground mb-1.5">
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+                  Pair request
+                </div>
+                <div className="text-xs font-semibold truncate">{p.label ?? "Tablet"}</div>
+                {p.device?.ip && (
+                  <div className="text-[10px] font-mono text-muted-foreground truncate">{p.device.ip}</div>
+                )}
+                <div className="mt-2 flex items-center gap-1.5">
+                  <button
+                    onClick={() => onDenyPad(p.sessionId)}
+                    className="flex-1 px-2 py-1 rounded border border-foreground/15 text-[11px] hover:bg-foreground/5"
+                  >
+                    Deny
+                  </button>
+                  <button
+                    onClick={() => onApprovePad(p.sessionId)}
+                    className="flex-1 px-2 py-1 rounded bg-primary text-primary-foreground text-[11px] font-semibold"
+                  >
+                    Accept
+                  </button>
+                </div>
+              </div>
+            ))}
+        </div>
+      )}
     </li>
   );
 }

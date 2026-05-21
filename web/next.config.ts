@@ -8,6 +8,11 @@ import type { NextConfig } from "next";
 const BACKEND = process.env.BACKEND_URL || "http://127.0.0.1:8000";
 
 const nextConfig: NextConfig = {
+  compress: true,
+  productionBrowserSourceMaps: false,
+  experimental: {
+    optimizePackageImports: ["@base-ui/react", "@excalidraw/excalidraw"],
+  },
   async rewrites() {
     // Dedicated `/be/api/*` prefix avoids colliding with Next.js route
     // handlers under `/api/*` (e.g. `/api/presence/[slug]`). Frontend
