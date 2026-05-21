@@ -12,6 +12,7 @@ import {
   Eye, Pencil, Image as ImageIcon, FileCode, Copy,
   Network, ArrowDown, Columns3, Grid2x2, Play, Square,
   PanelRightOpen, ZoomIn, ZoomOut,
+  Tablet, ExternalLink, Save, Users,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
@@ -83,6 +84,15 @@ export function SkillSketch({ skill }: { skill: string }) {
   const [presentIdx, setPresentIdx] = useState<number | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [slideFocus, setSlideFocus] = useState(false);
+  const [penMode, setPenMode] = useState(false);
+  const togglePen = useCallback(() => {
+    const api = excalRef.current as (ExcalApi & { updateScene?: (d: { appState?: Record<string, unknown> }) => void }) | null;
+    if (!api?.updateScene) return;
+    const next = !penMode;
+    setPenMode(next);
+    api.updateScene({ appState: { penMode: next, penDetected: next } });
+    toast.success(next ? "Pen mode on — palm rejection enabled" : "Pen mode off");
+  }, [penMode]);
   const slideFocusRef = useRef(false);
   useEffect(() => { slideFocusRef.current = slideFocus; }, [slideFocus]);
   const presenting = presentIdx !== null;
@@ -162,6 +172,85 @@ export function SkillSketch({ skill }: { skill: string }) {
     });
     if (r.ok) { setSaved(true); setTimeout(() => setSaved(false), 1500); mutate(); }
   }, [skill, slug, mutate]);
+
+  // Manual save: bypass the debounce + dedupe and force-flush the live scene.
+  // Auto-save covers the happy path; this gives the user a recovery handle for
+  // when the tab is about to crash or they want a guaranteed checkpoint.
+  const [saving, setSaving] = useState(false);
+  const manualSave = useCallback(async () => {
+    const api = excalRef.current;
+    if (!api) return;
+    if (t.current) clearTimeout(t.current);
+    setSaving(true);
+    try {
+      last.current = ""; // force PUT even if scene unchanged
+      const body = JSON.stringify({
+        data: {
+          title: skill,
+          elements: [...api.getSceneElements()],
+          appState: api.getAppState(),
+          files: api.getFiles(),
+        },
+      });
+      const r = await fetch(`${API}/api/drawings/${slug}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body,
+      });
+      if (!r.ok) throw new Error(`${r.status}`);
+      last.current = body;
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+      mutate();
+      toast.success("Saved");
+    } catch (e) {
+      toast.error("Save failed", { description: String(e) });
+    } finally {
+      setSaving(false);
+    }
+  }, [skill, slug, mutate]);
+
+  // Presence: heartbeat as host every 5s and poll counts so the iPad icon can
+  // show a connection badge. Stable sessionId per tab so reloads don't spawn
+  // ghost peers.
+  const [presence, setPresence] = useState<{ host: number; pad: number; viewer: number; total: number }>({ host: 0, pad: 0, viewer: 0, total: 0 });
+  const sessionIdRef = useRef<string>("");
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!sessionIdRef.current) {
+      sessionIdRef.current = (crypto.randomUUID?.() ?? `s-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`);
+    }
+    const sid = sessionIdRef.current;
+    const beat = async () => {
+      try {
+        const r = await fetch(`/api/presence/${encodeURIComponent(slug)}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: sid, role: "host" }),
+        });
+        if (r.ok) setPresence(await r.json());
+      } catch {}
+    };
+    beat();
+    const id = setInterval(beat, 5000);
+    const onUnload = () => {
+      try {
+        navigator.sendBeacon?.(`/api/presence/${encodeURIComponent(slug)}?sessionId=${encodeURIComponent(sid)}`);
+        // sendBeacon only POSTs — also fire a fire-and-forget DELETE
+        fetch(`/api/presence/${encodeURIComponent(slug)}?sessionId=${encodeURIComponent(sid)}`, { method: "DELETE", keepalive: true }).catch(() => {});
+      } catch {}
+    };
+    window.addEventListener("beforeunload", onUnload);
+    return () => { clearInterval(id); window.removeEventListener("beforeunload", onUnload); onUnload(); };
+  }, [slug]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        manualSave();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [manualSave]);
 
   const miniThrottle = useRef(0);
   const onChange = useCallback((
@@ -416,7 +505,27 @@ export function SkillSketch({ skill }: { skill: string }) {
       {!full && (
         <div className="flex items-center gap-3 text-xs">
           <span className="text-muted-foreground">Sketch · auto-saves</span>
+          <button
+            type="button"
+            onClick={manualSave}
+            disabled={saving}
+            title="Force save now (Ctrl/Cmd+S)"
+            className="inline-flex items-center gap-1 rounded-md border border-foreground/15 px-2 py-1 hover:bg-foreground/5 disabled:opacity-50"
+          >
+            <Save className="h-3 w-3" />
+            <span>{saving ? "Saving…" : "Save"}</span>
+          </button>
           {saved && <span className="inline-flex items-center gap-1 text-emerald-500"><CheckCircle2 className="h-3 w-3" /> saved</span>}
+          {presence.pad > 0 && (
+            <span className="inline-flex items-center gap-1 text-[#6965db]" title={`${presence.pad} iPad${presence.pad === 1 ? "" : "s"} connected`}>
+              <Tablet className="h-3 w-3" /> {presence.pad}
+            </span>
+          )}
+          {presence.viewer > 0 && (
+            <span className="inline-flex items-center gap-1 text-muted-foreground" title={`${presence.viewer} viewer${presence.viewer === 1 ? "" : "s"}`}>
+              <Users className="h-3 w-3" /> {presence.viewer}
+            </span>
+          )}
         </div>
       )}
 
@@ -426,6 +535,7 @@ export function SkillSketch({ skill }: { skill: string }) {
           initialData={initialData}
           onChange={onChange}
           theme={resolvedTheme === "light" ? "light" : "dark"}
+          aiEnabled={false}
           excalidrawAPI={(api) => { excalRef.current = api as ExcalApi; }}
         >
           {excalMod && (() => {
@@ -474,6 +584,11 @@ export function SkillSketch({ skill }: { skill: string }) {
             if (presenting) { setPresentIdx(null); return; }
             setPreviewOpen(true);
           }}
+          penOn={penMode}
+          onTogglePen={togglePen}
+          padUrl={typeof window !== "undefined" ? `${window.location.origin}/sketch/${slug}?mode=edit&pen=1` : ""}
+          padCount={presence.pad}
+          viewerCount={presence.viewer}
         />
         <FloatingShare
           onShareView={() => copyShareLink("view")}
@@ -593,6 +708,7 @@ function ShapeIslandTools(props: React.ComponentProps<typeof TopRightTools>) {
 function TopRightTools({
   onAi, onChat, onTemplate, onExportPng, onExportSvg, onCopyJson,
   full, onToggleFull, framesCount, presenting, onPresentToggle,
+  penOn, onTogglePen, padUrl, padCount, viewerCount,
 }: {
   onAi: () => void;
   onChat: () => void;
@@ -605,8 +721,13 @@ function TopRightTools({
   framesCount: number;
   presenting: boolean;
   onPresentToggle: () => void;
+  penOn: boolean;
+  onTogglePen: () => void;
+  padUrl: string;
+  padCount: number;
+  viewerCount: number;
 }) {
-  const [open, setOpen] = useState<null | "ai" | "export">(null);
+  const [open, setOpen] = useState<null | "ai" | "export" | "pad">(null);
   useEffect(() => {
     if (!open) return;
     const onDoc = () => setOpen(null);
@@ -652,6 +773,22 @@ function TopRightTools({
         <ExcalDropdownItem icon={<ImageIcon className="h-4 w-4" />} label="Export as PNG" onClick={() => { onExportPng(); setOpen(null); }} />
         <ExcalDropdownItem icon={<FileCode className="h-4 w-4" />}  label="Export as SVG" onClick={() => { onExportSvg(); setOpen(null); }} />
         <ExcalDropdownItem icon={<Copy className="h-4 w-4" />}      label="Copy scene JSON" onClick={() => { onCopyJson(); setOpen(null); }} />
+      </ExcalDropdown>
+      <ExcalDropdown
+        label="iPad & pen"
+        icon={<Tablet className="h-3.5 w-3.5" />}
+        open={open === "pad"}
+        onToggle={() => setOpen(open === "pad" ? null : "pad")}
+        badge={padCount > 0 ? padCount : viewerCount > 0 ? viewerCount : 0}
+        badgeTone={padCount > 0 ? "live" : "muted"}
+      >
+        <PadPanel
+          penOn={penOn}
+          onTogglePen={onTogglePen}
+          url={padUrl}
+          padCount={padCount}
+          viewerCount={viewerCount}
+        />
       </ExcalDropdown>
       <button onClick={onToggleFull} className="excal-btn" title={full ? "Exit fullscreen (F)" : "Fullscreen (F)"}>
         {full ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
@@ -840,6 +977,118 @@ function PresentPreviewPanel({
   );
 }
 
+function PadPanel({ penOn, onTogglePen, url, padCount, viewerCount }: {
+  penOn: boolean; onTogglePen: () => void; url: string; padCount: number; viewerCount: number;
+}) {
+  const [qr, setQr] = useState<string>("");
+  const [lanUrl, setLanUrl] = useState<string>(url);
+  const [lanWarn, setLanWarn] = useState<string>("");
+
+  // Replace localhost hostname with the dev server's LAN IPv4 so the iPad,
+  // which is on another device, can actually reach it.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!url) return;
+      try {
+        const u = new URL(url);
+        const isLocal = u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "0.0.0.0";
+        if (!isLocal) { setLanUrl(url); setLanWarn(""); return; }
+        const r = await fetch("/api/lan", { cache: "no-store" });
+        const d = await r.json();
+        const ip = Array.isArray(d.lan) ? d.lan[0] : undefined;
+        if (!ip) {
+          if (!cancelled) { setLanUrl(url); setLanWarn("No LAN IP detected — iPad won't reach localhost."); }
+          return;
+        }
+        u.hostname = ip;
+        if (!cancelled) {
+          setLanUrl(u.toString());
+          setLanWarn(`iPad must be on the same Wi-Fi as ${ip}.`);
+        }
+      } catch {
+        if (!cancelled) { setLanUrl(url); setLanWarn("LAN lookup failed — link points to localhost."); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [url]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!lanUrl) return;
+      try {
+        const { default: QRCode } = await import("qrcode");
+        const dataUrl = await QRCode.toDataURL(lanUrl, { margin: 1, width: 180, color: { dark: "#1b1b1f", light: "#ffffff" } });
+        if (!cancelled) setQr(dataUrl);
+      } catch {
+        if (!cancelled) setQr("");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [lanUrl]);
+
+  const copy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(lanUrl);
+      toast.success("iPad link copied", { description: lanUrl });
+    } catch {
+      toast.error("Clipboard blocked");
+    }
+  };
+  const live = padCount > 0;
+  return (
+    <li className="excal-pad-v2" onClick={(e) => e.stopPropagation()}>
+      <div className="excal-pad-v2-head">
+        <div className="excal-pad-v2-title">
+          <Tablet className="h-3.5 w-3.5" />
+          <span>iPad bridge</span>
+        </div>
+        <div className={`excal-pad-v2-status ${live ? "is-live" : viewerCount > 0 ? "is-warn" : ""}`}>
+          <span className="excal-pad-v2-dot" />
+          {live ? `${padCount} connected` : viewerCount > 0 ? `${viewerCount} viewer${viewerCount === 1 ? "" : "s"}` : "Waiting"}
+        </div>
+      </div>
+
+      <button onClick={onTogglePen} className={`excal-pad-v2-toggle ${penOn ? "is-on" : ""}`}>
+        <span className="excal-pad-v2-toggle-icon"><Pencil className="h-3.5 w-3.5" /></span>
+        <span className="excal-pad-v2-toggle-body">
+          <span className="excal-pad-v2-toggle-label">Pen mode</span>
+          <span className="excal-pad-v2-toggle-hint">{penOn ? "palm rejection active" : "tap input only"}</span>
+        </span>
+        <span className={`excal-pad-v2-switch ${penOn ? "is-on" : ""}`}>
+          <span className="excal-pad-v2-switch-knob" />
+        </span>
+      </button>
+
+      <div className="excal-pad-v2-qrcard">
+        {qr ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={qr} alt="QR to open on iPad" width={168} height={168} className="excal-pad-v2-qr-img" />
+        ) : (
+          <div className="excal-pad-v2-qr-skeleton">generating…</div>
+        )}
+        <div className="excal-pad-v2-url" title={lanUrl}>{lanUrl}</div>
+        {lanWarn && (
+          <div className="excal-pad-v2-warn">{lanWarn}</div>
+        )}
+      </div>
+
+      <div className="excal-pad-v2-actions">
+        <button onClick={copy} className="excal-pad-v2-action">
+          <Copy className="h-3.5 w-3.5" />
+          <span>Copy link</span>
+        </button>
+        <a href={lanUrl} target="_blank" rel="noreferrer" className="excal-pad-v2-action">
+          <ExternalLink className="h-3.5 w-3.5" />
+          <span>Open</span>
+        </a>
+      </div>
+    </li>
+  );
+}
+
 function FrameThumb({ frame, kids }: { frame: FrameEl; kids: SceneEl[] }) {
   const W = 280;
   const H = 140;
@@ -920,14 +1169,24 @@ function PresentOverlay({
 }
 
 function ExcalDropdown({
-  label, icon, open, onToggle, primary, children,
+  label, icon, open, onToggle, primary, children, badge, badgeTone,
 }: {
   label: string; icon: React.ReactNode; open: boolean; onToggle: () => void; primary?: boolean; children: React.ReactNode;
+  badge?: number; badgeTone?: "live" | "muted";
 }) {
   return (
     <div className="relative">
       <button onClick={onToggle} className={`excal-btn ${primary ? "excal-btn-primary" : ""} ${open ? "excal-btn-active" : ""}`} title={label}>
         {icon}
+        {badge && badge > 0 ? (
+          <span
+            className={`absolute -top-1 -right-1 min-w-[14px] h-[14px] px-[3px] rounded-full text-[9px] leading-[14px] font-bold text-white grid place-items-center ${
+              badgeTone === "live" ? "bg-emerald-500 animate-pulse" : "bg-zinc-500"
+            }`}
+          >
+            {badge}
+          </span>
+        ) : null}
       </button>
       {open && (
         <div className="absolute top-full right-0 mt-1 min-w-[200px] excal-popover">

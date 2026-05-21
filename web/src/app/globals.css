@@ -826,6 +826,250 @@ html.sketch-fullscreen .chat-widget-panel,
 html.sketch-fullscreen .tasks-launcher,
 html.sketch-fullscreen .ambient-bg { display: none !important; }
 
+/* iPad / pen popover — wider so the 180px QR fits cleanly. */
+.excal-pad-panel { list-style: none; display: block; padding: 0; min-width: 220px; }
+.excal-pad-qr {
+  display: grid;
+  place-items: center;
+  padding: 8px;
+  margin: 4px 6px;
+  background: rgba(127,127,127,0.06);
+  border-radius: 8px;
+}
+.excal-pad-qr img { display: block; border-radius: 4px; }
+.excal-pad-qr--loading { height: 180px; font-size: 11px; opacity: 0.5; font-family: ui-monospace, "Cascadia Mono", monospace; }
+.excal-pad-url {
+  padding: 4px 10px 6px;
+  font-size: 10px;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  opacity: 0.55;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.excal-pad-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 0 4px 4px;
+}
+.excal-pad-actions .excal-popover-item { font-size: 11px; padding: 6px 8px; }
+/* iPad bridge panel — structured card with header, toggle row, QR card,
+   action buttons. Designed to feel native to Excalidraw's popover system
+   (same border-color tokens, monospace section labels). */
+.excal-pad-v2 {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  min-width: 240px;
+}
+.excal-pad-v2-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 2px 6px;
+  border-bottom: 1px solid var(--default-border-color, rgba(127,127,127,0.18));
+}
+.excal-pad-v2-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  opacity: 0.85;
+}
+.excal-pad-v2-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  background: rgba(127,127,127,0.10);
+  color: rgba(127,127,127,0.9);
+}
+.excal-pad-v2-status.is-live { background: rgba(34,197,94,0.14); color: #16a34a; }
+.excal-pad-v2-status.is-warn { background: rgba(234,179,8,0.14); color: #ca8a04; }
+.excal-pad-v2-dot {
+  width: 6px; height: 6px; border-radius: 999px;
+  background: currentColor;
+  opacity: 0.85;
+}
+.excal-pad-v2-status.is-live .excal-pad-v2-dot {
+  animation: excal-pulse 1.6s ease-in-out infinite;
+}
+
+.excal-pad-v2-toggle {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(127,127,127,0.06);
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s, border-color 0.12s;
+}
+.excal-pad-v2-toggle:hover { background: rgba(127,127,127,0.10); }
+.excal-pad-v2-toggle.is-on {
+  background: rgba(105,101,219,0.10);
+  border-color: rgba(105,101,219,0.30);
+}
+.excal-pad-v2-toggle-icon {
+  display: grid; place-items: center;
+  width: 26px; height: 26px;
+  border-radius: 6px;
+  background: rgba(127,127,127,0.12);
+  color: rgba(127,127,127,0.9);
+}
+.excal-pad-v2-toggle.is-on .excal-pad-v2-toggle-icon { background: #6965db; color: white; }
+.excal-pad-v2-toggle-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.excal-pad-v2-toggle-label { font-size: 12px; font-weight: 500; }
+.excal-pad-v2-toggle-hint { font-size: 10px; opacity: 0.6; font-family: ui-monospace, "Cascadia Mono", monospace; }
+.excal-pad-v2-switch {
+  width: 28px; height: 16px;
+  border-radius: 999px;
+  background: rgba(127,127,127,0.30);
+  position: relative;
+  transition: background 0.15s;
+  flex: 0 0 28px;
+}
+.excal-pad-v2-switch.is-on { background: #6965db; }
+.excal-pad-v2-switch-knob {
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 12px; height: 12px;
+  border-radius: 999px;
+  background: white;
+  transition: transform 0.15s;
+}
+.excal-pad-v2-switch.is-on .excal-pad-v2-switch-knob { transform: translateX(12px); }
+
+.excal-pad-v2-qrcard {
+  border: 1px solid var(--default-border-color, rgba(127,127,127,0.18));
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  background: rgba(127,127,127,0.03);
+}
+.excal-pad-v2-qr-img {
+  display: block;
+  border-radius: 6px;
+  background: white;
+  padding: 4px;
+}
+.excal-pad-v2-qr-skeleton {
+  width: 168px; height: 168px;
+  display: grid; place-items: center;
+  border-radius: 6px;
+  background: rgba(127,127,127,0.08);
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  font-size: 10px;
+  opacity: 0.5;
+}
+.excal-pad-v2-url {
+  width: 100%;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  font-size: 10px;
+  opacity: 0.65;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.excal-pad-v2-warn {
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(234,179,8,0.10);
+  color: #ca8a04;
+  font-size: 10px;
+  line-height: 1.35;
+  text-align: center;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+}
+
+.excal-pad-v2-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.excal-pad-v2-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  border-radius: 7px;
+  border: 1px solid var(--default-border-color, rgba(127,127,127,0.18));
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+  background: transparent;
+  transition: background 0.12s, border-color 0.12s;
+}
+.excal-pad-v2-action:hover {
+  background: rgba(127,127,127,0.08);
+  border-color: rgba(105,101,219,0.40);
+}
+
+.excal-pad-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 6px 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(127,127,127,0.06);
+  font-size: 11px;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+}
+.excal-pad-status strong { color: #6965db; font-weight: 700; }
+.excal-pad-dot {
+  width: 8px; height: 8px; border-radius: 999px;
+  background: rgba(127,127,127,0.5);
+  box-shadow: 0 0 0 2px rgba(127,127,127,0.08);
+}
+.excal-pad-dot.is-live {
+  background: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34,197,94,0.2);
+  animation: excal-pulse 1.6s ease-in-out infinite;
+}
+@keyframes excal-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(34,197,94,0.2); }
+  50%      { box-shadow: 0 0 0 5px rgba(34,197,94,0.05); }
+}
+.excal-pad-warn {
+  margin: 0 6px 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(234,179,8,0.12);
+  color: #ca8a04;
+  font-size: 10px;
+  line-height: 1.3;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+}
+
+/* Excalidraw dialogs (Help, Load from file, Image export) default to a
+   viewport-fixed backdrop, which on our embedded sketch view lands over the
+   whole page. Constrain the backdrop to the `.excalidraw` canvas div so they
+   feel like an in-canvas modal. */
+.excalidraw .Modal__background { position: absolute !important; }
+.excalidraw .excalidraw-modal-container { position: absolute !important; inset: 0 !important; }
+
 /* Tighten Excalidraw's top-right slot so our custom tools sit flush with the
    shape island instead of floating in a separate cluster. */
 .excalidraw .App-toolbar .Stack__horizontal { gap: 4px; }
