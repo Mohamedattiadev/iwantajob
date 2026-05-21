@@ -13,7 +13,8 @@ import {
   Eye, Pencil, Image as ImageIcon, FileCode, Copy,
   Network, ArrowDown, Columns3, Grid2x2, Play, Square,
   PanelRightOpen, ZoomIn, ZoomOut,
-  Tablet, ExternalLink, Save, Users, ArrowLeft, RefreshCw, Plus, BookOpen,
+  Tablet, ExternalLink, Save, Users, ArrowLeft, RefreshCw, Plus, BookOpen, Zap,
+  Layers, Boxes, Component, MessageSquare, RotateCw, Database, GitBranch,
 } from "lucide-react";
 import NextLink from "next/link";
 import { useTheme } from "next-themes";
@@ -105,6 +106,36 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("board");
   const [bookPage, setBookPage] = useState(0);
   const [bookOutlineOpen, setBookOutlineOpen] = useState(false);
+  // Laser-lock mode — when ON, the laser tool is intercepted and the
+  // canvas switches to a thin red freedraw so strokes persist
+  // instead of evaporating after a few seconds. Toggle in the topbar.
+  const [laserLock, setLaserLock] = useState(false);
+  useEffect(() => {
+    if (!laserLock) return;
+    const api = excalRef.current;
+    if (!api) return;
+    let lastType = "";
+    const id = setInterval(() => {
+      const a = excalRef.current;
+      if (!a) return;
+      const app = a.getAppState() as { activeTool?: { type?: string } };
+      const type = app.activeTool?.type ?? "";
+      if (type === "laser" && type !== lastType) {
+        try {
+          a.setActiveTool?.({ type: "freedraw" });
+          a.updateScene({
+            appState: {
+              currentItemStrokeColor: "#ef4444",
+              currentItemStrokeWidth: 2,
+              currentItemOpacity: 75,
+            },
+          });
+        } catch {}
+      }
+      lastType = type;
+    }, 120);
+    return () => clearInterval(id);
+  }, [laserLock]);
   const bookPageRef = useRef(0);
   useEffect(() => { bookPageRef.current = bookPage; }, [bookPage]);
   // Per-page paper mode array. Length === page count. Each entry is
@@ -1547,6 +1578,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
         >
           {mainMenuNode}
         </Excalidraw>
+        <TrimMoreToolsDropdown />
         <ShapeIslandTools
           onAi={() => setAiOpen(true)}
           onChat={() => setChatOpen(true)}
@@ -1617,6 +1649,8 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
             api.updateScene({ appState: { zoom: { value: 1 } } });
           }}
           zoomPct={Math.round(((miniData.app as { zoom?: { value?: number } })?.zoom?.value ?? 1) * 100)}
+          laserLock={laserLock}
+          onToggleLaserLock={() => setLaserLock((v) => !v)}
         />
         {/* Share button removed — realtime WS sync replaces link sharing.
             The iPad dropdown (in TopRightTools) still shows the QR for
@@ -1933,7 +1967,13 @@ function PageListPopover({
       className="Island"
       style={{
         position: "absolute",
-        bottom: "calc(100% + 10px)", left: "50%", transform: "translateX(-50%)",
+        bottom: "calc(100% + 10px)",
+        // Center on the trigger button; viewport-edge clamp prevents
+        // overflow on narrow screens / when the widget is dodged
+        // to the left during frame presentation.
+        left: "50%",
+        transform: "translateX(-50%)",
+        maxWidth: "calc(100vw - 32px)",
         padding: 6,
         borderRadius: "var(--border-radius-lg, 10px)",
         background: "var(--island-bg-color, #232329)",
@@ -2461,6 +2501,33 @@ function PaperBackdrop({
   return <div style={style} aria-hidden />;
 }
 
+// Trim Excalidraw's More-tools dropdown: remove the inline
+// "Generate" heading and the Mermaid item we don't expose. Restyling
+// to match excal-popover is in globals.css.
+function TrimMoreToolsDropdown() {
+  useEffect(() => {
+    const trim = () => {
+      const dd = document.querySelector(".App-toolbar__extra-tools-dropdown");
+      if (!dd) return;
+      // Remove the bold "Generate" sub-heading <div>.
+      dd.querySelectorAll<HTMLElement>(":scope > .Stack > div").forEach((n) => {
+        if (!n.classList.contains("dropdown-menu-item") && /generate/i.test(n.textContent || "")) {
+          n.style.display = "none";
+        }
+      });
+      // Hide the Mermaid item (it ships as data-testid="toolbar-embeddable"
+      // a second time, with the text "Mermaid to Excalidraw").
+      dd.querySelectorAll<HTMLElement>(".dropdown-menu-item").forEach((n) => {
+        if (/mermaid/i.test(n.textContent || "")) n.style.display = "none";
+      });
+    };
+    const obs = new MutationObserver(trim);
+    obs.observe(document.body, { childList: true, subtree: true });
+    trim();
+    return () => obs.disconnect();
+  }, []);
+  return null;
+}
 function ShapeIslandTools(props: React.ComponentProps<typeof TopRightTools>) {
   const [host, setHost] = useState<HTMLElement | null>(null);
 
@@ -2501,7 +2568,7 @@ function TopRightTools({
   full, onToggleFull, framesCount, presenting, onPresentToggle,
   penOn, onTogglePen, padUrl, padCount, viewerCount, onSave, saving, savedTick,
   pendingPads, onApprovePad, onDenyPad, paperMode, onPaperMode,
-  onZoomDelta, onZoomReset, zoomPct,
+  onZoomDelta, onZoomReset, zoomPct, laserLock, onToggleLaserLock,
 }: {
   onAi: () => void;
   onChat: () => void;
@@ -2530,6 +2597,8 @@ function TopRightTools({
   onZoomDelta: (factor: number) => void;
   onZoomReset: () => void;
   zoomPct: number;
+  laserLock: boolean;
+  onToggleLaserLock: () => void;
 }) {
   const [open, setOpen] = useState<null | "ai" | "export" | "pad" | "paper">(null);
   useEffect(() => {
@@ -2567,6 +2636,14 @@ function TopRightTools({
         <ExcalDropdownItem icon={<ArrowDown className="h-4 w-4" />} label="Flowchart" hint="top-down"  onClick={() => { onTemplate("flowchart"); setOpen(null); }} />
         <ExcalDropdownItem icon={<Columns3 className="h-4 w-4" />}  label="Kanban"    hint="3 columns" onClick={() => { onTemplate("kanban"); setOpen(null); }} />
         <ExcalDropdownItem icon={<Grid2x2 className="h-4 w-4" />}   label="SWOT"      hint="2×2 grid"  onClick={() => { onTemplate("swot"); setOpen(null); }} />
+        <li className="excal-popover-section">Engineering</li>
+        <ExcalDropdownItem icon={<Layers className="h-4 w-4" />}    label="3-tier arch"   hint="client→api→svc→db" onClick={() => { onTemplate("arch3tier"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<Boxes className="h-4 w-4" />}     label="C4 context"    hint="system + externals" onClick={() => { onTemplate("c4context"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<Component className="h-4 w-4" />} label="Class diagram" hint="UML-ish" onClick={() => { onTemplate("classdiagram"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<MessageSquare className="h-4 w-4" />} label="Sequence"  hint="client/server/db" onClick={() => { onTemplate("sequence"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<RotateCw className="h-4 w-4" />}  label="State machine" hint="states + transitions" onClick={() => { onTemplate("statemachine"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<Database className="h-4 w-4" />}  label="ER diagram"    hint="entities + FKs" onClick={() => { onTemplate("er"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<GitBranch className="h-4 w-4" />} label="CI/CD pipeline" hint="commit→deploy" onClick={() => { onTemplate("cicd"); setOpen(null); }} />
       </ExcalDropdown>
       {framesCount > 0 && (
         <button
@@ -2597,6 +2674,13 @@ function TopRightTools({
           onDenyPad={onDenyPad}
         />
       </ExcalDropdown>
+      <button
+        onClick={onToggleLaserLock}
+        title={laserLock ? "Laser is permanent — click to revert" : "Lock laser pointer (strokes persist)"}
+        className={`excal-btn ${laserLock ? "excal-btn-active" : ""}`}
+      >
+        <Zap className="h-3.5 w-3.5" />
+      </button>
       <button onClick={onToggleFull} className="excal-btn" title={full ? "Exit fullscreen (F)" : "Fullscreen (F)"}>
         {full ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
       </button>

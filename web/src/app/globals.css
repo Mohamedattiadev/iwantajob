@@ -748,6 +748,44 @@
 .excal-minimap-drag { cursor: grab; touch-action: none; }
 .excal-minimap-drag:active { cursor: grabbing; }
 
+/* Excalidraw's "More tools" dropdown — restyle to match our
+   excal-popover (Frame tool, Web Embed, Laser pointer). Also hides
+   the awkward "Generate" inline label and the Mermaid item which
+   we don't expose. */
+.excalidraw .App-toolbar__extra-tools-dropdown.dropdown-menu {
+  background: var(--island-bg-color) !important;
+  border: 1px solid var(--default-border-color, rgba(255,255,255,0.08)) !important;
+  border-radius: var(--border-radius-lg, 10px) !important;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.04), 0 6px 20px rgba(0,0,0,0.25) !important;
+  padding: 4px !important;
+  min-width: 200px;
+}
+.excalidraw .App-toolbar__extra-tools-dropdown .dropdown-menu-item {
+  border-radius: 6px !important;
+  padding: 6px 10px !important;
+  font-size: 12.5px;
+  transition: background 120ms ease;
+}
+.excalidraw .App-toolbar__extra-tools-dropdown .dropdown-menu-item:hover {
+  background: var(--button-hover-bg, rgba(127,127,127,0.12)) !important;
+}
+.excalidraw .App-toolbar__extra-tools-dropdown .dropdown-menu-item__icon {
+  width: 18px;
+  opacity: 0.85;
+}
+/* Hide the inline "Generate" label + the Mermaid item we don't use. */
+.excalidraw .App-toolbar__extra-tools-dropdown > .Stack > div[style*="font-weight: 600"],
+.excalidraw .App-toolbar__extra-tools-dropdown .dropdown-menu-container > div[style*="font-weight: 600"] {
+  display: none !important;
+}
+.excalidraw .App-toolbar__extra-tools-dropdown [data-testid="toolbar-embeddable"]:has(.dropdown-menu-item__text:not([data-original])) {
+  /* fallback selector, see explicit hide below */
+}
+/* Mermaid item — match by text content. */
+.excalidraw .App-toolbar__extra-tools-dropdown .dropdown-menu-item:has(.dropdown-menu-item__text:is(*)):where([data-testid="toolbar-embeddable"]:nth-of-type(2)) {
+  display: none !important;
+}
+
 /* Push Excalidraw's "Scroll back to content" pill up so it doesn't sit
    directly on top of our book-mode page navigator. The native default
    is roughly `bottom: 20px`; lift it ~64 px so both bars stack. */
