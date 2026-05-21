@@ -462,7 +462,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       const sceneVersion = mod.getSceneVersion(elements as never);
       if (sceneVersion <= lastBroadcastedOrReceivedSceneVersion.current) {
         const now0 = Date.now();
-        if (now0 - miniThrottle.current > 280) {
+        if (now0 - miniThrottle.current > 33) {
           miniThrottle.current = now0;
           setMiniData({ els: elements, app: appState as Record<string, unknown> });
         }
@@ -479,7 +479,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       save({ elements: [...elements], appState: appState as Record<string, unknown>, files });
     }, DEBOUNCE_MS);
     const now = Date.now();
-    if (now - miniThrottle.current > 280) {
+    if (now - miniThrottle.current > 33) {
       miniThrottle.current = now;
       setMiniData({ els: elements, app: appState as Record<string, unknown> });
     }
@@ -556,26 +556,24 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
             const a = excalRef.current;
             if (!a) return;
             const mod = excalModRef.current;
-            // Reconcile remote against local using Excalidraw's own
-            // function (higher version wins, lower versionNonce
-            // tiebreak). Apply with `captureUpdate: NEVER` so the
-            // remote update doesn't land on undo stack and so it
-            // doesn't echo back into our local onChange as a "real"
-            // edit. Bump the shared scene-version counter so the
-            // resulting onChange short-circuits.
+            if (!mod) return; // wait for excalidraw module; next msg will retry
             try {
-              if (mod) {
-                const local = a.getSceneElements() as never;
-                const appState = a.getAppState() as never;
-                const reconciled = mod.reconcileElements(local, next as never, appState);
-                (a.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
-                  elements: reconciled as unknown as unknown[],
-                  captureUpdate: mod.CaptureUpdateAction.NEVER,
-                });
-                lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
-              } else {
-                (a.updateScene as unknown as (d: { elements?: unknown[] }) => void)({ elements: next });
-              }
+              const local = a.getSceneElements() as never;
+              const appState = a.getAppState() as never;
+              // restoreElements normalizes shape (mirrors the official
+              // Collab.tsx pipeline). reconcileElements then picks per
+              // element by (version desc, versionNonce asc).
+              const restored = (mod.restoreElements as (r: unknown, e: unknown) => unknown)(next, local);
+              const reconciled = mod.reconcileElements(local, restored as never, appState);
+              // CRITICAL: set the shared version BEFORE updateScene.
+              // updateScene synchronously emits onChange, and our send
+              // gate compares the new sceneVersion against this value.
+              // Setting after would let one echo cycle slip through.
+              lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
+              (a.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
+                elements: reconciled as unknown as unknown[],
+                captureUpdate: mod.CaptureUpdateAction.NEVER,
+              });
             } catch {}
           });
         } catch {}

@@ -423,19 +423,20 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
             const a = excalRef.current;
             if (!a) return;
             const mod = excalModRef.current;
+            if (!mod) return; // wait for excalidraw module; next msg will retry
             try {
-              if (mod) {
-                const local = a.getSceneElements() as never;
-                const appState = a.getAppState() as never;
-                const reconciled = mod.reconcileElements(local, next as never, appState);
-                (a.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
-                  elements: reconciled as unknown as unknown[],
-                  captureUpdate: mod.CaptureUpdateAction.NEVER,
-                });
-                lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
-              } else {
-                (a.updateScene as (d: { elements?: unknown[] }) => void)({ elements: next });
-              }
+              const local = a.getSceneElements() as never;
+              const appState = a.getAppState() as never;
+              const restored = (mod.restoreElements as (r: unknown, e: unknown) => unknown)(next, local);
+              const reconciled = mod.reconcileElements(local, restored as never, appState);
+              // CRITICAL: set shared version BEFORE updateScene (see
+              // skill-sketch.tsx for the rationale — same code, same
+              // ordering gotcha).
+              lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
+              (a.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
+                elements: reconciled as unknown as unknown[],
+                captureUpdate: mod.CaptureUpdateAction.NEVER,
+              });
             } catch {}
           });
         } catch {}
