@@ -314,7 +314,10 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
     const host = window.location.hostname;
     const tok = readSketchToken();
-    const url = `${proto}://${host}:8000/ws/drawings/${encodeURIComponent(slug)}${tok ? `?t=${encodeURIComponent(tok)}` : ""}`;
+    // Backend WS port — env-driven so deployments not on :8000 don't
+    // have to fork the client. Defaults to 8000 (the FastAPI dev port).
+    const wsPort = process.env.NEXT_PUBLIC_BACKEND_WS_PORT || "8000";
+    const url = `${proto}://${host}:${wsPort}/ws/drawings/${encodeURIComponent(slug)}${tok ? `?t=${encodeURIComponent(tok)}` : ""}`;
     let ws: WebSocket | null = null;
     let alive = true;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
