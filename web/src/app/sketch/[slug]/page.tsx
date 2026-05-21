@@ -280,54 +280,38 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     };
   }, [editMode]);
 
-  // Pen post-processor — Excalidraw freedraw only varies by width/opacity/color
-  // out of the box. To make the 4 presets feel like real different pens we
-  // patch each finished stroke's `pressures` array so perfect-freehand renders
-  // a distinct profile (flat / tapered / textured) per pen.
+  // Pen post-processor — Excalidraw freedraw can't switch its perfect-freehand
+  // `simulatePressure` via appState, so we patch newly-finished strokes here.
+  // Ballpoint & highlighter want a flat constant width (no taper); fountain &
+  // brush want the natural velocity/Pencil-pressure taper, which is the
+  // freedraw default — so we leave those untouched. No `pressures` rewriting:
+  // overwriting the captured pressures caused a visible "snap" on pointer-up.
   const penRef = useRef<PenPreset["key"]>("ballpoint");
   const patchedIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!editMode || !penMode) return;
     const onUp = () => {
-      setTimeout(() => {
-        const api = excalRef.current;
-        if (!api) return;
-        const els = api.getSceneElements() as ReadonlyArray<Record<string, unknown>>;
-        let mutated = false;
-        const next = els.map((el) => {
-          if (el.type !== "freedraw") return el;
-          const id = el.id as string;
-          if (patchedIdsRef.current.has(id)) return el;
-          const pts = el.points as Array<[number, number]> | undefined;
-          if (!pts || pts.length < 2) return el;
-          patchedIdsRef.current.add(id);
+      const api = excalRef.current;
+      if (!api) return;
+      const els = api.getSceneElements() as ReadonlyArray<Record<string, unknown>>;
+      let mutated = false;
+      const next = els.map((el) => {
+        if (el.type !== "freedraw") return el;
+        const id = el.id as string;
+        if (patchedIdsRef.current.has(id)) return el;
+        const pts = el.points as Array<[number, number]> | undefined;
+        if (!pts || pts.length < 2) return el;
+        patchedIdsRef.current.add(id);
+        const pen = penRef.current;
+        if (pen === "ballpoint" || pen === "highlighter") {
           mutated = true;
-          const pen = penRef.current;
-          const n = pts.length;
-          if (pen === "ballpoint" || pen === "highlighter") {
-            return { ...el, simulatePressure: false, pressures: [] };
-          }
-          const pressures: number[] = new Array(n);
-          for (let i = 0; i < n; i++) {
-            const t = n === 1 ? 0.5 : i / (n - 1);
-            if (pen === "fountain") {
-              // Smooth ink-flow taper: thin at start/end, full mid.
-              const taper = Math.sin(t * Math.PI);
-              pressures[i] = 0.35 + 0.65 * taper;
-            } else {
-              // brush — low-freq noise so width breathes along the stroke.
-              const noise =
-                0.18 * Math.sin(t * 7.3 * Math.PI + 0.7) +
-                0.10 * Math.sin(t * 17.1 * Math.PI + 1.3);
-              pressures[i] = Math.max(0.25, Math.min(1, 0.75 + noise));
-            }
-          }
-          return { ...el, simulatePressure: false, pressures };
-        });
-        if (mutated) {
-          try { (api.updateScene as (d: { elements?: unknown[] }) => void)({ elements: next }); } catch {}
+          return { ...el, simulatePressure: false };
         }
-      }, 80);
+        return el;
+      });
+      if (mutated) {
+        try { (api.updateScene as (d: { elements?: unknown[] }) => void)({ elements: next }); } catch {}
+      }
     };
     window.addEventListener("pointerup", onUp, { passive: true });
     window.addEventListener("pointercancel", onUp, { passive: true });
@@ -578,10 +562,14 @@ type PenPreset = {
 // the others on the canvas. Excalidraw doesn't ship true fountain/brush
 // engines, so we lean on width + roughness + opacity to fake the look.
 const PEN_PRESETS: PenPreset[] = [
-  { key: "ballpoint",  label: "Ballpoint",   icon: <PenTool size={16} />,    width: 1,   roughness: 0, opacity: 100 },
-  { key: "fountain",   label: "Fountain",    icon: <Feather size={16} />,    width: 3,   roughness: 0, opacity: 100 },
-  { key: "brush",      label: "Brush",       icon: <Brush size={16} />,      width: 8,   roughness: 2, opacity: 95 },
-  { key: "highlighter",label: "Highlighter", icon: <Highlighter size={16} />,width: 24,  roughness: 0, opacity: 30, defaultColor: "#fbbf24" },
+  // ballpoint  — thin uniform line (no taper, post-patched to simulatePressure=false)
+  // fountain   — medium with natural velocity/Pencil-pressure taper
+  // brush      — thick, slightly translucent, taper kept
+  // highlighter — very thick, flat (no taper), translucent yellow
+  { key: "ballpoint",  label: "Ballpoint",   icon: <PenTool size={16} />,    width: 1.5, roughness: 0, opacity: 100 },
+  { key: "fountain",   label: "Fountain",    icon: <Feather size={16} />,    width: 4,   roughness: 0, opacity: 100 },
+  { key: "brush",      label: "Brush",       icon: <Brush size={16} />,      width: 12,  roughness: 0, opacity: 80 },
+  { key: "highlighter",label: "Highlighter", icon: <Highlighter size={16} />,width: 28,  roughness: 0, opacity: 28, defaultColor: "#fbbf24" },
 ];
 
 // iPad-native control rail — pen variants + tool + colors + custom width.

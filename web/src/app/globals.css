@@ -853,11 +853,21 @@
     display: none !important;
   }
 
-  /* Toolbar: keep Excalidraw's native layout (same as laptop). Earlier
-     overrides (absolute centering, hiding extra-tools) made it worse —
-     reverted. The default flex layout centers the shape island fine once
-     the left selection panel is hidden via the `.App-menu_top__left`
-     rule above. */
+  /* Center the native shape toolbar. With the left selection panel hidden
+     the default flex/grid leaves the toolbar drifting left — force the
+     center column (or the toolbar itself) to sit at viewport center. */
+  html.sketch-fullscreen.ipad-mode .excalidraw .App-menu_top,
+  html.sketch-fullscreen.ipad-mode .excalidraw .layer-ui__wrapper__top-right,
+  html.sketch-fullscreen.ipad-mode .excalidraw .layer-ui__wrapper__top {
+    justify-content: center !important;
+  }
+  html.sketch-fullscreen.ipad-mode .excalidraw .App-menu_top__center {
+    margin: 0 auto !important;
+  }
+  html.sketch-fullscreen.ipad-mode .excalidraw .App-toolbar {
+    margin-left: auto !important;
+    margin-right: auto !important;
+  }
 }
 
 /* Radial menu — 5-finger gesture spawns it at touch centroid. */
