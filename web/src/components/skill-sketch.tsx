@@ -13,7 +13,7 @@ import {
   Eye, Pencil, Image as ImageIcon, FileCode, Copy,
   Network, ArrowDown, Columns3, Grid2x2, Play, Square,
   PanelRightOpen, ZoomIn, ZoomOut,
-  Tablet, ExternalLink, Save, Users, ArrowLeft, RefreshCw,
+  Tablet, ExternalLink, Save, Users, ArrowLeft, RefreshCw, Plus,
 } from "lucide-react";
 import NextLink from "next/link";
 import { useTheme } from "next-themes";
@@ -44,6 +44,7 @@ type DrawingDoc = {
   elements?: unknown[];
   paperMode?: "plain" | "grid" | "dots" | "lines";
   layoutMode?: "board" | "book";
+  bookPageCount?: number;
   appState?: Record<string, unknown>;
   files?: Record<string, unknown>;
   title?: string;
@@ -105,10 +106,13 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   const [bookPage, setBookPage] = useState(0);
   const bookPageRef = useRef(0);
   useEffect(() => { bookPageRef.current = bookPage; }, [bookPage]);
+  const [bookPageCount, setBookPageCount] = useState(6);
+  const bookPageCountRef = useRef(6);
+  useEffect(() => { bookPageCountRef.current = bookPageCount; }, [bookPageCount]);
   // Fit viewport to a given page index — centers the page in view
   // with 32 px padding. Matches the "tap-to-zoom-to-page" feel.
   const goToBookPage = useCallback((idx: number) => {
-    const clamped = Math.max(0, Math.min(BOOK_PAGE_COUNT - 1, idx));
+    const clamped = Math.max(0, Math.min(bookPageCountRef.current - 1, idx));
     setBookPage(clamped);
     const api = excalRef.current;
     if (!api) return;
@@ -416,6 +420,9 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       if (doc.layoutMode && doc.layoutMode !== layoutMode) {
         setLayoutMode(doc.layoutMode);
       }
+      if (typeof doc.bookPageCount === "number" && doc.bookPageCount !== bookPageCount) {
+        setBookPageCount(doc.bookPageCount);
+      }
       // Defer the very first updateScene off the React commit phase
       // too. Excalidraw's internal store fires its subscriber set
       // synchronously inside updateScene; running that while React
@@ -493,7 +500,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   }, [slug, !!doc]);
 
   const save = useCallback(async (payload: object) => {
-    const body = JSON.stringify({ data: { ...payload, title: skill, paperMode, layoutMode } });
+    const body = JSON.stringify({ data: { ...payload, title: skill, paperMode, layoutMode, bookPageCount } });
     if (body === last.current) return;
     last.current = body;
     const r = await fetch(`${API}/api/drawings/${slug}`, {
@@ -1338,41 +1345,74 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
         )}
         {layoutMode === "book" && (
           <>
-            <BookPagesOverlay appState={miniData.app} />
-            {/* Page nav widget — bottom-center, like GoodNotes */}
-            <div
-              style={{
-                position: "absolute",
-                bottom: 12,
-                left: "50%",
-                transform: "translateX(-50%)",
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 4,
-                padding: "4px 6px",
-                borderRadius: 999,
-                background: "color-mix(in oklab, var(--background) 80%, transparent)",
-                backdropFilter: "blur(8px)",
-                boxShadow: "0 2px 8px rgba(0,0,0,0.25), 0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent)",
-                zIndex: 5,
-                fontSize: 12,
-                color: "var(--foreground)",
+            <BookPagesOverlay appState={miniData.app} pageCount={bookPageCount} />
+            <BookNavWidget
+              page={bookPage}
+              pageCount={bookPageCount}
+              onPrev={() => goToBookPage(bookPage - 1)}
+              onNext={() => goToBookPage(bookPage + 1)}
+              onJump={(idx) => goToBookPage(idx)}
+              onAddPage={() => {
+                const next = bookPageCount + 1;
+                setBookPageCount(next);
+                bookPageCountRef.current = next;
+                setTimeout(() => goToBookPage(next - 1), 0);
               }}
-            >
-              <button
-                onClick={() => goToBookPage(bookPage - 1)}
-                title="Previous page (←)"
-                style={{ border: "none", background: "transparent", color: "inherit", cursor: "pointer", padding: "4px 6px", borderRadius: 999 }}
-              ><ChevronLeft className="h-3.5 w-3.5" /></button>
-              <span style={{ fontVariantNumeric: "tabular-nums", padding: "0 6px", minWidth: 56, textAlign: "center" }}>
-                Page {bookPage + 1} / {BOOK_PAGE_COUNT}
-              </span>
-              <button
-                onClick={() => goToBookPage(bookPage + 1)}
-                title="Next page (→)"
-                style={{ border: "none", background: "transparent", color: "inherit", cursor: "pointer", padding: "4px 6px", borderRadius: 999 }}
-              ><ChevronRight className="h-3.5 w-3.5" /></button>
-            </div>
+              onExportPdf={async () => {
+                const api = excalRef.current;
+                if (!api) return toast.error("Canvas not ready");
+                const tid = toast.loading(`Rendering ${bookPageCount} pages…`);
+                try {
+                  const [{ exportToBlob }, { default: JsPDF }] = await Promise.all([
+                    loadExcal(),
+                    import("jspdf"),
+                  ]);
+                  const pdf = new JsPDF({ orientation: "portrait", unit: "px", format: [BOOK_PAGE_W, BOOK_PAGE_H] });
+                  const els = api.getSceneElements() as ReadonlyArray<Record<string, unknown>>;
+                  for (let i = 0; i < bookPageCount; i++) {
+                    const top = bookPageTop(i);
+                    // Synthetic frame element for exportingFrame option.
+                    const frame: Record<string, unknown> = {
+                      id: `__bookframe_${i}`,
+                      type: "frame",
+                      x: 0, y: top,
+                      width: BOOK_PAGE_W, height: BOOK_PAGE_H,
+                      isDeleted: false,
+                      version: 1, versionNonce: 1,
+                    };
+                    const blob = await exportToBlob({
+                      elements: [...els, frame] as never,
+                      appState: {
+                        ...api.getAppState(),
+                        exportWithDarkMode: resolvedTheme === "dark",
+                        exportScale: 3,
+                        exportEmbedScene: false,
+                      } as never,
+                      files: api.getFiles() as never,
+                      mimeType: "image/png",
+                      exportingFrame: frame as never,
+                      getDimensions: (w: number, h: number) => {
+                        const max = 2480; // ~300dpi A4
+                        const scale = Math.min(max / w, max / h, 3);
+                        return { width: Math.round(w * scale), height: Math.round(h * scale), scale };
+                      },
+                    } as never);
+                    const dataUrl: string = await new Promise((res, rej) => {
+                      const r = new FileReader();
+                      r.onloadend = () => res(String(r.result));
+                      r.onerror = rej;
+                      r.readAsDataURL(blob);
+                    });
+                    if (i > 0) pdf.addPage([BOOK_PAGE_W, BOOK_PAGE_H], "portrait");
+                    pdf.addImage(dataUrl, "PNG", 0, 0, BOOK_PAGE_W, BOOK_PAGE_H, undefined, "FAST");
+                  }
+                  pdf.save(`${skill}-book.pdf`);
+                  toast.success(`Saved ${bookPageCount}-page PDF`, { id: tid });
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "PDF export failed", { id: tid });
+                }
+              }}
+            />
           </>
         )}
         <Excalidraw
@@ -1617,7 +1657,6 @@ function SidebarIconBtn({
 const BOOK_PAGE_W = 794;
 const BOOK_PAGE_H = 1123;
 const BOOK_PAGE_GAP = 24;
-const BOOK_PAGE_COUNT = 12;
 function bookPageTop(idx: number): number {
   return idx * (BOOK_PAGE_H + BOOK_PAGE_GAP);
 }
@@ -1625,13 +1664,13 @@ function bookPageTop(idx: number): number {
 // Visual page guides for "book" mode. A4 portrait at world-space
 // (~794×1123 css px @ 96dpi). Twelve pages stacked vertically, with
 // a 24px gap, starting at (0,0) in world coords.
-function BookPagesOverlay({ appState }: { appState: Record<string, unknown> }) {
+function BookPagesOverlay({ appState, pageCount }: { appState: Record<string, unknown>; pageCount: number }) {
   const s = appState as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
   const zoom = s.zoom?.value ?? 1;
   const sx = (s.scrollX ?? 0) * zoom;
   const sy = (s.scrollY ?? 0) * zoom;
   const pages = [];
-  for (let i = 0; i < BOOK_PAGE_COUNT; i++) {
+  for (let i = 0; i < pageCount; i++) {
     const top = bookPageTop(i);
     pages.push(
       <div
@@ -1684,6 +1723,129 @@ function LayoutIcon({ mode }: { mode: "board" | "book" }) {
       <rect x="2" y="7.4" width="9" height="5" rx="0.8" />
     </svg>
   );
+}
+
+// GoodNotes-style page nav. Sits above Excalidraw's "Scroll back to
+// content" anchor (~bottom 56px) so the two don't collide. Click the
+// page indicator to open a jump-to-page popover.
+function BookNavWidget({
+  page, pageCount, onPrev, onNext, onJump, onAddPage, onExportPdf,
+}: {
+  page: number; pageCount: number;
+  onPrev: () => void; onNext: () => void;
+  onJump: (idx: number) => void;
+  onAddPage: () => void;
+  onExportPdf: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      style={{
+        position: "absolute",
+        bottom: 72,           // clears Excalidraw's bottom-bar
+        left: "50%",
+        transform: "translateX(-50%)",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 2,
+        padding: 4,
+        borderRadius: 12,
+        background: "var(--island-bg-color, color-mix(in oklab, var(--background) 88%, transparent))",
+        boxShadow:
+          "0 4px 12px rgba(0,0,0,0.25), 0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent)",
+        backdropFilter: "blur(8px)",
+        WebkitBackdropFilter: "blur(8px)",
+        zIndex: 5,
+        fontSize: 12,
+        color: "var(--text-primary-color, var(--foreground))",
+      }}
+    >
+      <button
+        onClick={onPrev}
+        disabled={page === 0}
+        title="Previous page (←)"
+        style={navBtn(false, page === 0)}
+      ><ChevronLeft className="h-3.5 w-3.5" /></button>
+      <div style={{ position: "relative" }}>
+        <button
+          onClick={() => setOpen((v) => !v)}
+          title="Jump to page"
+          style={{
+            ...navBtn(open, false),
+            padding: "0 10px", height: 28, minWidth: 76,
+            fontVariantNumeric: "tabular-nums",
+            fontWeight: 500,
+          }}
+        >
+          {page + 1} / {pageCount}
+        </button>
+        {open && (
+          <div
+            style={{
+              position: "absolute",
+              bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)",
+              padding: 6,
+              borderRadius: 10,
+              background: "var(--island-bg-color, var(--background))",
+              boxShadow:
+                "0 8px 24px rgba(0,0,0,0.28), 0 0 0 1px color-mix(in oklab, var(--foreground) 12%, transparent)",
+              display: "grid",
+              gridTemplateColumns: "repeat(6, minmax(28px, 1fr))",
+              gap: 4,
+              maxWidth: 220,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {Array.from({ length: pageCount }, (_, i) => (
+              <button
+                key={i}
+                onClick={() => { onJump(i); setOpen(false); }}
+                title={`Page ${i + 1}`}
+                style={{
+                  height: 26, padding: "0 6px", borderRadius: 6,
+                  border: i === page
+                    ? "1.5px solid var(--color-primary, #6965db)"
+                    : "1px solid color-mix(in oklab, var(--foreground) 10%, transparent)",
+                  background: i === page
+                    ? "color-mix(in oklab, var(--color-primary, #6965db) 22%, transparent)"
+                    : "transparent",
+                  color: "inherit",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >{i + 1}</button>
+            ))}
+          </div>
+        )}
+      </div>
+      <button onClick={onNext} disabled={page >= pageCount - 1} title="Next page (→)" style={navBtn(false, page >= pageCount - 1)}>
+        <ChevronRight className="h-3.5 w-3.5" />
+      </button>
+      <span style={{ width: 1, height: 18, background: "color-mix(in oklab, var(--foreground) 12%, transparent)", margin: "0 4px" }} />
+      <button onClick={onAddPage} title="Add page" style={navBtn(false, false)}>
+        <Plus className="h-3.5 w-3.5" />
+      </button>
+      <button onClick={onExportPdf} title="Export as PDF" style={navBtn(false, false)}>
+        <Download className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+function navBtn(active: boolean, disabled: boolean): React.CSSProperties {
+  return {
+    display: "inline-flex", alignItems: "center", justifyContent: "center",
+    width: 28, height: 28, borderRadius: 8,
+    border: active
+      ? "1.5px solid var(--color-primary, #6965db)"
+      : "1px solid transparent",
+    background: active
+      ? "color-mix(in oklab, var(--color-primary, #6965db) 22%, transparent)"
+      : "transparent",
+    color: active ? "var(--color-primary, #6965db)" : "inherit",
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.4 : 1,
+  };
 }
 
 function PaperModeIcon({ mode }: { mode: "plain" | "grid" | "dots" | "lines" }) {
