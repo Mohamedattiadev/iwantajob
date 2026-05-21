@@ -1,17 +1,11 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono, Fraunces } from "next/font/google";
 import "./globals.css";
-import { Nav } from "@/components/nav";
 import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
-import { ChatWidget } from "@/components/chat-widget";
-import { OnboardingGate } from "@/components/onboarding-gate";
-import { CommandPalette } from "@/components/command-palette";
-import { AmbientBackground } from "@/components/ambient-bg";
 import { PageWidthProvider } from "@/components/page-width";
-import { TodoDrawer } from "@/components/todo-drawer";
-import { ScratchFab } from "@/components/scratch-fab";
 import { SwrProvider } from "@/components/swr-provider";
+import { AppShell } from "@/components/app-shell";
 
 const sansFont = Inter({
   variable: "--font-sans",
@@ -78,15 +72,7 @@ export default function RootLayout({
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
           <PageWidthProvider>
             <SwrProvider>
-              <AmbientBackground />
-              <OnboardingGate>
-                <Nav />
-                <main className="app-main flex-1 w-full mx-auto flex flex-col min-h-0">{children}</main>
-                <ChatWidget />
-                <TodoDrawer />
-                <ScratchFab />
-                <CommandPalette />
-              </OnboardingGate>
+              <AppShell>{children}</AppShell>
               <Toaster richColors closeButton position="bottom-right" />
             </SwrProvider>
           </PageWidthProvider>
