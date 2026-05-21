@@ -255,6 +255,11 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       setExcalReady(true);
     }
   }, []);
+  // Refs the MainMenu can read without triggering re-memo on every
+  // SkillSketch render. Updated in a layout effect below.
+  const paperModeRef = useRef<PaperMode>("plain");
+  const exportRef = useRef<{ png?: () => void; svg?: () => void; json?: () => void; setPaper?: (m: PaperMode) => void }>({});
+
   // Memoize the MainMenu subtree. Without this, every SkillSketch
   // render builds a fresh React element tree for the menu items;
   // their `useSyncExternalStore` subscriptions re-attach each time,
@@ -292,6 +297,19 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
         <MM.DefaultItems.LoadScene />
         <MM.DefaultItems.SaveAsImage />
         <MM.DefaultItems.Help />
+        <MM.Separator />
+        <MM.Group title="Paper">
+          <MM.Item icon={<PaperModeIcon mode="plain" />} onSelect={() => exportRef.current.setPaper?.("plain")}>Plain</MM.Item>
+          <MM.Item icon={<PaperModeIcon mode="grid" />} onSelect={() => exportRef.current.setPaper?.("grid")}>Grid</MM.Item>
+          <MM.Item icon={<PaperModeIcon mode="dots" />} onSelect={() => exportRef.current.setPaper?.("dots")}>Dots</MM.Item>
+          <MM.Item icon={<PaperModeIcon mode="lines" />} onSelect={() => exportRef.current.setPaper?.("lines")}>Lined</MM.Item>
+        </MM.Group>
+        <MM.Separator />
+        <MM.Group title="Export">
+          <MM.Item icon={<ImageIcon style={{ width: 14, height: 14 }} />} onSelect={() => exportRef.current.png?.()}>Export PNG</MM.Item>
+          <MM.Item icon={<FileCode style={{ width: 14, height: 14 }} />} onSelect={() => exportRef.current.svg?.()}>Export SVG</MM.Item>
+          <MM.Item icon={<Copy style={{ width: 14, height: 14 }} />} onSelect={() => exportRef.current.json?.()}>Copy scene JSON</MM.Item>
+        </MM.Group>
         <MM.Separator />
         <MM.DefaultItems.ChangeCanvasBackground />
         <MM.DefaultItems.ToggleTheme />
@@ -1159,6 +1177,17 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     }
   };
 
+  // Keep MainMenu refs current. MainMenu is memoized on
+  // [excalMod, homeHref], so it calls exportRef.current.* at the time
+  // the user clicks — no re-memo needed.
+  useEffect(() => {
+    exportRef.current.png = exportPng;
+    exportRef.current.svg = exportSvg;
+    exportRef.current.json = copyShareJson;
+    exportRef.current.setPaper = setPaperMode;
+  });
+  useEffect(() => { paperModeRef.current = paperMode; }, [paperMode]);
+
   return (
     <div className={full ? "fixed inset-0 z-50 bg-background p-3 flex flex-col gap-2" : "flex flex-col gap-2"}>
       {!full && (
@@ -1262,7 +1291,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
             if (!api) return;
             const app = api.getAppState() as { width?: number; height?: number; zoom?: { value?: number }; scrollX?: number; scrollY?: number };
             const cur = app.zoom?.value ?? 1;
-            const next = Math.max(0.05, Math.min(30, cur * factor));
+            const next = Math.max(0.01, Math.min(5, cur * factor));
             if (next === cur) return;
             const w = app.width ?? 0;
             const h = app.height ?? 0;
@@ -1581,16 +1610,6 @@ function TopRightTools({
         </button>
       )}
       <ExcalDropdown
-        label="Export"
-        icon={<Download className="h-3.5 w-3.5" />}
-        open={open === "export"}
-        onToggle={() => setOpen(open === "export" ? null : "export")}
-      >
-        <ExcalDropdownItem icon={<ImageIcon className="h-4 w-4" />} label="Export as PNG" onClick={() => { onExportPng(); setOpen(null); }} />
-        <ExcalDropdownItem icon={<FileCode className="h-4 w-4" />}  label="Export as SVG" onClick={() => { onExportSvg(); setOpen(null); }} />
-        <ExcalDropdownItem icon={<Copy className="h-4 w-4" />}      label="Copy scene JSON" onClick={() => { onCopyJson(); setOpen(null); }} />
-      </ExcalDropdown>
-      <ExcalDropdown
         label="iPad & pen"
         icon={<Tablet className="h-3.5 w-3.5" />}
         open={open === "pad"}
@@ -1632,18 +1651,6 @@ function TopRightTools({
           <ZoomIn className="h-3.5 w-3.5" />
         </button>
       </div>
-      <ExcalDropdown
-        label="Paper"
-        icon={<PaperModeIcon mode={paperMode} />}
-        open={open === "paper"}
-        onToggle={() => setOpen(open === "paper" ? null : ("paper" as never))}
-      >
-        <li className="excal-popover-section">Paper</li>
-        <ExcalDropdownItem icon={<PaperModeIcon mode="plain" />} label="Plain" onClick={() => { onPaperMode("plain"); setOpen(null); }} hint={paperMode === "plain" ? "current" : undefined} />
-        <ExcalDropdownItem icon={<PaperModeIcon mode="grid" />} label="Grid" onClick={() => { onPaperMode("grid"); setOpen(null); }} hint={paperMode === "grid" ? "current" : undefined} />
-        <ExcalDropdownItem icon={<PaperModeIcon mode="dots" />} label="Dots" onClick={() => { onPaperMode("dots"); setOpen(null); }} hint={paperMode === "dots" ? "current" : undefined} />
-        <ExcalDropdownItem icon={<PaperModeIcon mode="lines" />} label="Lined" onClick={() => { onPaperMode("lines"); setOpen(null); }} hint={paperMode === "lines" ? "current" : undefined} />
-      </ExcalDropdown>
       <button onClick={onToggleFull} className="excal-btn" title={full ? "Exit fullscreen (F)" : "Fullscreen (F)"}>
         {full ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
       </button>
