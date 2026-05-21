@@ -13,7 +13,7 @@ import {
   Eye, Pencil, Image as ImageIcon, FileCode, Copy,
   Network, ArrowDown, Columns3, Grid2x2, Play, Square,
   PanelRightOpen, ZoomIn, ZoomOut,
-  Tablet, ExternalLink, Save, Users, ArrowLeft, RefreshCw, Plus,
+  Tablet, ExternalLink, Save, Users, ArrowLeft, RefreshCw, Plus, BookOpen,
 } from "lucide-react";
 import NextLink from "next/link";
 import { useTheme } from "next-themes";
@@ -45,6 +45,7 @@ type DrawingDoc = {
   paperMode?: "plain" | "grid" | "dots" | "lines";
   layoutMode?: "board" | "book";
   bookPageCount?: number;
+  bookPages?: { paper?: "plain" | "grid" | "dots" | "lines" | "inherit" }[];
   appState?: Record<string, unknown>;
   files?: Record<string, unknown>;
   title?: string;
@@ -96,7 +97,6 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   // the canvas wrapper; Excalidraw paints over it with a transparent
   // viewBackgroundColor when a non-plain mode is active so the pattern
   // shows through. Persisted in the saved doc under `paperMode`.
-  type PaperMode = "plain" | "grid" | "dots" | "lines";
   const [paperMode, setPaperMode] = useState<PaperMode>("plain");
   // Layout mode — `board` is the default infinite canvas; `book`
   // is GoodNotes-style paged. In book mode entry, we snap the
@@ -104,15 +104,21 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   type LayoutMode = "board" | "book";
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("board");
   const [bookPage, setBookPage] = useState(0);
+  const [bookOutlineOpen, setBookOutlineOpen] = useState(false);
   const bookPageRef = useRef(0);
   useEffect(() => { bookPageRef.current = bookPage; }, [bookPage]);
-  const [bookPageCount, setBookPageCount] = useState(1);
-  const bookPageCountRef = useRef(1);
-  useEffect(() => { bookPageCountRef.current = bookPageCount; }, [bookPageCount]);
+  // Per-page paper mode array. Length === page count. Each entry is
+  // either inherits-global (undefined / "inherit") or one of the
+  // PaperMode variants. Default: one page that inherits global mode.
+  type BookPage = { paper?: PaperMode | "inherit" };
+  const [bookPages, setBookPages] = useState<BookPage[]>([{ paper: "inherit" }]);
+  const bookPagesRef = useRef<BookPage[]>([{ paper: "inherit" }]);
+  useEffect(() => { bookPagesRef.current = bookPages; }, [bookPages]);
+  const bookPageCount = bookPages.length;
   // Fit viewport to a given page index — centers the page in view
   // with 32 px padding. Matches the "tap-to-zoom-to-page" feel.
   const goToBookPage = useCallback((idx: number) => {
-    const clamped = Math.max(0, Math.min(bookPageCountRef.current - 1, idx));
+    const clamped = Math.max(0, Math.min(bookPagesRef.current.length - 1, idx));
     setBookPage(clamped);
     const api = excalRef.current;
     if (!api) return;
@@ -143,6 +149,42 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     const t = setTimeout(() => goToBookPage(0), 50);
     return () => clearTimeout(t);
   }, [layoutMode, goToBookPage]);
+  // Two-finger horizontal swipe on the canvas flips pages while in
+  // book mode (tablet/touchpad). Single finger is reserved for
+  // Excalidraw drawing/panning.
+  useEffect(() => {
+    if (layoutMode !== "book") return;
+    const el = canvasWrapRef.current;
+    if (!el) return;
+    let startX: number | null = null;
+    let startY: number | null = null;
+    let active = false;
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 2) { active = false; return; }
+      active = true;
+      const t0 = e.touches[0], t1 = e.touches[1];
+      startX = (t0.clientX + t1.clientX) / 2;
+      startY = (t0.clientY + t1.clientY) / 2;
+    };
+    const onTouchEnd = (e: TouchEvent) => {
+      if (!active || startX == null || startY == null) return;
+      active = false;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - startX;
+      const dy = t.clientY - startY;
+      startX = null; startY = null;
+      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      if (dx < 0) goToBookPage(bookPageRef.current + 1);
+      else goToBookPage(bookPageRef.current - 1);
+    };
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchend", onTouchEnd, { passive: true });
+    return () => {
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchend", onTouchEnd);
+    };
+  }, [layoutMode, goToBookPage]);
+
   // ←/→ + PageUp/Down keys flip pages while in book mode. Don't
   // hijack when focus is in an input/textarea or when the user is
   // typing in an Excalidraw text element.
@@ -420,8 +462,11 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       if (doc.layoutMode && doc.layoutMode !== layoutMode) {
         setLayoutMode(doc.layoutMode);
       }
-      if (typeof doc.bookPageCount === "number" && doc.bookPageCount !== bookPageCount) {
-        setBookPageCount(doc.bookPageCount);
+      if (Array.isArray(doc.bookPages) && doc.bookPages.length) {
+        setBookPages(doc.bookPages as BookPage[]);
+      } else if (typeof doc.bookPageCount === "number" && doc.bookPageCount > 0) {
+        // Backward compat: expand old `bookPageCount` to inherit-pages.
+        setBookPages(Array.from({ length: doc.bookPageCount }, () => ({ paper: "inherit" as const })));
       }
       // Defer the very first updateScene off the React commit phase
       // too. Excalidraw's internal store fires its subscriber set
@@ -500,7 +545,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   }, [slug, !!doc]);
 
   const save = useCallback(async (payload: object) => {
-    const body = JSON.stringify({ data: { ...payload, title: skill, paperMode, layoutMode, bookPageCount } });
+    const body = JSON.stringify({ data: { ...payload, title: skill, paperMode, layoutMode, bookPages } });
     if (body === last.current) return;
     last.current = body;
     const r = await fetch(`${API}/api/drawings/${slug}`, {
@@ -1340,12 +1385,12 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
         ref={canvasWrapRef}
         className={`relative rounded-xl overflow-hidden border border-foreground/10 bg-card ${full ? "flex-1" : "h-[70vh]"}`}
       >
-        {paperMode !== "plain" && (
+        {paperMode !== "plain" && layoutMode !== "book" && (
           <PaperBackdrop mode={paperMode} appState={miniData.app} />
         )}
         {layoutMode === "book" && (
           <>
-            <BookPagesOverlay appState={miniData.app} pageCount={bookPageCount} />
+            <BookPagesOverlay appState={miniData.app} pages={bookPages} globalPaper={paperMode} />
             <BookNavWidget
               page={bookPage}
               pageCount={bookPageCount}
@@ -1354,11 +1399,34 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
               onNext={() => goToBookPage(bookPage + 1)}
               onJump={(idx) => goToBookPage(idx)}
               onAddPage={() => {
-                const next = bookPageCount + 1;
-                setBookPageCount(next);
-                bookPageCountRef.current = next;
-                setTimeout(() => goToBookPage(next - 1), 0);
+                setBookPages((prev) => [...prev, { paper: "inherit" }]);
+                setTimeout(() => goToBookPage(bookPagesRef.current.length), 0);
               }}
+              onDeletePage={(idx) => {
+                setBookPages((prev) => {
+                  if (prev.length <= 1) return prev; // keep at least 1
+                  const next = prev.filter((_, i) => i !== idx);
+                  return next;
+                });
+                setTimeout(() => goToBookPage(Math.max(0, Math.min(bookPagesRef.current.length - 1, idx))), 0);
+              }}
+              onReorder={(from, to) => {
+                if (from === to) return;
+                setBookPages((prev) => {
+                  const next = [...prev];
+                  const [moved] = next.splice(from, 1);
+                  next.splice(to, 0, moved);
+                  return next;
+                });
+                setTimeout(() => goToBookPage(to), 0);
+              }}
+              onSetPagePaper={(idx, mode) => {
+                setBookPages((prev) => prev.map((p, i) => i === idx ? { ...p, paper: mode } : p));
+              }}
+              pages={bookPages}
+              globalPaper={paperMode}
+              onToggleOutline={() => setBookOutlineOpen((v) => !v)}
+              outlineOpen={bookOutlineOpen}
               onExportPdf={async () => {
                 const api = excalRef.current;
                 if (!api) return toast.error("Canvas not ready");
@@ -1423,6 +1491,13 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
                 }
               }}
             />
+            {bookOutlineOpen && (
+              <BookOutlinePanel
+                pages={bookPages}
+                elements={miniData.els}
+                onJump={(i) => goToBookPage(i)}
+              />
+            )}
           </>
         )}
         <Excalidraw
@@ -1674,15 +1749,42 @@ function bookPageTop(idx: number): number {
 // Visual page guides for "book" mode. A4 portrait at world-space
 // (~794×1123 css px @ 96dpi). Twelve pages stacked vertically, with
 // a 24px gap, starting at (0,0) in world coords.
-function BookPagesOverlay({ appState, pageCount }: { appState: Record<string, unknown>; pageCount: number }) {
+function pagePaperBackgroundCss(mode: PaperMode, zoom: number): React.CSSProperties {
+  const lineColor = "color-mix(in oklab, #1b1b1f 24%, transparent)";
+  if (mode === "plain") return {};
+  if (mode === "grid") {
+    const sz = 32 * zoom;
+    return {
+      backgroundImage:
+        `linear-gradient(to right, ${lineColor} 1px, transparent 1px), linear-gradient(to bottom, ${lineColor} 1px, transparent 1px)`,
+      backgroundSize: `${sz}px ${sz}px, ${sz}px ${sz}px`,
+    };
+  }
+  if (mode === "dots") {
+    const sz = 24 * zoom;
+    return {
+      backgroundImage: `radial-gradient(circle, ${lineColor} ${Math.max(1, 1.2 * zoom)}px, transparent ${Math.max(1, 1.2 * zoom)}px)`,
+      backgroundSize: `${sz}px ${sz}px`,
+    };
+  }
+  const sz = 28 * zoom;
+  return {
+    backgroundImage: `linear-gradient(to bottom, ${lineColor} 1px, transparent 1px)`,
+    backgroundSize: `${sz}px ${sz}px`,
+  };
+}
+function BookPagesOverlay({ appState, pages, globalPaper }: { appState: Record<string, unknown>; pages: BookPageMeta[]; globalPaper: PaperMode }) {
   const s = appState as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
   const zoom = s.zoom?.value ?? 1;
   const sx = (s.scrollX ?? 0) * zoom;
   const sy = (s.scrollY ?? 0) * zoom;
-  const pages = [];
-  for (let i = 0; i < pageCount; i++) {
+  const out = [];
+  for (let i = 0; i < pages.length; i++) {
     const top = bookPageTop(i);
-    pages.push(
+    const p = pages[i];
+    const eff = (!p.paper || p.paper === "inherit") ? globalPaper : p.paper;
+    const paperBg = pagePaperBackgroundCss(eff, zoom);
+    out.push(
       <div
         key={i}
         style={{
@@ -1692,22 +1794,30 @@ function BookPagesOverlay({ appState, pageCount }: { appState: Record<string, un
           width: BOOK_PAGE_W * zoom,
           height: BOOK_PAGE_H * zoom,
           borderRadius: 4 * zoom,
-          background: "color-mix(in oklab, var(--background) 90%, transparent)",
-          // Crisp white outer ring + soft drop shadow so each page
-          // visually reads as a sheet against the dark canvas.
+          background: "#ffffff",  // page is white paper, like GoodNotes.
           border: `${Math.max(1, 1.5 * zoom)}px solid rgba(255,255,255,0.85)`,
           boxShadow:
             "0 6px 18px rgba(0,0,0,0.45), 0 1px 2px rgba(0,0,0,0.4)",
           pointerEvents: "none",
+          overflow: "hidden",
         }}
       >
+        {/* Per-page paper pattern (grid/dots/lines) — drawn on the
+            page surface, inherits scrolling via the parent's
+            translate. */}
+        {(paperBg.backgroundImage as string | undefined) && (
+          <div
+            aria-hidden
+            style={{ position: "absolute", inset: 0, ...paperBg, opacity: 0.55, color: "#1b1b1f" }}
+          />
+        )}
         {/* Page number badge */}
         <div
           style={{
             position: "absolute",
             top: 8 * zoom, right: 12 * zoom,
             fontSize: 11 * zoom, opacity: 0.5,
-            color: "var(--foreground)",
+            color: "#1b1b1f",
           }}
         >{i + 1}</div>
       </div>,
@@ -1715,7 +1825,107 @@ function BookPagesOverlay({ appState, pageCount }: { appState: Record<string, un
   }
   return (
     <div aria-hidden style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none", zIndex: 0 }}>
-      {pages}
+      {out}
+    </div>
+  );
+}
+
+function PageListPopover({
+  page, pages, globalPaper, onJump, onDelete, onReorder, onSetPaper,
+}: {
+  page: number;
+  pages: BookPageMeta[];
+  globalPaper: PaperMode;
+  onJump: (i: number) => void;
+  onDelete: (i: number) => void;
+  onReorder: (from: number, to: number) => void;
+  onSetPaper: (i: number, mode: PaperMode | "inherit") => void;
+}) {
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [dragOver, setDragOver] = useState<number | null>(null);
+  return (
+    <div
+      style={{
+        position: "absolute",
+        bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)",
+        padding: 6,
+        borderRadius: 10,
+        background: "var(--island-bg-color, var(--background))",
+        boxShadow: "0 8px 24px rgba(0,0,0,0.28), 0 0 0 1px color-mix(in oklab, var(--foreground) 12%, transparent)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 3,
+        width: 260,
+        maxHeight: 260,
+        overflowY: "auto",
+        fontSize: 11,
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {pages.map((p, i) => {
+        const eff = p.paper === "inherit" || !p.paper ? globalPaper : p.paper;
+        return (
+          <div
+            key={i}
+            draggable
+            onDragStart={() => setDragFrom(i)}
+            onDragOver={(e) => { e.preventDefault(); setDragOver(i); }}
+            onDragLeave={() => setDragOver((v) => v === i ? null : v)}
+            onDrop={(e) => { e.preventDefault(); if (dragFrom != null) onReorder(dragFrom, i); setDragFrom(null); setDragOver(null); }}
+            onDragEnd={() => { setDragFrom(null); setDragOver(null); }}
+            style={{
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "4px 6px", borderRadius: 6,
+              border: i === page
+                ? "1.5px solid var(--color-primary, #6965db)"
+                : dragOver === i
+                  ? "1px dashed color-mix(in oklab, var(--color-primary, #6965db) 60%, transparent)"
+                  : "1px solid color-mix(in oklab, var(--foreground) 8%, transparent)",
+              background: i === page ? "color-mix(in oklab, var(--color-primary, #6965db) 18%, transparent)" : "transparent",
+              cursor: "grab",
+            }}
+          >
+            <span style={{ opacity: 0.5, fontSize: 10 }}>⠿</span>
+            <button
+              onClick={() => onJump(i)}
+              style={{
+                flex: 1, textAlign: "left", border: "none", background: "transparent",
+                color: "inherit", cursor: "pointer", padding: "2px 0",
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >Page {i + 1}</button>
+            <select
+              value={p.paper ?? "inherit"}
+              onChange={(e) => onSetPaper(i, e.target.value as PaperMode | "inherit")}
+              title="Paper for this page"
+              style={{
+                background: "transparent", color: "inherit",
+                border: "1px solid color-mix(in oklab, var(--foreground) 14%, transparent)",
+                borderRadius: 4, padding: "2px 4px", fontSize: 10,
+              }}
+            >
+              <option value="inherit">inherit ({eff})</option>
+              <option value="plain">plain</option>
+              <option value="grid">grid</option>
+              <option value="dots">dots</option>
+              <option value="lines">lined</option>
+            </select>
+            <button
+              onClick={() => onDelete(i)}
+              disabled={pages.length <= 1}
+              title="Delete page"
+              style={{
+                width: 22, height: 22, borderRadius: 4,
+                border: "1px solid color-mix(in oklab, var(--foreground) 10%, transparent)",
+                background: "transparent", color: "inherit",
+                cursor: pages.length <= 1 ? "not-allowed" : "pointer",
+                opacity: pages.length <= 1 ? 0.4 : 1,
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+              }}
+            ><X className="h-3 w-3" /></button>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1745,15 +1955,24 @@ function LayoutIcon({ mode }: { mode: "board" | "book" }) {
 // classes so the two bars look identical and sit nicely beside each
 // other. Anchored bottom-left when the frame strip is at center, so
 // they no longer stack on top of each other.
+type PaperMode = "plain" | "grid" | "dots" | "lines";
+type BookPageMeta = { paper?: PaperMode | "inherit" };
 function BookNavWidget({
-  page, pageCount, onPrev, onNext, onJump, onAddPage, onExportPdf, framePresenting,
+  page, pageCount, onPrev, onNext, onJump, onAddPage, onDeletePage, onReorder, onSetPagePaper, onExportPdf, onToggleOutline, outlineOpen, framePresenting, pages, globalPaper,
 }: {
   page: number; pageCount: number;
   onPrev: () => void; onNext: () => void;
   onJump: (idx: number) => void;
   onAddPage: () => void;
+  onDeletePage: (idx: number) => void;
+  onReorder: (from: number, to: number) => void;
+  onSetPagePaper: (idx: number, mode: PaperMode | "inherit") => void;
   onExportPdf: () => void;
+  onToggleOutline: () => void;
+  outlineOpen: boolean;
   framePresenting: boolean;
+  pages: BookPageMeta[];
+  globalPaper: PaperMode;
 }) {
   const [open, setOpen] = useState(false);
   const positionClass = framePresenting
@@ -1775,44 +1994,15 @@ function BookNavWidget({
           page {page + 1} / {pageCount}
         </button>
         {open && (
-          <div
-            style={{
-              position: "absolute",
-              bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)",
-              padding: 6,
-              borderRadius: 10,
-              background: "var(--island-bg-color, var(--background))",
-              boxShadow: "0 8px 24px rgba(0,0,0,0.28), 0 0 0 1px color-mix(in oklab, var(--foreground) 12%, transparent)",
-              display: "grid",
-              gridTemplateColumns: "repeat(6, minmax(28px, 1fr))",
-              gap: 4,
-              maxWidth: 220,
-              maxHeight: 200,
-              overflowY: "auto",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            {Array.from({ length: pageCount }, (_, i) => (
-              <button
-                key={i}
-                onClick={() => { onJump(i); setOpen(false); }}
-                title={`Page ${i + 1}`}
-                style={{
-                  height: 26, padding: "0 6px", borderRadius: 6,
-                  border: i === page
-                    ? "1.5px solid var(--color-primary, #6965db)"
-                    : "1px solid color-mix(in oklab, var(--foreground) 10%, transparent)",
-                  background: i === page
-                    ? "color-mix(in oklab, var(--color-primary, #6965db) 22%, transparent)"
-                    : "transparent",
-                  color: "inherit",
-                  cursor: "pointer",
-                  fontSize: 11,
-                  fontVariantNumeric: "tabular-nums",
-                }}
-              >{i + 1}</button>
-            ))}
-          </div>
+          <PageListPopover
+            page={page}
+            pages={pages}
+            globalPaper={globalPaper}
+            onJump={(i) => { onJump(i); setOpen(false); }}
+            onDelete={onDeletePage}
+            onReorder={onReorder}
+            onSetPaper={onSetPagePaper}
+          />
         )}
       </div>
       <button onClick={onNext} disabled={page >= pageCount - 1} className="excal-present-btn" title="Next page (→)">
@@ -1822,9 +2012,72 @@ function BookNavWidget({
       <button onClick={onAddPage} className="excal-present-btn" title="Add page">
         <Plus className="h-4 w-4" />
       </button>
+      <button onClick={onToggleOutline} className={`excal-present-btn ${outlineOpen ? "is-active" : ""}`} title="Outline (text per page)">
+        <BookOpen className="h-4 w-4" />
+      </button>
       <button onClick={onExportPdf} className="excal-present-btn" title="Export as PDF">
         <Download className="h-4 w-4" />
       </button>
+    </div>
+  );
+}
+
+// Outline derived from text elements: for each page (by world y),
+// list the text strings on it. Click jumps to that page.
+function BookOutlinePanel({
+  pages, elements, onJump,
+}: {
+  pages: BookPageMeta[];
+  elements: readonly unknown[];
+  onJump: (i: number) => void;
+}) {
+  const byPage = useMemo(() => {
+    const map: string[][] = pages.map(() => []);
+    for (const raw of elements) {
+      const e = raw as { type?: string; isDeleted?: boolean; y?: number; text?: string } | null;
+      if (!e || e.isDeleted || e.type !== "text" || !e.text) continue;
+      const y = e.y ?? 0;
+      const pageIdx = Math.floor(y / (BOOK_PAGE_H + BOOK_PAGE_GAP));
+      if (pageIdx >= 0 && pageIdx < map.length) map[pageIdx].push(String(e.text).split("\n")[0].slice(0, 60));
+    }
+    return map;
+  }, [pages, elements]);
+  return (
+    <div style={{
+      position: "absolute",
+      top: 12, right: 12,
+      width: 220,
+      maxHeight: "60vh",
+      overflowY: "auto",
+      padding: 8,
+      borderRadius: 10,
+      background: "var(--island-bg-color, var(--background))",
+      boxShadow: "0 8px 24px rgba(0,0,0,0.28), 0 0 0 1px color-mix(in oklab, var(--foreground) 12%, transparent)",
+      zIndex: 5,
+      fontSize: 11,
+      color: "var(--foreground)",
+    }}>
+      <div style={{ fontSize: 10, opacity: 0.6, marginBottom: 4, padding: "0 4px" }}>Outline</div>
+      {byPage.map((lines, i) => (
+        <button
+          key={i}
+          onClick={() => onJump(i)}
+          style={{
+            display: "block", width: "100%", textAlign: "left",
+            padding: "4px 6px", marginBottom: 2, borderRadius: 6,
+            border: "none", background: "transparent", color: "inherit", cursor: "pointer",
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.background = "color-mix(in oklab, var(--foreground) 6%, transparent)")}
+          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+        >
+          <div style={{ fontWeight: 600, fontSize: 10, opacity: 0.7 }}>Page {i + 1}</div>
+          {lines.length === 0
+            ? <div style={{ opacity: 0.4, fontSize: 10 }}>—</div>
+            : lines.slice(0, 4).map((l, j) => (
+              <div key={j} style={{ fontSize: 10.5, opacity: 0.85, paddingLeft: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l}</div>
+            ))}
+        </button>
+      ))}
     </div>
   );
 }

@@ -748,6 +748,14 @@
 .excal-minimap-drag { cursor: grab; touch-action: none; }
 .excal-minimap-drag:active { cursor: grabbing; }
 
+/* Push Excalidraw's "Scroll back to content" pill up so it doesn't sit
+   directly on top of our book-mode page navigator. The native default
+   is roughly `bottom: 20px`; lift it ~64 px so both bars stack. */
+.excalidraw .scroll-back-to-content,
+.excalidraw-container .scroll-back-to-content {
+  bottom: 84px !important;
+}
+
 /* Present-mode bottom bar — mirrors Excalidraw's `.Island` look (surface bg,
    soft border, subtle shadow), button styling matches its ToolIcon hover. */
 .excal-present-bar {
