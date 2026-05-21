@@ -50,7 +50,9 @@ function skillSlug(skill: string) {
   return skill.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, "");
 }
 
-const DEBOUNCE_MS = 2500;
+// Lower debounce since sync now rides on the periodic SWR refresh:
+// the faster we PUT, the sooner the peer's next poll sees it.
+const DEBOUNCE_MS = 600;
 
 type ExcalApi = {
   getSceneElements: () => readonly unknown[];
@@ -63,7 +65,15 @@ type ExcalApi = {
 
 export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: string; homeHref?: string; defaultFull?: boolean }) {
   const slug = `skill-${skillSlug(skill)}`;
-  const { data: doc, mutate } = useSWR<DrawingDoc>(`/api/drawings/${slug}`, fetcher);
+  // Poll the backend every 1.5 s so peers see each other's saved
+  // strokes within a beat. Backend reconciles by (id, version) so
+  // concurrent writes merge instead of clobbering. Lower latency
+  // than the broken realtime WS path; high enough reliability.
+  const { data: doc, mutate } = useSWR<DrawingDoc>(
+    `/api/drawings/${slug}`,
+    fetcher,
+    { refreshInterval: 1500, dedupingInterval: 0, revalidateOnFocus: false },
+  );
   const { resolvedTheme } = useTheme();
   const [full, setFull] = useState(defaultFull);
   const [saved, setSaved] = useState(false);
@@ -158,16 +168,44 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   const appliedFor = useRef<string>("");
   useEffect(() => {
     if (!doc || !excalReady) return;
-    if (appliedFor.current === slug) return;
-    appliedFor.current = slug;
     const api = excalRef.current;
     if (!api) return;
-    const els = Array.isArray(doc.elements) ? doc.elements : [];
+    const remoteEls = Array.isArray(doc.elements) ? doc.elements : [];
+    const firstApply = appliedFor.current !== slug;
+    if (firstApply) {
+      appliedFor.current = slug;
+      try {
+        (api.updateScene as (d: { elements?: unknown[] }) => void)({ elements: remoteEls as unknown[] });
+      } catch {}
+      const mod = excalModRef.current;
+      if (mod) {
+        try {
+          lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(remoteEls as never);
+        } catch {}
+      }
+      return;
+    }
+    // Subsequent SWR refreshes: reconcile remote against local so a
+    // peer's saved strokes land here without clobbering our own
+    // unsaved edits. Same primitives the official Excalidraw collab
+    // path uses, only gated by polling instead of WebSocket fanout.
+    const mod = excalModRef.current;
+    if (!mod) return;
     try {
-      (api.updateScene as (d: { elements?: unknown[] }) => void)({ elements: els as unknown[] });
+      const remoteVer = mod.getSceneVersion(remoteEls as never);
+      if (remoteVer <= lastBroadcastedOrReceivedSceneVersion.current) return;
+      const local = api.getSceneElements() as never;
+      const appState = api.getAppState() as never;
+      const restored = (mod.restoreElements as (r: unknown, e: unknown) => unknown)(remoteEls, local);
+      const reconciled = mod.reconcileElements(local, restored as never, appState);
+      lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
+      (api.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
+        elements: reconciled as unknown as unknown[],
+        captureUpdate: mod.CaptureUpdateAction.NEVER,
+      });
     } catch {}
   }, [slug, doc, excalReady]);
-  useEffect(() => { appliedFor.current = ""; }, [slug]);
+  useEffect(() => { appliedFor.current = ""; lastBroadcastedOrReceivedSceneVersion.current = -1; }, [slug]);
 
   const initialData = useMemo(() => {
     if (!doc) return undefined;
@@ -483,26 +521,11 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       miniThrottle.current = now;
       setMiniData({ els: elements, app: appState as Record<string, unknown> });
     }
-    // Outgoing broadcast stays on regardless of peers — iPad needs to see
-    // laptop strokes too. Leading-edge 16ms + trailing flush so the final
-    // stroke frame always lands on the receiver (the missing trailing send
-    // is what made remote rendering feel choppy).
-    const bg = (appState as { viewBackgroundColor?: string })?.viewBackgroundColor;
-    pendingSend.current = { elements, bg };
-    // 16ms ≈ 60 msg/s. With seq-based dedup the receiver discards
-    // out-of-order frames, so a higher rate doesn't risk deadlocks
-    // — it just lets fast Apple-Pencil strokes paint smoothly on
-    // the laptop. Trailing flush keeps the final frame.
-    if (now - wsSendThrottle.current >= 16 && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      flushPending();
-    } else if (!trailingTimer.current) {
-      const wait = Math.max(4, 16 - (now - wsSendThrottle.current));
-      trailingTimer.current = setTimeout(() => {
-        trailingTimer.current = null;
-        flushPending();
-      }, wait);
-    }
-  }, [save, flushPending]);
+    // Realtime WS broadcast disabled: it kept producing echo loops
+    // and dropped frames in production. Sync now rides on the 1.5 s
+    // SWR refresh + backend reconcile, which was working reliably
+    // at 7a6688c before the WS layer was added.
+  }, [save]);
 
   // Realtime collab WebSocket — pairs with the FastAPI `/ws/drawings/{slug}`
   // room. Outgoing throttled (~150ms); incoming applied via updateScene
@@ -525,57 +548,14 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       wsRef.current = ws;
       ws.onmessage = (ev) => {
         try {
-          const msg = JSON.parse(ev.data) as { type: string; elements?: unknown[]; count?: number; senderId?: string; seq?: number };
+          const msg = JSON.parse(ev.data) as { type: string; count?: number };
           if (msg.type === "peers") {
             // Subtract 1 because the server counts ourselves in the room.
             setLivePeers(Math.max(0, (msg.count ?? 1) - 1));
-            return;
           }
-          if (msg.type !== "scene" || !Array.isArray(msg.elements)) return;
-          // Drop own loopback frames (server should already skip the
-          // sender; defense in depth) and stale/out-of-order frames
-          // from any peer.
-          if (msg.senderId === senderId.current) return;
-          if (msg.senderId && typeof msg.seq === "number") {
-            const last = lastSeqBySender.current.get(msg.senderId) ?? 0;
-            if (msg.seq <= last) return;
-            lastSeqBySender.current.set(msg.senderId, msg.seq);
-          }
-          const api = excalRef.current;
-          if (!api) return;
-          if (!shouldApplyIncomingScene(Date.now(), lastEditAt.current)) return;
-          // Coalesce bursty incoming scenes (iPad sends ~60/s during a
-          // stroke) into one updateScene per animation frame.
-          incomingPending.current = msg.elements;
-          if (incomingRaf.current != null) return;
-          incomingRaf.current = requestAnimationFrame(() => {
-            incomingRaf.current = null;
-            const next = incomingPending.current;
-            incomingPending.current = null;
-            if (!next) return;
-            const a = excalRef.current;
-            if (!a) return;
-            const mod = excalModRef.current;
-            if (!mod) return; // wait for excalidraw module; next msg will retry
-            try {
-              const local = a.getSceneElements() as never;
-              const appState = a.getAppState() as never;
-              // restoreElements normalizes shape (mirrors the official
-              // Collab.tsx pipeline). reconcileElements then picks per
-              // element by (version desc, versionNonce asc).
-              const restored = (mod.restoreElements as (r: unknown, e: unknown) => unknown)(next, local);
-              const reconciled = mod.reconcileElements(local, restored as never, appState);
-              // CRITICAL: set the shared version BEFORE updateScene.
-              // updateScene synchronously emits onChange, and our send
-              // gate compares the new sceneVersion against this value.
-              // Setting after would let one echo cycle slip through.
-              lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
-              (a.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
-                elements: reconciled as unknown as unknown[],
-                captureUpdate: mod.CaptureUpdateAction.NEVER,
-              });
-            } catch {}
-          });
+          // Scene messages are ignored — sync rides on SWR polling
+          // now. We keep the socket open only for the live peer
+          // counter (badge in the iPad-bridge button).
         } catch {}
       };
       ws.onclose = () => {

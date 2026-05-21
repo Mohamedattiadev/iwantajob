@@ -85,7 +85,11 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   const penMode = sp.get("pen") === "1";
   const [pickerOpen, setPickerOpen] = useState(false);
   const [readMode, setReadMode] = useState(false);
-  const { data, isLoading, error, mutate } = useSWR<DrawingDoc>(`/api/drawings/${encodeURIComponent(slug)}`, fetcher);
+  const { data, isLoading, error, mutate } = useSWR<DrawingDoc>(
+    `/api/drawings/${encodeURIComponent(slug)}`,
+    fetcher,
+    { refreshInterval: 1500, dedupingInterval: 0, revalidateOnFocus: false },
+  );
 
   // Don't gate canvas mount on the fetch — iPad needs to see *something*
   // even if the network call hangs / fails. We render Excalidraw with the
@@ -135,36 +139,65 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   const appliedFor = useRef<string>("");
   useEffect(() => {
     if (!data || !excalReady) return;
-    if (appliedFor.current === slug) return;
-    appliedFor.current = slug;
     const api = excalRef.current;
     if (!api) return;
-    const els = Array.isArray(data.elements) ? data.elements : [];
-    try {
-      (api.updateScene as (d: { elements?: unknown[]; appState?: Record<string, unknown> }) => void)({
-        elements: els as unknown[],
-      });
-    } catch {}
-    // Auto-fit so the tablet shows the laptop's strokes regardless of
-    // where the host scrolled. Without this, elements at large world
-    // coords sit off-screen and the canvas looks blank even though
-    // updateScene applied 65 elements (the bug user reported).
-    try {
-      const app = api.getAppState() as { width?: number; height?: number };
-      const fit = computeFitAllAppState(
-        els as Array<{ x?: number; y?: number; width?: number; height?: number; isDeleted?: boolean } | null>,
-        { width: app.width ?? window.innerWidth, height: app.height ?? window.innerHeight },
-      );
-      if (fit) {
-        (api.updateScene as (d: { appState?: Record<string, unknown> }) => void)({
-          appState: { zoom: { value: fit.zoom }, scrollX: fit.scrollX, scrollY: fit.scrollY },
+    const remoteEls = Array.isArray(data.elements) ? data.elements : [];
+    const firstApply = appliedFor.current !== slug;
+    if (firstApply) {
+      appliedFor.current = slug;
+      try {
+        (api.updateScene as (d: { elements?: unknown[]; appState?: Record<string, unknown> }) => void)({
+          elements: remoteEls as unknown[],
         });
+      } catch {}
+      // Auto-fit so the tablet shows the laptop's strokes regardless
+      // of where the host scrolled.
+      try {
+        const app = api.getAppState() as { width?: number; height?: number };
+        const fit = computeFitAllAppState(
+          remoteEls as Array<{ x?: number; y?: number; width?: number; height?: number; isDeleted?: boolean } | null>,
+          { width: app.width ?? window.innerWidth, height: app.height ?? window.innerHeight },
+        );
+        if (fit) {
+          (api.updateScene as (d: { appState?: Record<string, unknown> }) => void)({
+            appState: { zoom: { value: fit.zoom }, scrollX: fit.scrollX, scrollY: fit.scrollY },
+          });
+        }
+      } catch {}
+      const mod = excalModRef.current;
+      if (mod) {
+        try {
+          lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(remoteEls as never);
+        } catch {}
       }
+      return;
+    }
+    // Subsequent SWR refreshes: reconcile remote against local so the
+    // laptop's strokes land here without clobbering our own. Poll-
+    // based sync replaces the WS fanout that kept breaking.
+    const mod = excalModRef.current;
+    if (!mod) return;
+    try {
+      const remoteVer = mod.getSceneVersion(remoteEls as never);
+      if (remoteVer <= lastBroadcastedOrReceivedSceneVersion.current) return;
+      const local = api.getSceneElements() as never;
+      const appState = api.getAppState() as never;
+      const restored = (mod.restoreElements as (r: unknown, e: unknown) => unknown)(remoteEls, local);
+      const reconciled = mod.reconcileElements(local, restored as never, appState);
+      lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
+      (api.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
+        elements: reconciled as unknown as unknown[],
+        captureUpdate: mod.CaptureUpdateAction.NEVER,
+      });
     } catch {}
   }, [slug, data, excalReady]);
   // Reset the applied flag when slug changes so the next data arrival
   // re-applies for the new notebook.
-  useEffect(() => { appliedFor.current = ""; lastBody.current = ""; }, [slug]);
+  useEffect(() => {
+    appliedFor.current = "";
+    lastBody.current = "";
+    lastBroadcastedOrReceivedSceneVersion.current = -1;
+  }, [slug]);
 
   // Pen-mode boot: when iPad opens via QR (`?pen=1&mode=edit`), turn
   // on penMode + select freedraw so Apple Pencil writes immediately.
@@ -348,26 +381,12 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       save({ elements: [...elements], appState: appState as Record<string, unknown>, files });
-    }, 1500);
-    // Realtime broadcast — leading-edge 16ms (~60 msg/s) with trailing
-    // flush. With per-message senderId+seq the receiver discards
-    // out-of-order frames deterministically, so a higher rate no
-    // longer risks deadlocks and the laptop gets every Apple-Pencil
-    // sample as it arrives. Trailing flush keeps the final frame.
-    const now = Date.now();
-    const bg = (appState as { viewBackgroundColor?: string })?.viewBackgroundColor;
-    pendingSend.current = { elements, bg };
-    if (now - wsSendThrottle.current >= 16 && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      flushPending();
-    } else if (!trailingTimer.current) {
-      // Schedule a trailing flush at the next throttle boundary.
-      const wait = Math.max(4, 16 - (now - wsSendThrottle.current));
-      trailingTimer.current = setTimeout(() => {
-        trailingTimer.current = null;
-        flushPending();
-      }, wait);
-    }
-  }, [editMode, save, penMode, flushPending]);
+    }, 600);
+    // WS broadcast removed: sync rides on the 1.5 s SWR poll +
+    // backend reconcile (same model as commit 7a6688c, which worked
+    // reliably before the WS layer was added). The save above is
+    // what other peers pick up on their next poll.
+  }, [editMode, save, penMode]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !editMode) return;
@@ -391,54 +410,12 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
       wsRef.current = ws;
       ws.onmessage = (ev) => {
         try {
-          const msg = JSON.parse(ev.data) as { type: string; elements?: unknown[]; count?: number; senderId?: string; seq?: number };
+          const msg = JSON.parse(ev.data) as { type: string; count?: number };
           if (msg.type === "peers") {
             // server count includes us — show other-peer count.
             setLivePeers(Math.max(0, (msg.count ?? 1) - 1));
-            return;
           }
-          if (msg.type !== "scene" || !Array.isArray(msg.elements)) return;
-          // Drop own loopback frames + stale/out-of-order frames.
-          if (msg.senderId === senderId.current) return;
-          if (msg.senderId && typeof msg.seq === "number") {
-            const last = lastSeqBySender.current.get(msg.senderId) ?? 0;
-            if (msg.seq <= last) return;
-            lastSeqBySender.current.set(msg.senderId, msg.seq);
-          }
-          const api = excalRef.current;
-          if (!api) return;
-          // Gate: skip incoming scene only if we just emitted a local edit
-          // within the last 100ms. Avoids clobbering our own freshly-drawn
-          // strokes; otherwise always apply so remote edits land.
-          if (!shouldApplyIncomingScene(Date.now(), lastEditAt.current)) return;
-          // Coalesce burst into one updateScene per animation frame —
-          // when sender sends 60/s we'd otherwise re-render React 60×.
-          incomingPending.current = msg.elements;
-          if (incomingRaf.current != null) return;
-          incomingRaf.current = requestAnimationFrame(() => {
-            incomingRaf.current = null;
-            const next = incomingPending.current;
-            incomingPending.current = null;
-            if (!next) return;
-            const a = excalRef.current;
-            if (!a) return;
-            const mod = excalModRef.current;
-            if (!mod) return; // wait for excalidraw module; next msg will retry
-            try {
-              const local = a.getSceneElements() as never;
-              const appState = a.getAppState() as never;
-              const restored = (mod.restoreElements as (r: unknown, e: unknown) => unknown)(next, local);
-              const reconciled = mod.reconcileElements(local, restored as never, appState);
-              // CRITICAL: set shared version BEFORE updateScene (see
-              // skill-sketch.tsx for the rationale — same code, same
-              // ordering gotcha).
-              lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
-              (a.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
-                elements: reconciled as unknown as unknown[],
-                captureUpdate: mod.CaptureUpdateAction.NEVER,
-              });
-            } catch {}
-          });
+          // Scene messages ignored — sync rides on SWR polling now.
         } catch {}
       };
       ws.onclose = () => {
