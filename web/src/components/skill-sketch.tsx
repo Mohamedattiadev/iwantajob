@@ -107,54 +107,141 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("board");
   const [bookPage, setBookPage] = useState(0);
   const [bookOutlineOpen, setBookOutlineOpen] = useState(false);
-  // Laser-lock mode — clicking the Zap button immediately puts the
-  // canvas into a thin red freedraw (GoodNotes-style permanent
-  // laser). Clicking again reverts to the previous stroke style.
+  // Laser-lock — the user keeps using Excalidraw's actual laser
+  // tool (which still renders the fading red trail). While locked,
+  // we capture the pointer path ourselves and, on pointerup, also
+  // commit a permanent freedraw element with the same points so the
+  // stroke "stays" after the laser fades. Unlocking lets the laser
+  // fade like normal — and any persisted freedraw strokes are
+  // tracked so we can wipe them on unlock.
   const [laserLock, setLaserLock] = useState(false);
-  const prevStrokeRef = useRef<{ color?: string; width?: number; opacity?: number; roughness?: number } | null>(null);
+  const laserLockRef = useRef(false);
+  useEffect(() => { laserLockRef.current = laserLock; }, [laserLock]);
+  const persistedLaserIdsRef = useRef<Set<string>>(new Set());
   const toggleLaserLock = useCallback(() => {
     const a = excalRef.current;
     if (!a) { toast.error("Canvas not ready"); return; }
     if (!laserLock) {
-      // Remember the user's current pen so we can restore on toggle-off.
-      try {
-        const app = a.getAppState() as { currentItemStrokeColor?: string; currentItemStrokeWidth?: number; currentItemOpacity?: number; currentItemRoughness?: number };
-        prevStrokeRef.current = {
-          color: app.currentItemStrokeColor,
-          width: app.currentItemStrokeWidth,
-          opacity: app.currentItemOpacity,
-          roughness: app.currentItemRoughness,
-        };
-      } catch {}
-      try {
-        a.setActiveTool?.({ type: "freedraw" });
-        a.updateScene({
-          appState: {
-            currentItemStrokeColor: "#ef4444",
-            currentItemStrokeWidth: 2,
-            currentItemOpacity: 80,
-            currentItemRoughness: 0,
-          },
-        });
-      } catch {}
+      try { a.setActiveTool?.({ type: "laser" }); } catch {}
       setLaserLock(true);
-      toast.success("Laser locked — strokes persist");
+      toast.success("Laser locked — strokes will persist");
     } else {
-      const prev = prevStrokeRef.current ?? {};
-      try {
-        a.updateScene({
-          appState: {
-            currentItemStrokeColor: prev.color ?? "#1e293b",
-            currentItemStrokeWidth: prev.width ?? 2,
-            currentItemOpacity: prev.opacity ?? 100,
-            currentItemRoughness: prev.roughness ?? 1,
-          },
-        });
-      } catch {}
+      // Sweep every freedraw we materialised while locked.
+      const ids = persistedLaserIdsRef.current;
+      if (ids.size > 0) {
+        try {
+          const els = a.getSceneElements() as ReadonlyArray<Record<string, unknown>>;
+          const next = els.map((e) =>
+            typeof e.id === "string" && ids.has(e.id) ? { ...e, isDeleted: true } : e,
+          );
+          a.updateScene({ elements: next as never });
+        } catch {}
+        ids.clear();
+      }
       setLaserLock(false);
-      toast.message("Laser unlocked");
+      toast.message("Laser unlocked — trails cleared");
     }
   }, [laserLock]);
+  // Pointer capture: track laser strokes while locked. On pointerup,
+  // emit a freedraw element matching the captured trail. Coordinates
+  // are converted from CSS px → world coords using current zoom +
+  // scroll. We restrict to the canvas wrap so toolbar clicks don't
+  // get caught.
+  useEffect(() => {
+    const wrap = canvasWrapRef.current;
+    if (!wrap) return;
+    let pts: Array<[number, number]> = [];
+    let baseX = 0, baseY = 0;
+    let drawing = false;
+    const inLaserNow = () => {
+      const a = excalRef.current;
+      if (!a) return false;
+      const t = (a.getAppState() as { activeTool?: { type?: string } }).activeTool?.type;
+      return t === "laser";
+    };
+    const toWorld = (clientX: number, clientY: number) => {
+      const a = excalRef.current!;
+      const app = a.getAppState() as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
+      const zoom = app.zoom?.value ?? 1;
+      const rect = wrap.getBoundingClientRect();
+      return [
+        (clientX - rect.left) / zoom - (app.scrollX ?? 0),
+        (clientY - rect.top) / zoom - (app.scrollY ?? 0),
+      ] as [number, number];
+    };
+    const onDown = (e: PointerEvent) => {
+      if (!laserLockRef.current || !inLaserNow()) return;
+      drawing = true;
+      const [x, y] = toWorld(e.clientX, e.clientY);
+      baseX = x; baseY = y;
+      pts = [[0, 0]];
+    };
+    const onMove = (e: PointerEvent) => {
+      if (!drawing) return;
+      const [x, y] = toWorld(e.clientX, e.clientY);
+      pts.push([x - baseX, y - baseY]);
+    };
+    const onUp = () => {
+      if (!drawing) return;
+      drawing = false;
+      if (pts.length < 2) return;
+      const a = excalRef.current;
+      if (!a) return;
+      const id = (typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID() : `laser-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
+      const xs = pts.map((p) => p[0]);
+      const ys = pts.map((p) => p[1]);
+      const minX = Math.min(...xs);
+      const minY = Math.min(...ys);
+      const maxX = Math.max(...xs);
+      const maxY = Math.max(...ys);
+      const stroke = {
+        id,
+        type: "freedraw",
+        x: baseX + minX,
+        y: baseY + minY,
+        width: maxX - minX,
+        height: maxY - minY,
+        points: pts.map(([px, py]) => [px - minX, py - minY] as [number, number]),
+        strokeColor: "#ef4444",
+        backgroundColor: "transparent",
+        fillStyle: "solid",
+        strokeWidth: 2,
+        strokeStyle: "solid",
+        roughness: 0,
+        opacity: 85,
+        groupIds: [],
+        roundness: null,
+        seed: Math.floor(Math.random() * 0x7fffffff),
+        version: 1,
+        versionNonce: Math.floor(Math.random() * 0x7fffffff),
+        isDeleted: false,
+        boundElements: [],
+        updated: Date.now(),
+        link: null,
+        locked: false,
+        simulatePressure: false,
+        lastCommittedPoint: pts[pts.length - 1],
+        pressures: [],
+      };
+      try {
+        const els = a.getSceneElements() as readonly unknown[];
+        a.updateScene({ elements: [...els, stroke] as never });
+        persistedLaserIdsRef.current.add(id);
+      } catch {}
+      pts = [];
+    };
+    wrap.addEventListener("pointerdown", onDown);
+    wrap.addEventListener("pointermove", onMove);
+    wrap.addEventListener("pointerup", onUp);
+    wrap.addEventListener("pointercancel", onUp);
+    return () => {
+      wrap.removeEventListener("pointerdown", onDown);
+      wrap.removeEventListener("pointermove", onMove);
+      wrap.removeEventListener("pointerup", onUp);
+      wrap.removeEventListener("pointercancel", onUp);
+    };
+  }, []);
   const bookPageRef = useRef(0);
   useEffect(() => { bookPageRef.current = bookPage; }, [bookPage]);
   // Per-page paper mode array. Length === page count. Each entry is
@@ -2625,7 +2712,7 @@ function TemplateGrid({ onTemplate }: { onTemplate: (k: TemplateKey) => void }) 
                     title={TEMPLATE_META[k].desc}
                   >
                     <span className="excal-popover-tile-icon">{TEMPLATE_ICONS[k]}</span>
-                    <span>{TEMPLATE_META[k].label}</span>
+                    <span className="excal-popover-tile-label">{TEMPLATE_META[k].label}</span>
                   </button>
                 ))}
               </div>
