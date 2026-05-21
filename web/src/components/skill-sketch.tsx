@@ -298,18 +298,17 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
         <MM.DefaultItems.SaveAsImage />
         <MM.DefaultItems.Help />
         <MM.Separator />
-        <MM.Group title="Paper">
-          <MM.Item icon={<PaperModeIcon mode="plain" />} onSelect={() => exportRef.current.setPaper?.("plain")}>Plain</MM.Item>
-          <MM.Item icon={<PaperModeIcon mode="grid" />} onSelect={() => exportRef.current.setPaper?.("grid")}>Grid</MM.Item>
-          <MM.Item icon={<PaperModeIcon mode="dots" />} onSelect={() => exportRef.current.setPaper?.("dots")}>Dots</MM.Item>
-          <MM.Item icon={<PaperModeIcon mode="lines" />} onSelect={() => exportRef.current.setPaper?.("lines")}>Lined</MM.Item>
-        </MM.Group>
-        <MM.Separator />
-        <MM.Group title="Export">
-          <MM.Item icon={<ImageIcon style={{ width: 14, height: 14 }} />} onSelect={() => exportRef.current.png?.()}>Export PNG</MM.Item>
-          <MM.Item icon={<FileCode style={{ width: 14, height: 14 }} />} onSelect={() => exportRef.current.svg?.()}>Export SVG</MM.Item>
-          <MM.Item icon={<Copy style={{ width: 14, height: 14 }} />} onSelect={() => exportRef.current.json?.()}>Copy scene JSON</MM.Item>
-        </MM.Group>
+        <SidebarRow label="Paper">
+          <SidebarIconBtn title="Plain" onClick={() => exportRef.current.setPaper?.("plain")}><PaperModeIcon mode="plain" /></SidebarIconBtn>
+          <SidebarIconBtn title="Grid" onClick={() => exportRef.current.setPaper?.("grid")}><PaperModeIcon mode="grid" /></SidebarIconBtn>
+          <SidebarIconBtn title="Dots" onClick={() => exportRef.current.setPaper?.("dots")}><PaperModeIcon mode="dots" /></SidebarIconBtn>
+          <SidebarIconBtn title="Lined" onClick={() => exportRef.current.setPaper?.("lines")}><PaperModeIcon mode="lines" /></SidebarIconBtn>
+        </SidebarRow>
+        <SidebarRow label="Export">
+          <SidebarIconBtn title="Export PNG" onClick={() => exportRef.current.png?.()}><ImageIcon style={{ width: 14, height: 14 }} /></SidebarIconBtn>
+          <SidebarIconBtn title="Export SVG" onClick={() => exportRef.current.svg?.()}><FileCode style={{ width: 14, height: 14 }} /></SidebarIconBtn>
+          <SidebarIconBtn title="Copy scene JSON" onClick={() => exportRef.current.json?.()}><Copy style={{ width: 14, height: 14 }} /></SidebarIconBtn>
+        </SidebarRow>
         <MM.Separator />
         <MM.DefaultItems.ChangeCanvasBackground />
         <MM.DefaultItems.ToggleTheme />
@@ -1416,6 +1415,35 @@ export function SketchPreloader() {
 // active so the pattern shows through. Scale + scroll follow Excalidraw's
 // appState.zoom + scrollX/Y so the grid/dot/line spacing stays anchored
 // to world coordinates while the user pans/zooms.
+// Compact horizontal row injected into Excalidraw MainMenu — label
+// on the left, icon buttons inline. Saves vertical space vs the
+// default MM.Item-per-option layout.
+function SidebarRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="excal-sidebar-row" style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px" }}>
+      <span style={{ fontSize: 11, opacity: 0.7, minWidth: 44 }}>{label}</span>
+      <div style={{ display: "flex", gap: 4 }}>{children}</div>
+    </div>
+  );
+}
+function SidebarIconBtn({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      style={{
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        width: 26, height: 26, borderRadius: 6,
+        border: "1px solid color-mix(in oklab, var(--foreground) 12%, transparent)",
+        background: "transparent", color: "var(--foreground)", cursor: "pointer",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
 function PaperModeIcon({ mode }: { mode: "plain" | "grid" | "dots" | "lines" }) {
   const stroke = "currentColor";
   if (mode === "plain") {
@@ -1628,29 +1656,6 @@ function TopRightTools({
           onDenyPad={onDenyPad}
         />
       </ExcalDropdown>
-      <div className="inline-flex items-center gap-0.5 rounded-md border border-foreground/10 bg-card/60 px-0.5">
-        <button
-          onClick={() => onZoomDelta(1 / 1.5)}
-          title="Zoom out"
-          className="excal-btn !rounded-none !border-0"
-        >
-          <ZoomOut className="h-3.5 w-3.5" />
-        </button>
-        <button
-          onClick={onZoomReset}
-          title="Reset zoom (100%)"
-          className="px-1.5 py-1 text-[10px] font-mono tabular-nums hover:bg-foreground/5"
-        >
-          {zoomPct}%
-        </button>
-        <button
-          onClick={() => onZoomDelta(1.5)}
-          title="Zoom in"
-          className="excal-btn !rounded-none !border-0"
-        >
-          <ZoomIn className="h-3.5 w-3.5" />
-        </button>
-      </div>
       <button onClick={onToggleFull} className="excal-btn" title={full ? "Exit fullscreen (F)" : "Fullscreen (F)"}>
         {full ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
       </button>
