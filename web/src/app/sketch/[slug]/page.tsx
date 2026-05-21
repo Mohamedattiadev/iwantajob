@@ -126,6 +126,9 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   useEffect(() => { loadExcal().then(setExcalMod).catch(() => {}); }, []);
   useEffect(() => { excalModRef.current = excalMod; }, [excalMod]);
   const lastBroadcastedOrReceivedSceneVersion = useRef(-1);
+  // Synchronous flag set during our own updateScene calls so the
+  // resulting echo onChange skips save+broadcast.
+  const applyingRemoteRef = useRef(false);
   const lastBody = useRef("");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -145,13 +148,12 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     const firstApply = appliedFor.current !== slug;
     if (firstApply) {
       appliedFor.current = slug;
+      applyingRemoteRef.current = true;
       try {
         (api.updateScene as (d: { elements?: unknown[]; appState?: Record<string, unknown> }) => void)({
           elements: remoteEls as unknown[],
         });
       } catch {}
-      // Auto-fit so the tablet shows the laptop's strokes regardless
-      // of where the host scrolled.
       try {
         const app = api.getAppState() as { width?: number; height?: number };
         const fit = computeFitAllAppState(
@@ -164,6 +166,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
           });
         }
       } catch {}
+      queueMicrotask(() => { applyingRemoteRef.current = false; });
       const mod = excalModRef.current;
       if (mod) {
         try {
@@ -185,11 +188,13 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
       const restored = (mod.restoreElements as (r: unknown, e: unknown) => unknown)(remoteEls, local);
       const reconciled = mod.reconcileElements(local, restored as never, appState);
       lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
+      applyingRemoteRef.current = true;
       (api.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
         elements: reconciled as unknown as unknown[],
         captureUpdate: mod.CaptureUpdateAction.NEVER,
       });
-    } catch {}
+      queueMicrotask(() => { applyingRemoteRef.current = false; });
+    } catch { applyingRemoteRef.current = false; }
   }, [slug, data, excalReady]);
   // Reset the applied flag when slug changes so the next data arrival
   // re-applies for the new notebook.
@@ -359,6 +364,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     // fires it on mount) would PUT empty elements and wipe the drawing on
     // every reload.
     if (appliedFor.current !== slug) return;
+    if (applyingRemoteRef.current) return; // echo from our own updateScene
     lastEditAt.current = Date.now();
     const tnow = Date.now();
     if (tnow - miniThrottle.current > 33) {
@@ -451,12 +457,14 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
               const restored = (mod.restoreElements as (r: unknown, e: unknown) => unknown)(next, local);
               const reconciled = mod.reconcileElements(local, restored as never, appState);
               lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
+              applyingRemoteRef.current = true;
               (a.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
                 elements: reconciled as unknown as unknown[],
                 captureUpdate: mod.CaptureUpdateAction.NEVER,
               });
+              queueMicrotask(() => { applyingRemoteRef.current = false; });
               setMiniData({ els: reconciled as unknown as readonly unknown[], app: a.getAppState() as Record<string, unknown> });
-            } catch {}
+            } catch { applyingRemoteRef.current = false; }
           });
         } catch {}
       };

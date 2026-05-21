@@ -212,9 +212,11 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     const firstApply = appliedFor.current !== slug;
     if (firstApply) {
       appliedFor.current = slug;
+      applyingRemoteRef.current = true;
       try {
         (api.updateScene as (d: { elements?: unknown[] }) => void)({ elements: remoteEls as unknown[] });
       } catch {}
+      queueMicrotask(() => { applyingRemoteRef.current = false; });
       const mod = excalModRef.current;
       if (mod) {
         try {
@@ -237,11 +239,13 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       const restored = (mod.restoreElements as (r: unknown, e: unknown) => unknown)(remoteEls, local);
       const reconciled = mod.reconcileElements(local, restored as never, appState);
       lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
+      applyingRemoteRef.current = true;
       (api.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
         elements: reconciled as unknown as unknown[],
         captureUpdate: mod.CaptureUpdateAction.NEVER,
       });
-    } catch {}
+      queueMicrotask(() => { applyingRemoteRef.current = false; });
+    } catch { applyingRemoteRef.current = false; }
   }, [slug, doc, excalReady]);
   useEffect(() => { appliedFor.current = ""; lastBroadcastedOrReceivedSceneVersion.current = -1; }, [slug]);
 
@@ -445,12 +449,19 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   // excalidraw-app/collab/Collab.tsx). One counter is shared between
   // outgoing broadcasts and incoming applies: we only emit when the
   // local scene version exceeds it, and we set it to the reconciled
-  // version on every remote apply. That is the single source of truth
-  // for "did anything actually change?" and replaces our home-grown
-  // fingerprint + lastEditAt + applyingRemoteUntil heuristics.
+  // version on every remote apply.
   const excalModRef = useRef<ExcalMod | null>(null);
   useEffect(() => { excalModRef.current = excalMod; }, [excalMod]);
   const lastBroadcastedOrReceivedSceneVersion = useRef(-1);
+  // Synchronous flag set just before any `updateScene` call we make
+  // ourselves (initial seed, remote apply, reset). Excalidraw fires
+  // onChange synchronously inside updateScene, and even with
+  // `captureUpdate: NEVER` the post-apply scene version can differ
+  // from the value we pre-set the counter to — which let the
+  // save→mutate→refetch→apply loop slip through and tripped React's
+  // "Maximum update depth". The flag makes the gate boolean and
+  // race-proof.
+  const applyingRemoteRef = useRef(false);
 
   const miniThrottle = useRef(0);
   const lastEditAt = useRef(0);
@@ -518,26 +529,25 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     appState: unknown,
     files: Record<string, unknown>,
   ) => {
-    // Skip onChange callbacks that are pure echoes of `updateScene`
-    // (remote apply, initial scene seeding). `getSceneVersion` only
-    // advances on a genuine local mutation, so checking it against
-    // the shared counter is the cheapest way to break the
-    // save → mutate → refetch → apply → onChange → save loop that
-    // produced "Maximum update depth exceeded".
+    // If onChange is being triggered by our own `updateScene` call
+    // (remote apply, initial seed, reset), suppress save+broadcast.
+    // We still refresh the minimap so the dashed viewport tracks the
+    // new scene immediately.
+    if (applyingRemoteRef.current) {
+      const tnow = Date.now();
+      if (tnow - miniThrottle.current > 33) {
+        miniThrottle.current = tnow;
+        setMiniData({ els: elements, app: appState as Record<string, unknown> });
+      }
+      return;
+    }
     const mod = excalModRef.current;
     if (mod) {
       try {
         const sceneVersion = mod.getSceneVersion(elements as never);
-        if (sceneVersion <= lastBroadcastedOrReceivedSceneVersion.current) {
-          // Still keep the minimap current — just no save/broadcast.
-          const tnow = Date.now();
-          if (tnow - miniThrottle.current > 33) {
-            miniThrottle.current = tnow;
-            setMiniData({ els: elements, app: appState as Record<string, unknown> });
-          }
-          return;
+        if (sceneVersion > lastBroadcastedOrReceivedSceneVersion.current) {
+          lastBroadcastedOrReceivedSceneVersion.current = sceneVersion;
         }
-        lastBroadcastedOrReceivedSceneVersion.current = sceneVersion;
       } catch {}
     }
     lastEditAt.current = Date.now();
@@ -626,15 +636,14 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
               // CRITICAL: bump version BEFORE updateScene so the
               // synchronous onChange echo returns early.
               lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
+              applyingRemoteRef.current = true;
               (a.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
                 elements: reconciled as unknown as unknown[],
                 captureUpdate: mod.CaptureUpdateAction.NEVER,
               });
-              // Update minimap immediately so the dashed viewport
-              // and stroke previews reflect the remote frame
-              // instead of waiting for the next throttled tick.
+              queueMicrotask(() => { applyingRemoteRef.current = false; });
               setMiniData({ els: reconciled as unknown as readonly unknown[], app: a.getAppState() as Record<string, unknown> });
-            } catch {}
+            } catch { applyingRemoteRef.current = false; }
           });
         } catch {}
       };
