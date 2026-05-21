@@ -35,6 +35,14 @@ function loadExcal(): Promise<ExcalMod> {
   return excalModPromise;
 }
 
+// Kick off the Excalidraw chunk fetch at module-evaluation time so it
+// downloads in parallel with React hydration instead of waiting for
+// the SketchPreloader's effect to fire. Cuts ~2 s off LCP on the
+// /scratch route where Excalidraw is the dominant payload.
+if (typeof window !== "undefined") {
+  loadExcal().catch(() => {});
+}
+
 const Excalidraw = dynamic(
   async () => (await loadExcal()).Excalidraw,
   { ssr: false, loading: () => <Skeleton className="h-full w-full" /> },
