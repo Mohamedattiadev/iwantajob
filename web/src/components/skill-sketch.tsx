@@ -1808,7 +1808,14 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
             index={presentIdx ?? 0}
             onPrev={() => showFrame((presentIdx ?? 0) - 1)}
             onNext={() => showFrame((presentIdx ?? 0) + 1)}
-            onExit={() => setPresentIdx(null)}
+            onExit={() => {
+              // Stopping the presentation also turns off any view-only
+              // lock and closes the slides side panel — the user said
+              // they expect a clean exit from the whole present mode.
+              setPresentIdx(null);
+              if (viewOnly) setViewOnly(false);
+              if (previewOpen) setPreviewOpen(false);
+            }}
             onTogglePanel={() => setPreviewOpen((v) => !v)}
             panelOpen={previewOpen}
             onToggleFocus={toggleSlideFocus}
