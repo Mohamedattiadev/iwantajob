@@ -106,8 +106,8 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   const [bookPage, setBookPage] = useState(0);
   const bookPageRef = useRef(0);
   useEffect(() => { bookPageRef.current = bookPage; }, [bookPage]);
-  const [bookPageCount, setBookPageCount] = useState(6);
-  const bookPageCountRef = useRef(6);
+  const [bookPageCount, setBookPageCount] = useState(1);
+  const bookPageCountRef = useRef(1);
   useEffect(() => { bookPageCountRef.current = bookPageCount; }, [bookPageCount]);
   // Fit viewport to a given page index — centers the page in view
   // with 32 px padding. Matches the "tap-to-zoom-to-page" feel.
@@ -1349,6 +1349,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
             <BookNavWidget
               page={bookPage}
               pageCount={bookPageCount}
+              framePresenting={presenting}
               onPrev={() => goToBookPage(bookPage - 1)}
               onNext={() => goToBookPage(bookPage + 1)}
               onJump={(idx) => goToBookPage(idx)}
@@ -1363,48 +1364,57 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
                 if (!api) return toast.error("Canvas not ready");
                 const tid = toast.loading(`Rendering ${bookPageCount} pages…`);
                 try {
-                  const [{ exportToBlob }, { default: JsPDF }] = await Promise.all([
+                  const [{ exportToCanvas }, { default: JsPDF }] = await Promise.all([
                     loadExcal(),
                     import("jspdf"),
                   ]);
-                  const pdf = new JsPDF({ orientation: "portrait", unit: "px", format: [BOOK_PAGE_W, BOOK_PAGE_H] });
-                  const els = api.getSceneElements() as ReadonlyArray<Record<string, unknown>>;
+                  // ~300 dpi A4 portrait → 2480×3508 px.
+                  const PX_W = 2480;
+                  const PX_H = 3508;
+                  const elsRaw = api.getSceneElements() as ReadonlyArray<Record<string, unknown>>;
+                  const pdf = new JsPDF({ orientation: "portrait", unit: "px", format: [PX_W, PX_H] });
                   for (let i = 0; i < bookPageCount; i++) {
                     const top = bookPageTop(i);
-                    // Synthetic frame element for exportingFrame option.
-                    const frame: Record<string, unknown> = {
-                      id: `__bookframe_${i}`,
-                      type: "frame",
-                      x: 0, y: top,
-                      width: BOOK_PAGE_W, height: BOOK_PAGE_H,
-                      isDeleted: false,
-                      version: 1, versionNonce: 1,
-                    };
-                    const blob = await exportToBlob({
-                      elements: [...els, frame] as never,
+                    // Clip elements to this page's bbox + offset so the
+                    // export's natural bounds match a single sheet.
+                    const offset = -top;
+                    const pageElsRaw = elsRaw
+                      .filter((el) => {
+                        if (el.isDeleted) return false;
+                        const x = (el.x as number) ?? 0;
+                        const y = (el.y as number) ?? 0;
+                        const w = (el.width as number) ?? 0;
+                        const h = (el.height as number) ?? 0;
+                        return x + w >= 0 && x <= BOOK_PAGE_W && y + h >= top && y <= top + BOOK_PAGE_H;
+                      })
+                      .map((el) => ({ ...el, y: ((el.y as number) ?? 0) + offset }));
+                    const canvas = await (exportToCanvas as unknown as (opts: unknown) => Promise<HTMLCanvasElement>)({
+                      elements: pageElsRaw,
                       appState: {
                         ...api.getAppState(),
-                        exportWithDarkMode: resolvedTheme === "dark",
+                        exportWithDarkMode: false,
+                        exportBackground: true,
+                        viewBackgroundColor: "#ffffff",
                         exportScale: 3,
                         exportEmbedScene: false,
-                      } as never,
-                      files: api.getFiles() as never,
-                      mimeType: "image/png",
-                      exportingFrame: frame as never,
-                      getDimensions: (w: number, h: number) => {
-                        const max = 2480; // ~300dpi A4
-                        const scale = Math.min(max / w, max / h, 3);
-                        return { width: Math.round(w * scale), height: Math.round(h * scale), scale };
                       },
-                    } as never);
-                    const dataUrl: string = await new Promise((res, rej) => {
-                      const r = new FileReader();
-                      r.onloadend = () => res(String(r.result));
-                      r.onerror = rej;
-                      r.readAsDataURL(blob);
+                      files: api.getFiles(),
+                      // Force a fixed bounds box (0,0) – (W,H) so every
+                      // export is page-sized regardless of stroke spread.
+                      getDimensions: () => ({ width: PX_W, height: PX_H, scale: PX_W / BOOK_PAGE_W }),
                     });
-                    if (i > 0) pdf.addPage([BOOK_PAGE_W, BOOK_PAGE_H], "portrait");
-                    pdf.addImage(dataUrl, "PNG", 0, 0, BOOK_PAGE_W, BOOK_PAGE_H, undefined, "FAST");
+                    // Composite onto a white page-shaped canvas so empty
+                    // pages still come out as white sheets, not transparent.
+                    const out = document.createElement("canvas");
+                    out.width = PX_W; out.height = PX_H;
+                    const ctx = out.getContext("2d");
+                    if (!ctx) throw new Error("2d context unavailable");
+                    ctx.fillStyle = "#ffffff";
+                    ctx.fillRect(0, 0, PX_W, PX_H);
+                    ctx.drawImage(canvas, 0, 0, PX_W, PX_H);
+                    const dataUrl = out.toDataURL("image/png");
+                    if (i > 0) pdf.addPage([PX_W, PX_H], "portrait");
+                    pdf.addImage(dataUrl, "PNG", 0, 0, PX_W, PX_H, undefined, "FAST");
                   }
                   pdf.save(`${skill}-book.pdf`);
                   toast.success(`Saved ${bookPageCount}-page PDF`, { id: tid });
@@ -1682,9 +1692,12 @@ function BookPagesOverlay({ appState, pageCount }: { appState: Record<string, un
           width: BOOK_PAGE_W * zoom,
           height: BOOK_PAGE_H * zoom,
           borderRadius: 4 * zoom,
-          background: "color-mix(in oklab, var(--background) 85%, transparent)",
+          background: "color-mix(in oklab, var(--background) 90%, transparent)",
+          // Crisp white outer ring + soft drop shadow so each page
+          // visually reads as a sheet against the dark canvas.
+          border: `${Math.max(1, 1.5 * zoom)}px solid rgba(255,255,255,0.85)`,
           boxShadow:
-            "0 2px 8px rgba(0,0,0,0.18), 0 0 0 1px color-mix(in oklab, var(--foreground) 14%, transparent)",
+            "0 6px 18px rgba(0,0,0,0.45), 0 1px 2px rgba(0,0,0,0.4)",
           pointerEvents: "none",
         }}
       >
@@ -1728,56 +1741,38 @@ function LayoutIcon({ mode }: { mode: "board" | "book" }) {
 // GoodNotes-style page nav. Sits above Excalidraw's "Scroll back to
 // content" anchor (~bottom 56px) so the two don't collide. Click the
 // page indicator to open a jump-to-page popover.
+// Same chrome as PresentOverlay (frame strip) — reuses `excal-present-*`
+// classes so the two bars look identical and sit nicely beside each
+// other. Anchored bottom-left when the frame strip is at center, so
+// they no longer stack on top of each other.
 function BookNavWidget({
-  page, pageCount, onPrev, onNext, onJump, onAddPage, onExportPdf,
+  page, pageCount, onPrev, onNext, onJump, onAddPage, onExportPdf, framePresenting,
 }: {
   page: number; pageCount: number;
   onPrev: () => void; onNext: () => void;
   onJump: (idx: number) => void;
   onAddPage: () => void;
   onExportPdf: () => void;
+  framePresenting: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const positionClass = framePresenting
+    ? "left-4 -translate-x-0"  // dodge to the left when frame strip is centered
+    : "left-1/2 -translate-x-1/2";
   return (
     <div
-      style={{
-        position: "absolute",
-        bottom: 72,           // clears Excalidraw's bottom-bar
-        left: "50%",
-        transform: "translateX(-50%)",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 2,
-        padding: 4,
-        borderRadius: 12,
-        background: "var(--island-bg-color, color-mix(in oklab, var(--background) 88%, transparent))",
-        boxShadow:
-          "0 4px 12px rgba(0,0,0,0.25), 0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent)",
-        backdropFilter: "blur(8px)",
-        WebkitBackdropFilter: "blur(8px)",
-        zIndex: 5,
-        fontSize: 12,
-        color: "var(--text-primary-color, var(--foreground))",
-      }}
+      className={`excal-present-bar absolute bottom-4 ${positionClass} z-40 inline-flex items-center gap-1`}
     >
-      <button
-        onClick={onPrev}
-        disabled={page === 0}
-        title="Previous page (←)"
-        style={navBtn(false, page === 0)}
-      ><ChevronLeft className="h-3.5 w-3.5" /></button>
+      <button onClick={onPrev} disabled={page === 0} className="excal-present-btn" title="Previous page (←)">
+        <ChevronLeft className="h-4 w-4" />
+      </button>
       <div style={{ position: "relative" }}>
         <button
           onClick={() => setOpen((v) => !v)}
           title="Jump to page"
-          style={{
-            ...navBtn(open, false),
-            padding: "0 10px", height: 28, minWidth: 76,
-            fontVariantNumeric: "tabular-nums",
-            fontWeight: 500,
-          }}
+          className={`excal-present-counter ${open ? "is-active" : ""}`}
         >
-          {page + 1} / {pageCount}
+          page {page + 1} / {pageCount}
         </button>
         {open && (
           <div
@@ -1787,12 +1782,13 @@ function BookNavWidget({
               padding: 6,
               borderRadius: 10,
               background: "var(--island-bg-color, var(--background))",
-              boxShadow:
-                "0 8px 24px rgba(0,0,0,0.28), 0 0 0 1px color-mix(in oklab, var(--foreground) 12%, transparent)",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.28), 0 0 0 1px color-mix(in oklab, var(--foreground) 12%, transparent)",
               display: "grid",
               gridTemplateColumns: "repeat(6, minmax(28px, 1fr))",
               gap: 4,
               maxWidth: 220,
+              maxHeight: 200,
+              overflowY: "auto",
             }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -1819,33 +1815,18 @@ function BookNavWidget({
           </div>
         )}
       </div>
-      <button onClick={onNext} disabled={page >= pageCount - 1} title="Next page (→)" style={navBtn(false, page >= pageCount - 1)}>
-        <ChevronRight className="h-3.5 w-3.5" />
+      <button onClick={onNext} disabled={page >= pageCount - 1} className="excal-present-btn" title="Next page (→)">
+        <ChevronRight className="h-4 w-4" />
       </button>
-      <span style={{ width: 1, height: 18, background: "color-mix(in oklab, var(--foreground) 12%, transparent)", margin: "0 4px" }} />
-      <button onClick={onAddPage} title="Add page" style={navBtn(false, false)}>
-        <Plus className="h-3.5 w-3.5" />
+      <span className="excal-present-sep" />
+      <button onClick={onAddPage} className="excal-present-btn" title="Add page">
+        <Plus className="h-4 w-4" />
       </button>
-      <button onClick={onExportPdf} title="Export as PDF" style={navBtn(false, false)}>
-        <Download className="h-3.5 w-3.5" />
+      <button onClick={onExportPdf} className="excal-present-btn" title="Export as PDF">
+        <Download className="h-4 w-4" />
       </button>
     </div>
   );
-}
-function navBtn(active: boolean, disabled: boolean): React.CSSProperties {
-  return {
-    display: "inline-flex", alignItems: "center", justifyContent: "center",
-    width: 28, height: 28, borderRadius: 8,
-    border: active
-      ? "1.5px solid var(--color-primary, #6965db)"
-      : "1px solid transparent",
-    background: active
-      ? "color-mix(in oklab, var(--color-primary, #6965db) 22%, transparent)"
-      : "transparent",
-    color: active ? "var(--color-primary, #6965db)" : "inherit",
-    cursor: disabled ? "not-allowed" : "pointer",
-    opacity: disabled ? 0.4 : 1,
-  };
 }
 
 function PaperModeIcon({ mode }: { mode: "plain" | "grid" | "dots" | "lines" }) {
