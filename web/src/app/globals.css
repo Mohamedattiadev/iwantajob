@@ -673,6 +673,40 @@
   z-index: 10;
   padding: 4px;
   min-width: 200px;
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+}
+/* Compact grid for template tiles — replaces the long vertical
+   list with a 3-column icon grid so the popover stays viewport-sized. */
+.excal-popover-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 2px;
+}
+.excal-popover-tile {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px;
+  padding: 8px 6px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  color: inherit;
+  font-size: 11px;
+  line-height: 1.15;
+  text-align: center;
+  min-height: 64px;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.excal-popover-tile:hover {
+  background: var(--button-hover-bg, rgba(127,127,127,0.12));
+  border-color: color-mix(in oklab, var(--foreground) 12%, transparent);
+}
+.excal-popover-tile-icon {
+  display: grid; place-items: center;
+  width: 22px; height: 22px;
+  opacity: 0.85;
 }
 :root[data-theme="light"] .excal-popover,
 .excalidraw.theme--light ~ * .excal-popover {
