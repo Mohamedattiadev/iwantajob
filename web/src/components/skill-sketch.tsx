@@ -1920,27 +1920,41 @@ function PageListPopover({
 }) {
   const [dragFrom, setDragFrom] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState<number | null>(null);
+  const [paperMenu, setPaperMenu] = useState<number | null>(null);
+  // Close paper menu if clicking outside any row.
+  useEffect(() => {
+    if (paperMenu == null) return;
+    const onDoc = () => setPaperMenu(null);
+    window.addEventListener("click", onDoc);
+    return () => window.removeEventListener("click", onDoc);
+  }, [paperMenu]);
   return (
     <div
+      className="Island"
       style={{
         position: "absolute",
-        bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)",
-        padding: 6,
-        borderRadius: 10,
-        background: "var(--island-bg-color, var(--background))",
-        boxShadow: "0 8px 24px rgba(0,0,0,0.28), 0 0 0 1px color-mix(in oklab, var(--foreground) 12%, transparent)",
+        bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)",
+        padding: 4,
+        borderRadius: "var(--border-radius-lg, 10px)",
+        background: "var(--island-bg-color, #232329)",
+        color: "var(--text-primary-color, var(--foreground))",
+        boxShadow:
+          "0 0 0 1px var(--default-border-color, rgba(255,255,255,0.08)), 0 8px 24px rgba(0,0,0,0.25)",
         display: "flex",
         flexDirection: "column",
-        gap: 3,
-        width: 260,
-        maxHeight: 260,
+        gap: 2,
+        width: 300,
+        maxHeight: 280,
         overflowY: "auto",
-        fontSize: 11,
+        fontSize: 12,
+        fontFamily: "var(--ui-font, inherit)",
       }}
       onClick={(e) => e.stopPropagation()}
     >
       {pages.map((p, i) => {
-        const eff = p.paper === "inherit" || !p.paper ? globalPaper : p.paper;
+        const eff = !p.paper || p.paper === "inherit" ? globalPaper : p.paper;
+        const inheriting = !p.paper || p.paper === "inherit";
+        const active = i === page;
         return (
           <div
             key={i}
@@ -1951,53 +1965,130 @@ function PageListPopover({
             onDrop={(e) => { e.preventDefault(); if (dragFrom != null) onReorder(dragFrom, i); setDragFrom(null); setDragOver(null); }}
             onDragEnd={() => { setDragFrom(null); setDragOver(null); }}
             style={{
+              position: "relative",
               display: "flex", alignItems: "center", gap: 6,
-              padding: "4px 6px", borderRadius: 6,
-              border: i === page
-                ? "1.5px solid var(--color-primary, #6965db)"
+              padding: "4px 6px",
+              borderRadius: 6,
+              background: active
+                ? "var(--color-primary-light, color-mix(in oklab, var(--color-primary, #6965db) 18%, transparent))"
                 : dragOver === i
-                  ? "1px dashed color-mix(in oklab, var(--color-primary, #6965db) 60%, transparent)"
-                  : "1px solid color-mix(in oklab, var(--foreground) 8%, transparent)",
-              background: i === page ? "color-mix(in oklab, var(--color-primary, #6965db) 18%, transparent)" : "transparent",
+                  ? "var(--button-hover-bg, color-mix(in oklab, var(--foreground) 8%, transparent))"
+                  : "transparent",
+              border: dragOver === i && dragFrom !== null && dragFrom !== i
+                ? "1px dashed var(--color-primary, #6965db)"
+                : "1px solid transparent",
               cursor: "grab",
+              transition: "background 120ms ease",
+            }}
+            onMouseEnter={(e) => {
+              if (active || dragOver === i) return;
+              (e.currentTarget as HTMLDivElement).style.background =
+                "var(--button-hover-bg, color-mix(in oklab, var(--foreground) 6%, transparent))";
+            }}
+            onMouseLeave={(e) => {
+              if (active || dragOver === i) return;
+              (e.currentTarget as HTMLDivElement).style.background = "transparent";
             }}
           >
-            <span style={{ opacity: 0.5, fontSize: 10 }}>⠿</span>
+            <span
+              style={{
+                fontSize: 11, lineHeight: 1,
+                color: "color-mix(in oklab, var(--foreground) 40%, transparent)",
+                cursor: "grab",
+                width: 10, textAlign: "center", userSelect: "none",
+              }}
+            >⋮⋮</span>
             <button
               onClick={() => onJump(i)}
               style={{
-                flex: 1, textAlign: "left", border: "none", background: "transparent",
-                color: "inherit", cursor: "pointer", padding: "2px 0",
+                flex: 1, textAlign: "left",
+                border: "none", background: "transparent",
+                color: "inherit", cursor: "pointer",
+                padding: "3px 0", fontSize: 12,
+                fontWeight: active ? 500 : 400,
                 fontVariantNumeric: "tabular-nums",
               }}
             >Page {i + 1}</button>
-            <select
-              value={p.paper ?? "inherit"}
-              onChange={(e) => onSetPaper(i, e.target.value as PaperMode | "inherit")}
-              title="Paper for this page"
-              style={{
-                background: "transparent", color: "inherit",
-                border: "1px solid color-mix(in oklab, var(--foreground) 14%, transparent)",
-                borderRadius: 4, padding: "2px 4px", fontSize: 10,
-              }}
-            >
-              <option value="inherit">inherit ({eff})</option>
-              <option value="plain">plain</option>
-              <option value="grid">grid</option>
-              <option value="dots">dots</option>
-              <option value="lines">lined</option>
-            </select>
+            <div style={{ position: "relative" }}>
+              <button
+                onClick={(e) => { e.stopPropagation(); setPaperMenu((v) => v === i ? null : i); }}
+                title="Paper for this page"
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 4,
+                  padding: "2px 6px", height: 22,
+                  borderRadius: 4,
+                  border: "1px solid var(--default-border-color, color-mix(in oklab, var(--foreground) 10%, transparent))",
+                  background: "var(--island-bg-color, transparent)",
+                  color: "var(--text-primary-color, inherit)",
+                  cursor: "pointer", fontSize: 10,
+                  fontFamily: "inherit",
+                }}
+              >
+                <PaperModeIcon mode={eff} />
+                <span style={{ opacity: inheriting ? 0.6 : 1 }}>
+                  {inheriting ? `${eff}` : eff}
+                </span>
+                <ChevronDown className="h-2.5 w-2.5" />
+              </button>
+              {paperMenu === i && (
+                <div
+                  style={{
+                    position: "absolute", top: "calc(100% + 4px)", right: 0,
+                    minWidth: 100,
+                    padding: 2,
+                    background: "var(--island-bg-color, #232329)",
+                    borderRadius: 6,
+                    boxShadow: "0 0 0 1px var(--default-border-color, rgba(255,255,255,0.08)), 0 6px 18px rgba(0,0,0,0.3)",
+                    zIndex: 1,
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {(["inherit", "plain", "grid", "dots", "lines"] as const).map((m) => {
+                    const sel = (p.paper ?? "inherit") === m;
+                    return (
+                      <button
+                        key={m}
+                        onClick={() => { onSetPaper(i, m); setPaperMenu(null); }}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 6,
+                          width: "100%", textAlign: "left",
+                          padding: "5px 8px", borderRadius: 4,
+                          border: "none",
+                          background: sel
+                            ? "var(--color-primary-light, color-mix(in oklab, var(--color-primary, #6965db) 18%, transparent))"
+                            : "transparent",
+                          color: sel ? "var(--color-primary, #6965db)" : "inherit",
+                          cursor: "pointer", fontSize: 11,
+                        }}
+                        onMouseEnter={(e) => {
+                          if (sel) return;
+                          (e.currentTarget as HTMLButtonElement).style.background =
+                            "var(--button-hover-bg, color-mix(in oklab, var(--foreground) 8%, transparent))";
+                        }}
+                        onMouseLeave={(e) => {
+                          if (sel) return;
+                          (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+                        }}
+                      >
+                        {m === "inherit"
+                          ? <span style={{ width: 14, display: "inline-block", textAlign: "center", opacity: 0.6 }}>↺</span>
+                          : <PaperModeIcon mode={m} />}
+                        <span style={{ flex: 1 }}>{m}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
             <button
               onClick={() => onDelete(i)}
               disabled={pages.length <= 1}
               title="Delete page"
+              className="excal-present-btn"
               style={{
-                width: 22, height: 22, borderRadius: 4,
-                border: "1px solid color-mix(in oklab, var(--foreground) 10%, transparent)",
-                background: "transparent", color: "inherit",
-                cursor: pages.length <= 1 ? "not-allowed" : "pointer",
+                width: 22, height: 22, padding: 0,
                 opacity: pages.length <= 1 ? 0.4 : 1,
-                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                cursor: pages.length <= 1 ? "not-allowed" : "pointer",
               }}
             ><X className="h-3 w-3" /></button>
           </div>
