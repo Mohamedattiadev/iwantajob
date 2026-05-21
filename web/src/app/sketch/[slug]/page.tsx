@@ -88,7 +88,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   const { data, isLoading, error, mutate } = useSWR<DrawingDoc>(
     `/api/drawings/${encodeURIComponent(slug)}`,
     fetcher,
-    { refreshInterval: 5000, dedupingInterval: 0, revalidateOnFocus: false },
+    { refreshInterval: 500, dedupingInterval: 0, revalidateOnFocus: false },
   );
 
   // Don't gate canvas mount on the fetch — iPad needs to see *something*
@@ -368,7 +368,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       save({ elements: [...elements], appState: appState as Record<string, unknown>, files });
-    }, 600);
+    }, 150);
     // Realtime broadcast — Excalidraw collab pattern (see laptop
     // side for the rationale). Only emit when scene version
     // advances; receiver echoes are absorbed by the same gate.

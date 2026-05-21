@@ -51,9 +51,11 @@ function skillSlug(skill: string) {
   return skill.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, "");
 }
 
-// Lower debounce since sync now rides on the periodic SWR refresh:
-// the faster we PUT, the sooner the peer's next poll sees it.
-const DEBOUNCE_MS = 600;
+// Aggressive autosave so the peer's poll picks up changes fast.
+// Live drawing fires onChange ~60×/s but only the trailing event in
+// each 150 ms window actually PUTs. Combined with 500 ms SWR poll
+// → ≤700 ms end-to-end without WS.
+const DEBOUNCE_MS = 150;
 
 type ExcalApi = {
   getSceneElements: () => readonly unknown[];
@@ -72,7 +74,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   const { data: doc, mutate } = useSWR<DrawingDoc>(
     `/api/drawings/${slug}`,
     fetcher,
-    { refreshInterval: 5000, dedupingInterval: 0, revalidateOnFocus: false },
+    { refreshInterval: 500, dedupingInterval: 0, revalidateOnFocus: false },
   );
   const { resolvedTheme } = useTheme();
   const [full, setFull] = useState(defaultFull);
@@ -2046,12 +2048,18 @@ function MinimapImpl({
               strokeWidth={1.5} strokeDasharray="3 2" opacity={0.95}
             />
             {cursor && (
-              // Local cursor dot — matches the tablet-side feel the
-              // user explicitly asked for on the laptop too.
-              <circle
-                cx={toX(cursor.x)} cy={toY(cursor.y)} r={3}
-                fill="#f59e0b" stroke="#fff" strokeWidth={1} opacity={0.95}
-              />
+              // Local cursor dot — bright pulse so it's findable at
+              // a glance like the tablet's pencil indicator.
+              <>
+                <circle
+                  cx={toX(cursor.x)} cy={toY(cursor.y)} r={6}
+                  fill="#f59e0b" opacity={0.25}
+                />
+                <circle
+                  cx={toX(cursor.x)} cy={toY(cursor.y)} r={3.5}
+                  fill="#fbbf24" stroke="#fff" strokeWidth={1.25} opacity={1}
+                />
+              </>
             )}
           </svg>
         )}
