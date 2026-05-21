@@ -88,7 +88,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   const { data, isLoading, error, mutate } = useSWR<DrawingDoc>(
     `/api/drawings/${encodeURIComponent(slug)}`,
     fetcher,
-    { refreshInterval: 1500, dedupingInterval: 0, revalidateOnFocus: false },
+    { refreshInterval: 5000, dedupingInterval: 0, revalidateOnFocus: false },
   );
 
   // Don't gate canvas mount on the fetch — iPad needs to see *something*
@@ -359,23 +359,9 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     // fires it on mount) would PUT empty elements and wipe the drawing on
     // every reload.
     if (appliedFor.current !== slug) return;
-    // Track our own scene version so the SWR-poll re-apply doesn't
-    // round-trip the same elements back through our reconciler. The
-    // version is NOT a save gate anymore — every local change debounce-
-    // saves unconditionally, otherwise autosave silently lost edits
-    // whenever Excalidraw fired onChange without advancing the counter.
-    const mod = excalModRef.current;
-    if (mod) {
-      try {
-        const sceneVersion = mod.getSceneVersion(elements as never);
-        if (sceneVersion > lastBroadcastedOrReceivedSceneVersion.current) {
-          lastBroadcastedOrReceivedSceneVersion.current = sceneVersion;
-        }
-      } catch {}
-    }
     lastEditAt.current = Date.now();
     const tnow = Date.now();
-    if (tnow - miniThrottle.current > 120) {
+    if (tnow - miniThrottle.current > 33) {
       miniThrottle.current = tnow;
       setMiniData({ els: elements, app: appState as Record<string, unknown> });
     }
@@ -383,11 +369,32 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     saveTimer.current = setTimeout(() => {
       save({ elements: [...elements], appState: appState as Record<string, unknown>, files });
     }, 600);
-    // WS broadcast removed: sync rides on the 1.5 s SWR poll +
-    // backend reconcile (same model as commit 7a6688c, which worked
-    // reliably before the WS layer was added). The save above is
-    // what other peers pick up on their next poll.
-  }, [editMode, save, penMode]);
+    // Realtime broadcast — Excalidraw collab pattern (see laptop
+    // side for the rationale). Only emit when scene version
+    // advances; receiver echoes are absorbed by the same gate.
+    // Tracking the version here also stops SWR-poll re-applies from
+    // round-tripping the same elements back through our reconciler.
+    const mod = excalModRef.current;
+    if (mod) {
+      try {
+        const sceneVersion = mod.getSceneVersion(elements as never);
+        if (sceneVersion > lastBroadcastedOrReceivedSceneVersion.current && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          const bg = (appState as { viewBackgroundColor?: string })?.viewBackgroundColor;
+          pendingSend.current = { elements, bg };
+          const now = Date.now();
+          if (now - wsSendThrottle.current >= 16) {
+            flushPending();
+          } else if (!trailingTimer.current) {
+            const wait = Math.max(4, 16 - (now - wsSendThrottle.current));
+            trailingTimer.current = setTimeout(() => {
+              trailingTimer.current = null;
+              flushPending();
+            }, wait);
+          }
+        }
+      } catch {}
+    }
+  }, [editMode, save, penMode, flushPending]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !editMode) return;
@@ -411,12 +418,41 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
       wsRef.current = ws;
       ws.onmessage = (ev) => {
         try {
-          const msg = JSON.parse(ev.data) as { type: string; count?: number };
+          const msg = JSON.parse(ev.data) as { type: string; count?: number; elements?: unknown[]; senderId?: string; seq?: number };
           if (msg.type === "peers") {
-            // server count includes us — show other-peer count.
             setLivePeers(Math.max(0, (msg.count ?? 1) - 1));
+            return;
           }
-          // Scene messages ignored — sync rides on SWR polling now.
+          if (msg.type !== "scene" || !Array.isArray(msg.elements)) return;
+          if (msg.senderId === senderId.current) return;
+          if (msg.senderId && typeof msg.seq === "number") {
+            const last = lastSeqBySender.current.get(msg.senderId) ?? 0;
+            if (msg.seq <= last) return;
+            lastSeqBySender.current.set(msg.senderId, msg.seq);
+          }
+          incomingPending.current = msg.elements;
+          if (incomingRaf.current != null) return;
+          incomingRaf.current = requestAnimationFrame(() => {
+            incomingRaf.current = null;
+            const next = incomingPending.current;
+            incomingPending.current = null;
+            if (!next) return;
+            const a = excalRef.current;
+            const mod = excalModRef.current;
+            if (!a || !mod) return;
+            try {
+              const local = a.getSceneElements() as never;
+              const appState = a.getAppState() as never;
+              const restored = (mod.restoreElements as (r: unknown, e: unknown) => unknown)(next, local);
+              const reconciled = mod.reconcileElements(local, restored as never, appState);
+              lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
+              (a.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
+                elements: reconciled as unknown as unknown[],
+                captureUpdate: mod.CaptureUpdateAction.NEVER,
+              });
+              setMiniData({ els: reconciled as unknown as readonly unknown[], app: a.getAppState() as Record<string, unknown> });
+            } catch {}
+          });
         } catch {}
       };
       ws.onclose = () => {

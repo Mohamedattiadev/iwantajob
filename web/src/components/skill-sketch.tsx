@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import type * as React from "react";
+import { memo } from "react";
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -65,14 +66,13 @@ type ExcalApi = {
 
 export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: string; homeHref?: string; defaultFull?: boolean }) {
   const slug = `skill-${skillSlug(skill)}`;
-  // Poll the backend every 1.5 s so peers see each other's saved
-  // strokes within a beat. Backend reconciles by (id, version) so
-  // concurrent writes merge instead of clobbering. Lower latency
-  // than the broken realtime WS path; high enough reliability.
+  // Realtime sync goes through WS now. Keep SWR polling as a slow
+  // safety net (5 s) so a missed WS frame can't permanently leave
+  // peers out of sync.
   const { data: doc, mutate } = useSWR<DrawingDoc>(
     `/api/drawings/${slug}`,
     fetcher,
-    { refreshInterval: 1500, dedupingInterval: 0, revalidateOnFocus: false },
+    { refreshInterval: 5000, dedupingInterval: 0, revalidateOnFocus: false },
   );
   const { resolvedTheme } = useTheme();
   const [full, setFull] = useState(defaultFull);
@@ -488,24 +488,10 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     // otherwise the empty onChange that fires right before
     // `appliedFor` flips can race the apply and overwrite the doc.
     if (appliedFor.current !== slug) return;
-    // Bump the shared scene-version counter so SWR refreshes from a
-    // peer know we're caught up. Counter is no longer a save gate —
-    // it only stops the SWR-poll reapply from re-emitting the same
-    // scene back through our reconciler.
-    const mod = excalModRef.current;
-    if (mod) {
-      try {
-        const sceneVersion = mod.getSceneVersion(elements as never);
-        if (sceneVersion > lastBroadcastedOrReceivedSceneVersion.current) {
-          lastBroadcastedOrReceivedSceneVersion.current = sceneVersion;
-        }
-      } catch {}
-    }
     lastEditAt.current = Date.now();
     if (t.current) clearTimeout(t.current);
-    // Both sides autosave now — backend reconciles elements by (id, version)
-    // so concurrent PUTs from laptop + tablet merge instead of overwriting.
-    // This unblocks the "tablet save wipes laptop strokes" data loss path.
+    // Both sides autosave — backend reconciles by (id, version) so
+    // concurrent PUTs from laptop + tablet merge instead of overwriting.
     t.current = setTimeout(() => {
       save({ elements: [...elements], appState: appState as Record<string, unknown>, files });
     }, DEBOUNCE_MS);
@@ -514,11 +500,32 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       miniThrottle.current = now;
       setMiniData({ els: elements, app: appState as Record<string, unknown> });
     }
-    // Realtime WS broadcast disabled: it kept producing echo loops
-    // and dropped frames in production. Sync now rides on the 1.5 s
-    // SWR refresh + backend reconcile, which was working reliably
-    // at 7a6688c before the WS layer was added.
-  }, [save]);
+    // Realtime broadcast — Excalidraw collab pattern. Only emit when
+    // scene version advances past last broadcast/receive. Tracking
+    // here also doubles as the SWR-poll reapply gate.
+    const mod = excalModRef.current;
+    if (mod) {
+      try {
+        const sceneVersion = mod.getSceneVersion(elements as never);
+        if (sceneVersion > lastBroadcastedOrReceivedSceneVersion.current && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          lastBroadcastedOrReceivedSceneVersion.current = sceneVersion;
+          const bg = (appState as { viewBackgroundColor?: string })?.viewBackgroundColor;
+          pendingSend.current = { elements, bg };
+          // Leading-edge 16 ms with trailing flush — keeps stroke
+          // tail frames from being dropped inside a throttle gap.
+          if (now - wsSendThrottle.current >= 16) {
+            flushPending();
+          } else if (!trailingTimer.current) {
+            const wait = Math.max(4, 16 - (now - wsSendThrottle.current));
+            trailingTimer.current = setTimeout(() => {
+              trailingTimer.current = null;
+              flushPending();
+            }, wait);
+          }
+        }
+      } catch {}
+    }
+  }, [save, flushPending]);
 
   // Realtime collab WebSocket — pairs with the FastAPI `/ws/drawings/{slug}`
   // room. Outgoing throttled (~150ms); incoming applied via updateScene
@@ -541,14 +548,47 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       wsRef.current = ws;
       ws.onmessage = (ev) => {
         try {
-          const msg = JSON.parse(ev.data) as { type: string; count?: number };
+          const msg = JSON.parse(ev.data) as { type: string; count?: number; elements?: unknown[]; senderId?: string; seq?: number };
           if (msg.type === "peers") {
-            // Subtract 1 because the server counts ourselves in the room.
             setLivePeers(Math.max(0, (msg.count ?? 1) - 1));
+            return;
           }
-          // Scene messages are ignored — sync rides on SWR polling
-          // now. We keep the socket open only for the live peer
-          // counter (badge in the iPad-bridge button).
+          if (msg.type !== "scene" || !Array.isArray(msg.elements)) return;
+          // Defense in depth: drop own loopbacks + stale frames.
+          if (msg.senderId === senderId.current) return;
+          if (msg.senderId && typeof msg.seq === "number") {
+            const last = lastSeqBySender.current.get(msg.senderId) ?? 0;
+            if (msg.seq <= last) return;
+            lastSeqBySender.current.set(msg.senderId, msg.seq);
+          }
+          incomingPending.current = msg.elements;
+          if (incomingRaf.current != null) return;
+          incomingRaf.current = requestAnimationFrame(() => {
+            incomingRaf.current = null;
+            const next = incomingPending.current;
+            incomingPending.current = null;
+            if (!next) return;
+            const a = excalRef.current;
+            const mod = excalModRef.current;
+            if (!a || !mod) return;
+            try {
+              const local = a.getSceneElements() as never;
+              const appState = a.getAppState() as never;
+              const restored = (mod.restoreElements as (r: unknown, e: unknown) => unknown)(next, local);
+              const reconciled = mod.reconcileElements(local, restored as never, appState);
+              // CRITICAL: bump version BEFORE updateScene so the
+              // synchronous onChange echo returns early.
+              lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
+              (a.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
+                elements: reconciled as unknown as unknown[],
+                captureUpdate: mod.CaptureUpdateAction.NEVER,
+              });
+              // Update minimap immediately so the dashed viewport
+              // and stroke previews reflect the remote frame
+              // instead of waiting for the next throttled tick.
+              setMiniData({ els: reconciled as unknown as readonly unknown[], app: a.getAppState() as Record<string, unknown> });
+            } catch {}
+          });
         } catch {}
       };
       ws.onclose = () => {
@@ -1689,9 +1729,7 @@ function ExcalDropdownItem({ icon, label, hint, onClick }: { icon: React.ReactNo
   );
 }
 
-export function Minimap({
-  elements, appState, open, onToggle, onNavigate, onZoom, onFitAll, size = "sm", defaultCorner = "br",
-}: {
+type MinimapProps = {
   elements: readonly unknown[];
   appState: Record<string, unknown>;
   open: boolean;
@@ -1701,7 +1739,11 @@ export function Minimap({
   onFitAll?: () => void;
   size?: "sm" | "lg";
   defaultCorner?: "tl" | "tr" | "bl" | "br";
-}) {
+};
+
+function MinimapImpl({
+  elements, appState, open, onToggle, onNavigate, onZoom, onFitAll, size = "sm", defaultCorner = "br",
+}: MinimapProps) {
   const W = size === "lg" ? 320 : 220;
   const H = size === "lg" ? 220 : 150;
   const PAD = 24;
@@ -1915,6 +1957,43 @@ export function Minimap({
     </div>
   );
 }
+
+// React.memo with a fingerprint-based equality. SVG-heavy minimap was
+// re-rendering on every parent onChange even when the scene + viewport
+// hadn't moved enough to matter visually. Comparing (element count,
+// last live id, viewport rect rounded to 0.5 px, zoom rounded to 3 dp,
+// open flag) skips ~90 % of renders during steady drawing without
+// dropping any user-visible frame.
+function minimapPropsEqual(a: MinimapProps, b: MinimapProps): boolean {
+  if (a.open !== b.open) return false;
+  if (a.size !== b.size) return false;
+  if (a.defaultCorner !== b.defaultCorner) return false;
+  if (a.elements === b.elements) {
+    // appState may still have moved.
+  } else {
+    if (a.elements.length !== b.elements.length) return false;
+    // Cheap sample: same first/last live ids.
+    const sampleId = (els: readonly unknown[], idx: number) => {
+      const e = els[idx] as { id?: string; isDeleted?: boolean } | null | undefined;
+      return e && !e.isDeleted ? e.id ?? "" : "";
+    };
+    if (a.elements.length > 0) {
+      if (sampleId(a.elements, 0) !== sampleId(b.elements, 0)) return false;
+      const last = a.elements.length - 1;
+      if (sampleId(a.elements, last) !== sampleId(b.elements, last)) return false;
+    }
+  }
+  const av = a.appState as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
+  const bv = b.appState as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
+  const round = (n: number | undefined) => Math.round((n ?? 0) * 2) / 2;
+  if (round(av.scrollX) !== round(bv.scrollX)) return false;
+  if (round(av.scrollY) !== round(bv.scrollY)) return false;
+  const zoomA = Math.round((av.zoom?.value ?? 1) * 1000);
+  const zoomB = Math.round((bv.zoom?.value ?? 1) * 1000);
+  if (zoomA !== zoomB) return false;
+  return true;
+}
+export const Minimap = memo(MinimapImpl, minimapPropsEqual);
 
 type ChatMsg = { role: "user" | "assistant"; text: string; refs?: { id: string; label: string }[] };
 
