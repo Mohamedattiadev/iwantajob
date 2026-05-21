@@ -266,19 +266,220 @@ export const TEMPLATES = {
     for (let i = 0; i < t.length - 1; i++) arrows.push(arrow(t[i], t[i + 1]));
     return [...t.map((b) => box(b)), ...arrows];
   },
+
+  // Microservices — gateway + 3 services + shared DB cluster.
+  microservices: () => {
+    const t: Box[] = [
+      { id: "tpl-ms-gw",   x:  40, y: 200, w: 180, h: 80, label: "API Gateway", color: PAL.primary },
+      { id: "tpl-ms-auth", x: 280, y:  60, w: 180, h: 80, label: "Auth svc",    color: PAL.cool },
+      { id: "tpl-ms-orders", x: 280, y: 200, w: 180, h: 80, label: "Orders svc", color: PAL.warm },
+      { id: "tpl-ms-pay",  x: 280, y: 340, w: 180, h: 80, label: "Payments svc", color: PAL.good },
+      { id: "tpl-ms-db",   x: 520, y: 200, w: 180, h: 80, label: "Postgres",     color: PAL.muted },
+      { id: "tpl-ms-cache", x: 520, y:  60, w: 180, h: 80, label: "Redis",       color: PAL.bad },
+      { id: "tpl-ms-mq",   x: 520, y: 340, w: 180, h: 80, label: "Kafka",        color: PAL.ink },
+    ];
+    return [
+      ...t.map((b) => box(b)),
+      arrow(t[0], t[1]),
+      arrow(t[0], t[2]),
+      arrow(t[0], t[3]),
+      arrow(t[1], t[5]),
+      arrow(t[2], t[4]),
+      arrow(t[3], t[4]),
+      arrow(t[3], t[6]),
+    ];
+  },
+
+  // Data-flow diagram (DFD level-1).
+  dfd: () => {
+    const t: Box[] = [
+      { id: "tpl-df-user", x:  60, y: 200, w: 160, h: 80, label: "External: User", color: PAL.ink },
+      { id: "tpl-df-1",    x: 300, y:  80, w: 200, h: 80, label: "1.0 Validate",   color: PAL.cool },
+      { id: "tpl-df-2",    x: 300, y: 220, w: 200, h: 80, label: "2.0 Process",    color: PAL.primary },
+      { id: "tpl-df-3",    x: 300, y: 360, w: 200, h: 80, label: "3.0 Persist",    color: PAL.good },
+      { id: "tpl-df-ds",   x: 580, y: 220, w: 180, h: 80, label: "[DS] Database",  color: PAL.muted },
+    ];
+    return [
+      ...t.map((b) => box(b, { roundness: { type: 2 } })),
+      arrow(t[0], t[1]),
+      arrow(t[1], t[2]),
+      arrow(t[2], t[3]),
+      arrow(t[3], t[4]),
+      arrow(t[4], t[2]),
+    ];
+  },
+
+  // OAuth 2.0 authorization-code flow.
+  oauth: () => {
+    const t: Box[] = [
+      { id: "tpl-oa-app", x:  40, y:  60, w: 180, h: 70, label: "App",         color: PAL.cool },
+      { id: "tpl-oa-az",  x: 280, y:  60, w: 180, h: 70, label: "Auth Server", color: PAL.primary },
+      { id: "tpl-oa-rs",  x: 280, y: 220, w: 180, h: 70, label: "Resource Server", color: PAL.warm },
+      { id: "tpl-oa-user", x:  40, y: 220, w: 180, h: 70, label: "User",       color: PAL.ink },
+    ];
+    return [
+      ...t.map((b) => box(b)),
+      arrow(t[0], t[3]),
+      arrow(t[3], t[1]),
+      arrow(t[1], t[0]),
+      arrow(t[0], t[2]),
+    ];
+  },
+
+  // REST endpoints map — base + verbs + resources.
+  rest: () => {
+    const els: Skel[] = [];
+    els.push(text("tpl-rt-base", 40, 30, "GET POST PUT DELETE", PAL.muted, 14));
+    const items = [
+      "GET    /users",
+      "POST   /users",
+      "GET    /users/:id",
+      "PUT    /users/:id",
+      "DELETE /users/:id",
+      "GET    /orders",
+      "POST   /orders",
+      "GET    /orders/:id",
+    ];
+    items.forEach((line, i) => {
+      els.push(text(`tpl-rt-${i}`, 40, 80 + i * 36, line, PAL.ink, 16));
+    });
+    return els;
+  },
+
+  // Threat model — STRIDE quadrants.
+  stride: () => {
+    const t: Box[] = [
+      { id: "tpl-st-s", x:  40, y:  40, w: 260, h: 130, label: "Spoofing\n(identity)",      color: PAL.bad },
+      { id: "tpl-st-t", x: 320, y:  40, w: 260, h: 130, label: "Tampering\n(integrity)",    color: PAL.warm },
+      { id: "tpl-st-r", x: 600, y:  40, w: 260, h: 130, label: "Repudiation\n(non-repud.)", color: PAL.muted },
+      { id: "tpl-st-i", x:  40, y: 190, w: 260, h: 130, label: "Info disclosure\n(confidentiality)", color: PAL.cool },
+      { id: "tpl-st-d", x: 320, y: 190, w: 260, h: 130, label: "Denial of service\n(availability)",  color: PAL.warm },
+      { id: "tpl-st-e", x: 600, y: 190, w: 260, h: 130, label: "Elevation\n(authorization)",         color: PAL.bad },
+    ];
+    return t.map((b) => box(b));
+  },
+
+  // Retro 4Ls — Liked / Learned / Lacked / Longed for.
+  retro4ls: () => {
+    const t: Box[] = [
+      { id: "tpl-4l-1", x:  40, y:  40, w: 340, h: 220, label: "Liked",      color: PAL.good },
+      { id: "tpl-4l-2", x: 400, y:  40, w: 340, h: 220, label: "Learned",    color: PAL.cool },
+      { id: "tpl-4l-3", x:  40, y: 280, w: 340, h: 220, label: "Lacked",     color: PAL.warm },
+      { id: "tpl-4l-4", x: 400, y: 280, w: 340, h: 220, label: "Longed for", color: PAL.primary },
+    ];
+    return t.map((q) => box(q));
+  },
+
+  // Git-flow — main / develop / feature / release / hotfix branches.
+  gitflow: () => {
+    const t: Box[] = [
+      { id: "tpl-gf-feat", x:  40, y:  40, w: 160, h: 60, label: "feature/*", color: PAL.cool },
+      { id: "tpl-gf-dev",  x: 240, y:  40, w: 160, h: 60, label: "develop",   color: PAL.warm },
+      { id: "tpl-gf-rel",  x: 440, y:  40, w: 160, h: 60, label: "release/*", color: PAL.primary },
+      { id: "tpl-gf-main", x: 640, y:  40, w: 160, h: 60, label: "main",      color: PAL.good },
+      { id: "tpl-gf-hot",  x: 440, y: 160, w: 160, h: 60, label: "hotfix/*",  color: PAL.bad },
+    ];
+    return [
+      ...t.map((b) => box(b)),
+      arrow(t[0], t[1]),
+      arrow(t[1], t[2]),
+      arrow(t[2], t[3]),
+      arrow(t[3], t[4]),
+      arrow(t[4], t[3]),
+    ];
+  },
+
+  // Component design — MVVM layout.
+  mvvm: () => {
+    const t: Box[] = [
+      { id: "tpl-mv-view",  x:  60, y:  60, w: 220, h: 100, label: "View",       color: PAL.cool },
+      { id: "tpl-mv-vm",    x: 340, y:  60, w: 220, h: 100, label: "ViewModel",  color: PAL.primary },
+      { id: "tpl-mv-model", x: 620, y:  60, w: 220, h: 100, label: "Model",      color: PAL.warm },
+    ];
+    return [
+      ...t.map((b) => box(b)),
+      arrow(t[0], t[1]),
+      arrow(t[1], t[0]),
+      arrow(t[1], t[2]),
+      arrow(t[2], t[1]),
+    ];
+  },
+
+  // Deployment topology — multi-AZ.
+  deployment: () => {
+    const t: Box[] = [
+      { id: "tpl-dp-lb",   x: 320, y:  40, w: 200, h: 70, label: "Load Balancer", color: PAL.primary },
+      { id: "tpl-dp-az1",  x:  60, y: 180, w: 320, h: 220, label: "AZ-1\n— app-1\n— app-2",  color: PAL.cool },
+      { id: "tpl-dp-az2",  x: 460, y: 180, w: 320, h: 220, label: "AZ-2\n— app-1\n— app-2",  color: PAL.warm },
+      { id: "tpl-dp-db",   x: 320, y: 440, w: 200, h: 70, label: "Primary DB",  color: PAL.good },
+    ];
+    return [
+      ...t.map((b) => box(b)),
+      arrow(t[0], t[1]),
+      arrow(t[0], t[2]),
+      arrow(t[1], t[3]),
+      arrow(t[2], t[3]),
+    ];
+  },
+
+  // Agile sprint board — backlog / sprint / in progress / review / done.
+  sprint: () => {
+    const cols = [
+      { id: "tpl-sp-b",  label: "Backlog",     color: PAL.muted },
+      { id: "tpl-sp-s",  label: "Sprint",      color: PAL.cool },
+      { id: "tpl-sp-ip", label: "In progress", color: PAL.warm },
+      { id: "tpl-sp-r",  label: "Review",      color: PAL.primary },
+      { id: "tpl-sp-d",  label: "Done",        color: PAL.good },
+    ];
+    const els: Skel[] = [];
+    cols.forEach((c, i) => {
+      const cx = 30 + i * 180;
+      els.push(text(`${c.id}-title`, cx + 8, 12, c.label, c.color, 16));
+      els.push(box({ id: c.id, x: cx, y: 40, w: 160, h: 400, label: "", color: c.color }));
+    });
+    return els;
+  },
+
+  // Use-case diagram — actor + system + use cases.
+  usecase: () => {
+    const els: Skel[] = [];
+    const actor: Box = { id: "tpl-uc-actor", x: 60, y: 180, w: 120, h: 60, label: "Actor", color: PAL.ink };
+    els.push(box(actor));
+    const system: Box = { id: "tpl-uc-sys", x: 260, y: 60, w: 420, h: 300, label: "System", color: PAL.muted };
+    els.push(box(system, { roughness: 0 }));
+    const uses: Box[] = [
+      { id: "tpl-uc-1", x: 300, y: 100, w: 320, h: 60, label: "Sign in",         color: PAL.cool },
+      { id: "tpl-uc-2", x: 300, y: 180, w: 320, h: 60, label: "Place order",     color: PAL.primary },
+      { id: "tpl-uc-3", x: 300, y: 260, w: 320, h: 60, label: "View receipts",   color: PAL.warm },
+    ];
+    uses.forEach((u) => { els.push(box(u, { roundness: { type: 2 } })); els.push(arrow(actor, u)); });
+    return els;
+  },
 };
 
 export type TemplateKey = keyof typeof TEMPLATES;
-export const TEMPLATE_META: Record<TemplateKey, { label: string; desc: string; cat: "general" | "engineering" }> = {
-  mindmap:      { label: "Mind map",       desc: "Central idea + 4 branches", cat: "general" },
-  flowchart:    { label: "Flowchart",      desc: "Start → Step → Decide → Done", cat: "general" },
-  kanban:       { label: "Kanban",         desc: "To do / Doing / Done columns", cat: "general" },
-  swot:         { label: "SWOT",           desc: "Strengths · Weaknesses · Opportunities · Threats", cat: "general" },
-  arch3tier:    { label: "3-tier arch",    desc: "Client → API → Service → DB", cat: "engineering" },
-  c4context:    { label: "C4 context",     desc: "User + system + 2 externals", cat: "engineering" },
-  classdiagram: { label: "Class diagram",  desc: "UML-ish classes with fields/methods", cat: "engineering" },
-  sequence:     { label: "Sequence",       desc: "Client/Server/DB with messages", cat: "engineering" },
-  statemachine: { label: "State machine",  desc: "idle/loading/success/error", cat: "engineering" },
-  er:           { label: "ER diagram",     desc: "User/Order/Product with FKs", cat: "engineering" },
-  cicd:         { label: "CI/CD pipeline", desc: "Commit → Build → Test → Deploy", cat: "engineering" },
+export type TemplateCat = "general" | "architecture" | "uml" | "process" | "security" | "team";
+export const TEMPLATE_META: Record<TemplateKey, { label: string; desc: string; cat: TemplateCat }> = {
+  mindmap:       { label: "Mind map",       desc: "Central idea + 4 branches", cat: "general" },
+  flowchart:     { label: "Flowchart",      desc: "Start → Step → Decide → Done", cat: "general" },
+  kanban:        { label: "Kanban",         desc: "To do / Doing / Done columns", cat: "general" },
+  swot:          { label: "SWOT",           desc: "Strengths · Weaknesses · Opportunities · Threats", cat: "general" },
+  arch3tier:     { label: "3-tier arch",    desc: "Client → API → Service → DB", cat: "architecture" },
+  c4context:     { label: "C4 context",     desc: "User + system + 2 externals", cat: "architecture" },
+  microservices: { label: "Microservices",  desc: "Gateway + 3 svcs + DB/cache/MQ", cat: "architecture" },
+  deployment:    { label: "Deployment",     desc: "LB + 2 AZs + DB", cat: "architecture" },
+  classdiagram:  { label: "Class diagram",  desc: "UML classes with fields/methods", cat: "uml" },
+  sequence:      { label: "Sequence",       desc: "Client/Server/DB with messages", cat: "uml" },
+  statemachine:  { label: "State machine",  desc: "idle/loading/success/error", cat: "uml" },
+  er:            { label: "ER diagram",     desc: "User/Order/Product with FKs", cat: "uml" },
+  usecase:       { label: "Use case",       desc: "Actor + system + 3 use cases", cat: "uml" },
+  dfd:           { label: "DFD lvl-1",      desc: "Validate → Process → Persist", cat: "uml" },
+  cicd:          { label: "CI/CD pipeline", desc: "Commit → Build → Test → Deploy", cat: "process" },
+  gitflow:       { label: "Git flow",       desc: "feature → develop → release → main", cat: "process" },
+  oauth:         { label: "OAuth flow",     desc: "App ↔ Auth ↔ Resource server", cat: "process" },
+  rest:          { label: "REST endpoints", desc: "GET/POST/PUT/DELETE list", cat: "process" },
+  mvvm:          { label: "MVVM",           desc: "View ↔ ViewModel ↔ Model", cat: "process" },
+  stride:        { label: "STRIDE",         desc: "Spoof/Tamper/Repud/Info/DoS/Elev", cat: "security" },
+  retro4ls:      { label: "Retro 4Ls",      desc: "Liked / Learned / Lacked / Longed for", cat: "team" },
+  sprint:        { label: "Sprint board",   desc: "Backlog → Sprint → IP → Review → Done", cat: "team" },
 };

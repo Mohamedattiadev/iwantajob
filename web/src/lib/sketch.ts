@@ -122,6 +122,78 @@ export function pickMinimapCornerStyle(corner: MinimapCorner = "br"): {
   }
 }
 
+// Lightweight validation of AI-generated Excalidraw element batches.
+// Catches the common LLM-output issues (text not bound to a container,
+// arrows missing bindings, text label longer than its rectangle can
+// hold) BEFORE pasting into the canvas, so we can show a useful error
+// instead of letting Excalidraw render a garbled scene.
+export type AiValidationIssue =
+  | { kind: "no-elements" }
+  | { kind: "text-no-container"; id?: string }
+  | { kind: "text-dangling-container"; id?: string; containerId: string }
+  | { kind: "arrow-unbound"; id?: string }
+  | { kind: "arrow-dangling-binding"; id?: string; side: "start" | "end"; ref: string }
+  | { kind: "label-too-long"; id?: string; chars: number; widthPx: number };
+export type AiValidationReport = {
+  ok: boolean;
+  counts: { rect: number; text: number; arrow: number; other: number };
+  issues: AiValidationIssue[];
+};
+type AiEl = {
+  id?: string;
+  type?: string;
+  width?: number;
+  height?: number;
+  text?: string;
+  fontSize?: number;
+  containerId?: string;
+  startBinding?: { elementId?: string } | null;
+  endBinding?: { elementId?: string } | null;
+};
+export function validateAiElements(elements: ReadonlyArray<AiEl>): AiValidationReport {
+  const counts = { rect: 0, text: 0, arrow: 0, other: 0 };
+  const issues: AiValidationIssue[] = [];
+  if (!elements.length) return { ok: false, counts, issues: [{ kind: "no-elements" }] };
+  const byId = new Map<string, AiEl>();
+  for (const e of elements) if (e.id) byId.set(e.id, e);
+  for (const e of elements) {
+    if (e.type === "rectangle") counts.rect++;
+    else if (e.type === "text") counts.text++;
+    else if (e.type === "arrow") counts.arrow++;
+    else counts.other++;
+    if (e.type === "text") {
+      if (!e.containerId) {
+        issues.push({ kind: "text-no-container", id: e.id });
+      } else if (!byId.has(e.containerId)) {
+        issues.push({ kind: "text-dangling-container", id: e.id, containerId: e.containerId });
+      } else {
+        const container = byId.get(e.containerId);
+        const cw = typeof container?.width === "number" ? container.width : 0;
+        const text = typeof e.text === "string" ? e.text : "";
+        const fs = typeof e.fontSize === "number" ? e.fontSize : 16;
+        // Heuristic: at ~0.55 × fontSize per char, a label fits if
+        // chars × 0.55 × fontSize ≤ container width − 28 padding.
+        const fitChars = Math.max(1, Math.floor((cw - 28) / Math.max(1, fs * 0.55)));
+        const longest = text.split(/\s+/).reduce((m, w) => Math.max(m, w.length), 0);
+        if (longest > fitChars * 1.4) {
+          issues.push({ kind: "label-too-long", id: e.id, chars: longest, widthPx: cw });
+        }
+      }
+    }
+    if (e.type === "arrow") {
+      const startRef = e.startBinding?.elementId;
+      const endRef = e.endBinding?.elementId;
+      if (!startRef && !endRef) {
+        issues.push({ kind: "arrow-unbound", id: e.id });
+      } else {
+        if (startRef && !byId.has(startRef)) issues.push({ kind: "arrow-dangling-binding", id: e.id, side: "start", ref: startRef });
+        if (endRef && !byId.has(endRef))     issues.push({ kind: "arrow-dangling-binding", id: e.id, side: "end",   ref: endRef });
+      }
+    }
+  }
+  return { ok: issues.length === 0, counts, issues };
+}
+
 // Bbox helpers, used for fitting AI-generated diagrams into a fixed
 // rectangle (e.g. a Book-mode page) without text spilling outside.
 // Pure functions so they're unit-testable without React or Excalidraw.

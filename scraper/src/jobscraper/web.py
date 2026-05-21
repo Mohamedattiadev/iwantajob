@@ -909,24 +909,42 @@ def create_app() -> FastAPI:
 
         elements: list[dict[str, Any]] = []
         node_centers: dict[int, tuple[int, int, int, int]] = {}
+        rect_id_by_node: dict[int, str] = {}
+        bound_by_rect: dict[str, list[dict[str, str]]] = {}
         now_ms = int(time.time() * 1000)
+        # Choose font size based on label length so wide labels still fit
+        # in the box without overflowing — was the "text outside frame"
+        # bug the user reported.
+        def font_for(label: str, w: int) -> int:
+            # Cap so a 22-char label fits a 220px box at ~10 px / char.
+            return max(12, min(18, (w - 28) // max(8, len(label))))
         for n in order:
             x, y, w, h = positions[n]
             label = node_label[n]
             color = group_color[node_group[n] or "default"]
             rect_id = str(_uuid.uuid4())
+            text_id = str(_uuid.uuid4())
+            rect_id_by_node[n] = rect_id
+            bound_by_rect[rect_id] = [{"id": text_id, "type": "text"}]
             elements.append({
                 "id": rect_id, "type": "rectangle", "x": x, "y": y, "width": w, "height": h,
                 "angle": 0, "strokeColor": color, "backgroundColor": "transparent",
                 "fillStyle": "hachure", "strokeWidth": 2, "strokeStyle": "solid",
                 "roughness": 1, "opacity": 100, "groupIds": [], "roundness": {"type": 3},
                 "seed": now_ms + n, "version": 1, "versionNonce": 1,
-                "isDeleted": False, "boundElements": [], "updated": now_ms, "link": None, "locked": False,
+                "isDeleted": False,
+                "boundElements": bound_by_rect[rect_id],  # mutated below to add arrows
+                "updated": now_ms, "link": None, "locked": False,
             })
+            fs = font_for(label, w)
+            # Text is bound to its container; Excalidraw centers + word-
+            # wraps it from the container's bbox. We still set position to
+            # the inside-padded rect so legacy renderers stay sane.
             elements.append({
-                "id": str(_uuid.uuid4()), "type": "text",
-                "x": x + 14, "y": y + h // 2 - 12, "width": max(60, w - 28), "height": 24,
-                "text": label, "fontSize": 18, "fontFamily": 1,
+                "id": text_id, "type": "text",
+                "x": x + 14, "y": y + h // 2 - fs,
+                "width": w - 28, "height": fs * 2,
+                "text": label, "fontSize": fs, "fontFamily": 1,
                 "textAlign": "center", "verticalAlign": "middle",
                 "strokeColor": color, "backgroundColor": "transparent",
                 "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "solid",
@@ -934,18 +952,19 @@ def create_app() -> FastAPI:
                 "seed": now_ms + n * 31 + 1, "version": 1, "versionNonce": 1,
                 "isDeleted": False, "boundElements": [], "updated": now_ms, "link": None, "locked": False,
                 "containerId": rect_id,
+                "autoResize": True,
+                "lineHeight": 1.25,
+                "originalText": label,
             })
             node_centers[n] = (x + w // 2, y + h // 2, w, h)
 
         for a_id, b_id in edges:
             ax, ay, aw, ah = node_centers[a_id]
             bx, by, bw, bh = node_centers[b_id]
-            # Clip arrow endpoints to box edges so they don't bury inside.
             dx, dy = bx - ax, by - ay
             if dx == 0 and dy == 0:
                 continue
             def _clip(cx: int, cy: int, w: int, h: int, vx: float, vy: float) -> tuple[float, float]:
-                # Scale (vx,vy) to land on the box edge from center.
                 if vx == 0 and vy == 0:
                     return cx, cy
                 tx = abs((w / 2) / vx) if vx != 0 else float("inf")
@@ -954,8 +973,13 @@ def create_app() -> FastAPI:
                 return cx + vx * t, cy + vy * t
             sx, sy = _clip(ax, ay, aw, ah, dx, dy)
             ex, ey = _clip(bx, by, bw, bh, -dx, -dy)
+            arr_id = str(_uuid.uuid4())
+            start_rid = rect_id_by_node[a_id]
+            end_rid = rect_id_by_node[b_id]
+            bound_by_rect[start_rid].append({"id": arr_id, "type": "arrow"})
+            bound_by_rect[end_rid].append({"id": arr_id, "type": "arrow"})
             elements.append({
-                "id": str(_uuid.uuid4()), "type": "arrow",
+                "id": arr_id, "type": "arrow",
                 "x": sx, "y": sy, "width": ex - sx, "height": ey - sy,
                 "angle": 0, "strokeColor": "#94a3b8", "backgroundColor": "transparent",
                 "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -963,8 +987,13 @@ def create_app() -> FastAPI:
                 "seed": now_ms + a_id * 17 + b_id, "version": 1, "versionNonce": 1,
                 "isDeleted": False, "boundElements": [], "updated": now_ms, "link": None, "locked": False,
                 "points": [[0, 0], [ex - sx, ey - sy]],
-                "startBinding": None, "endBinding": None,
+                # `startBinding`/`endBinding` anchor the arrow's tips to
+                # the actual boxes; without these the arrow looks like a
+                # free floating line that doesn't follow the box if moved.
+                "startBinding": {"elementId": start_rid, "focus": 0, "gap": 4},
+                "endBinding":   {"elementId": end_rid,   "focus": 0, "gap": 4},
                 "lastCommittedPoint": None, "startArrowhead": None, "endArrowhead": "arrow",
+                "elbowed": False,
             })
 
         if not elements:

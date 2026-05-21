@@ -15,6 +15,7 @@ import {
   PanelRightOpen, ZoomIn, ZoomOut,
   Tablet, ExternalLink, Save, Users, ArrowLeft, RefreshCw, Plus, BookOpen, Zap,
   Layers, Boxes, Component, MessageSquare, RotateCw, Database, GitBranch,
+  Key, Shield,
 } from "lucide-react";
 import NextLink from "next/link";
 import { useTheme } from "next-themes";
@@ -23,7 +24,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { API, fetcher, primeEtag } from "@/lib/api";
 import useSWR from "swr";
 import { TEMPLATES, TEMPLATE_META, type TemplateKey } from "@/lib/sketch-templates";
-import { pickMinimapCornerStyle, shouldApplyIncomingScene, computeFitAllAppState, fitElementsToBbox } from "@/lib/sketch";
+import { pickMinimapCornerStyle, shouldApplyIncomingScene, computeFitAllAppState, fitElementsToBbox, validateAiElements } from "@/lib/sketch";
 import { authHeaders, readSketchToken, appendTokenToUrl } from "@/lib/auth";
 import "@excalidraw/excalidraw/index.css";
 
@@ -110,31 +111,39 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   // canvas switches to a thin red freedraw so strokes persist
   // instead of evaporating after a few seconds. Toggle in the topbar.
   const [laserLock, setLaserLock] = useState(false);
+  // Intercept the native "Laser pointer" button at click time. When
+  // laserLock is on, redirect to a permanent thin red freedraw. The
+  // earlier polling approach was too slow — Excalidraw already had
+  // its laser canvas active by the time we swapped tools back. This
+  // pre-empts the activation entirely.
   useEffect(() => {
-    if (!laserLock) return;
     const api = excalRef.current;
     if (!api) return;
-    let lastType = "";
-    const id = setInterval(() => {
+    const onClick = (e: MouseEvent) => {
+      const t = (e.target as HTMLElement | null)?.closest('[data-testid="toolbar-laser"]') as HTMLElement | null;
+      if (!t) return;
+      if (!laserLock) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Close the More-tools popover before activating our tool.
+      (document.querySelector('[data-testid="extra-tools-trigger"]') as HTMLButtonElement | null)?.click?.();
       const a = excalRef.current;
       if (!a) return;
-      const app = a.getAppState() as { activeTool?: { type?: string } };
-      const type = app.activeTool?.type ?? "";
-      if (type === "laser" && type !== lastType) {
-        try {
-          a.setActiveTool?.({ type: "freedraw" });
-          a.updateScene({
-            appState: {
-              currentItemStrokeColor: "#ef4444",
-              currentItemStrokeWidth: 2,
-              currentItemOpacity: 75,
-            },
-          });
-        } catch {}
-      }
-      lastType = type;
-    }, 120);
-    return () => clearInterval(id);
+      try {
+        a.setActiveTool?.({ type: "freedraw" });
+        a.updateScene({
+          appState: {
+            currentItemStrokeColor: "#ef4444",
+            currentItemStrokeWidth: 2,
+            currentItemOpacity: 80,
+            currentItemRoughness: 0,
+          },
+        });
+        toast.success("Laser locked — strokes will persist");
+      } catch {}
+    };
+    document.addEventListener("click", onClick, true); // capture phase
+    return () => document.removeEventListener("click", onClick, true);
   }, [laserLock]);
   const bookPageRef = useRef(0);
   useEffect(() => { bookPageRef.current = bookPage; }, [bookPage]);
@@ -1236,6 +1245,14 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       if (!r.ok) throw new Error(d.detail || `${r.status}`);
       const els = d.elements as unknown[];
       if (!Array.isArray(els) || els.length === 0) throw new Error("AI returned no elements");
+      // Validate before pasting — flag the common "text outside frame"
+      // / "arrows are floating" issues so we can warn the user instead
+      // of letting Excalidraw render a garbled scene.
+      const report = validateAiElements(els as never);
+      if (!report.ok) {
+        const sample = report.issues.slice(0, 3).map((i) => i.kind).join(", ");
+        toast.warning(`AI output had ${report.issues.length} issue${report.issues.length === 1 ? "" : "s"} (${sample}). Pasting anyway.`);
+      }
       const n = await addElements(els);
       if (typeof n === "number") toast.success(`Added ${n} element${n > 1 ? "s" : ""}`);
       setAiOpen(false);
@@ -2647,18 +2664,34 @@ function TopRightTools({
         <ExcalDropdownItem icon={<Sparkles className="h-4 w-4" />}      label="AI generate"   hint="prompt → diagram" onClick={() => { onAi(); setOpen(null); }} />
         <ExcalDropdownItem icon={<MessageCircle className="h-4 w-4" />} label="Ask AI"        hint="chat about scene"  onClick={() => { onChat(); setOpen(null); }} />
         <li className="excal-popover-section">Templates</li>
+        <li className="excal-popover-section">General</li>
         <ExcalDropdownItem icon={<Network className="h-4 w-4" />}   label="Mind map"  hint="branches"  onClick={() => { onTemplate("mindmap"); setOpen(null); }} />
         <ExcalDropdownItem icon={<ArrowDown className="h-4 w-4" />} label="Flowchart" hint="top-down"  onClick={() => { onTemplate("flowchart"); setOpen(null); }} />
         <ExcalDropdownItem icon={<Columns3 className="h-4 w-4" />}  label="Kanban"    hint="3 columns" onClick={() => { onTemplate("kanban"); setOpen(null); }} />
         <ExcalDropdownItem icon={<Grid2x2 className="h-4 w-4" />}   label="SWOT"      hint="2×2 grid"  onClick={() => { onTemplate("swot"); setOpen(null); }} />
-        <li className="excal-popover-section">Engineering</li>
-        <ExcalDropdownItem icon={<Layers className="h-4 w-4" />}    label="3-tier arch"   hint="client→api→svc→db" onClick={() => { onTemplate("arch3tier"); setOpen(null); }} />
-        <ExcalDropdownItem icon={<Boxes className="h-4 w-4" />}     label="C4 context"    hint="system + externals" onClick={() => { onTemplate("c4context"); setOpen(null); }} />
-        <ExcalDropdownItem icon={<Component className="h-4 w-4" />} label="Class diagram" hint="UML-ish" onClick={() => { onTemplate("classdiagram"); setOpen(null); }} />
-        <ExcalDropdownItem icon={<MessageSquare className="h-4 w-4" />} label="Sequence"  hint="client/server/db" onClick={() => { onTemplate("sequence"); setOpen(null); }} />
-        <ExcalDropdownItem icon={<RotateCw className="h-4 w-4" />}  label="State machine" hint="states + transitions" onClick={() => { onTemplate("statemachine"); setOpen(null); }} />
-        <ExcalDropdownItem icon={<Database className="h-4 w-4" />}  label="ER diagram"    hint="entities + FKs" onClick={() => { onTemplate("er"); setOpen(null); }} />
+        <li className="excal-popover-section">Architecture</li>
+        <ExcalDropdownItem icon={<Layers className="h-4 w-4" />}    label="3-tier arch"  hint="client→api→svc→db" onClick={() => { onTemplate("arch3tier"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<Boxes className="h-4 w-4" />}     label="C4 context"   hint="system + externals" onClick={() => { onTemplate("c4context"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<Boxes className="h-4 w-4" />}     label="Microservices" hint="gateway + svcs" onClick={() => { onTemplate("microservices"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<Layers className="h-4 w-4" />}    label="Deployment"   hint="LB + AZs + DB" onClick={() => { onTemplate("deployment"); setOpen(null); }} />
+        <li className="excal-popover-section">UML</li>
+        <ExcalDropdownItem icon={<Component className="h-4 w-4" />}     label="Class diagram"  hint="fields/methods" onClick={() => { onTemplate("classdiagram"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<MessageSquare className="h-4 w-4" />} label="Sequence"       hint="msgs over lifelines" onClick={() => { onTemplate("sequence"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<RotateCw className="h-4 w-4" />}      label="State machine"  hint="states + transitions" onClick={() => { onTemplate("statemachine"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<Database className="h-4 w-4" />}      label="ER diagram"     hint="entities + FKs" onClick={() => { onTemplate("er"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<Users className="h-4 w-4" />}         label="Use case"       hint="actor + system" onClick={() => { onTemplate("usecase"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<ArrowDown className="h-4 w-4" />}     label="DFD lvl-1"      hint="data flow"      onClick={() => { onTemplate("dfd"); setOpen(null); }} />
+        <li className="excal-popover-section">Process</li>
         <ExcalDropdownItem icon={<GitBranch className="h-4 w-4" />} label="CI/CD pipeline" hint="commit→deploy" onClick={() => { onTemplate("cicd"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<GitBranch className="h-4 w-4" />} label="Git flow"       hint="branches" onClick={() => { onTemplate("gitflow"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<Key className="h-4 w-4" />}       label="OAuth flow"     hint="auth code grant" onClick={() => { onTemplate("oauth"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<FileCode className="h-4 w-4" />}  label="REST endpoints" hint="verb + path list" onClick={() => { onTemplate("rest"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<Component className="h-4 w-4" />} label="MVVM"           hint="View↔VM↔Model" onClick={() => { onTemplate("mvvm"); setOpen(null); }} />
+        <li className="excal-popover-section">Security</li>
+        <ExcalDropdownItem icon={<Shield className="h-4 w-4" />} label="STRIDE" hint="threat model" onClick={() => { onTemplate("stride"); setOpen(null); }} />
+        <li className="excal-popover-section">Team</li>
+        <ExcalDropdownItem icon={<Grid2x2 className="h-4 w-4" />}  label="Retro 4Ls"    hint="Liked/Learned/Lacked/Longed" onClick={() => { onTemplate("retro4ls"); setOpen(null); }} />
+        <ExcalDropdownItem icon={<Columns3 className="h-4 w-4" />} label="Sprint board" hint="Backlog→Done" onClick={() => { onTemplate("sprint"); setOpen(null); }} />
       </ExcalDropdown>
       {framesCount > 0 && (
         <button

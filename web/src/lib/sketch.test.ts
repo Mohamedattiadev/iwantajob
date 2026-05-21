@@ -8,6 +8,7 @@ import {
   computeFitAllAppState,
   elementsBbox,
   fitElementsToBbox,
+  validateAiElements,
   PEN_PROFILES,
   PEN_KEYS,
   type PenKey,
@@ -316,6 +317,69 @@ describe("fitElementsToBbox", () => {
     const out = fitElementsToBbox(els, { x: 0, y: 0, width: 500, height: 500 }, 0);
     expect(out[0].width).toBe(50); // scale capped at 1
     expect(out[0].height).toBe(50);
+  });
+});
+
+describe("validateAiElements", () => {
+  it("flags empty input", () => {
+    const r = validateAiElements([]);
+    expect(r.ok).toBe(false);
+    expect(r.issues[0].kind).toBe("no-elements");
+  });
+  it("accepts a well-formed rect+text+arrow batch", () => {
+    const els = [
+      { id: "r1", type: "rectangle", width: 200, height: 80 },
+      { id: "t1", type: "text", text: "OK", fontSize: 18, containerId: "r1" },
+      { id: "r2", type: "rectangle", width: 200, height: 80 },
+      { id: "t2", type: "text", text: "OK", fontSize: 18, containerId: "r2" },
+      { id: "a1", type: "arrow", startBinding: { elementId: "r1" }, endBinding: { elementId: "r2" } },
+    ];
+    const r = validateAiElements(els);
+    expect(r.ok).toBe(true);
+    expect(r.counts).toEqual({ rect: 2, text: 2, arrow: 1, other: 0 });
+  });
+  it("flags text without a containerId", () => {
+    const r = validateAiElements([
+      { id: "t1", type: "text", text: "Hi" },
+    ]);
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.kind === "text-no-container")).toBe(true);
+  });
+  it("flags text whose container does not exist", () => {
+    const r = validateAiElements([
+      { id: "t1", type: "text", text: "Hi", containerId: "ghost" },
+    ]);
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.kind === "text-dangling-container")).toBe(true);
+  });
+  it("flags arrows with neither start nor end binding", () => {
+    const r = validateAiElements([
+      { id: "a1", type: "arrow" },
+    ]);
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.kind === "arrow-unbound")).toBe(true);
+  });
+  it("flags arrows pointing to non-existent elements", () => {
+    const r = validateAiElements([
+      { id: "r1", type: "rectangle", width: 100, height: 50 },
+      { id: "a1", type: "arrow", startBinding: { elementId: "r1" }, endBinding: { elementId: "ghost" } },
+    ]);
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.kind === "arrow-dangling-binding")).toBe(true);
+  });
+  it("flags labels too long for their container", () => {
+    const r = validateAiElements([
+      { id: "r1", type: "rectangle", width: 100, height: 50 },
+      { id: "t1", type: "text", containerId: "r1", text: "averyverylongwordthatcannotfit", fontSize: 18 },
+    ]);
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.kind === "label-too-long")).toBe(true);
+  });
+  it("counts non-rect/text/arrow elements as `other`", () => {
+    const r = validateAiElements([
+      { id: "x", type: "ellipse" },
+    ] as never);
+    expect(r.counts.other).toBe(1);
   });
 });
 
