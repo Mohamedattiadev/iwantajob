@@ -42,6 +42,7 @@ const Excalidraw = dynamic(
 
 type DrawingDoc = {
   elements?: unknown[];
+  paperMode?: "plain" | "grid" | "dots" | "lines";
   appState?: Record<string, unknown>;
   files?: Record<string, unknown>;
   title?: string;
@@ -89,6 +90,25 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   );
   const { resolvedTheme } = useTheme();
   const [full, setFull] = useState(defaultFull);
+  // GoodNotes-style paper templates. Rendered as a CSS background on
+  // the canvas wrapper; Excalidraw paints over it with a transparent
+  // viewBackgroundColor when a non-plain mode is active so the pattern
+  // shows through. Persisted in the saved doc under `paperMode`.
+  type PaperMode = "plain" | "grid" | "dots" | "lines";
+  const [paperMode, setPaperMode] = useState<PaperMode>("plain");
+  // Whenever paperMode changes, force Excalidraw's viewBackgroundColor
+  // to transparent (so the wrapper pattern shows) or back to white.
+  useEffect(() => {
+    const api = excalRef.current;
+    if (!api) return;
+    try {
+      api.updateScene({
+        appState: {
+          viewBackgroundColor: paperMode === "plain" ? "#ffffff" : "transparent",
+        },
+      });
+    } catch {}
+  }, [paperMode]);
   const [saved, setSaved] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
@@ -296,6 +316,9 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     const firstApply = appliedFor.current !== slug;
     if (firstApply) {
       appliedFor.current = slug;
+      if (doc.paperMode && doc.paperMode !== paperMode) {
+        setPaperMode(doc.paperMode);
+      }
       // Defer the very first updateScene off the React commit phase
       // too. Excalidraw's internal store fires its subscriber set
       // synchronously inside updateScene; running that while React
@@ -373,7 +396,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   }, [slug, !!doc]);
 
   const save = useCallback(async (payload: object) => {
-    const body = JSON.stringify({ data: { ...payload, title: skill } });
+    const body = JSON.stringify({ data: { ...payload, title: skill, paperMode } });
     if (body === last.current) return;
     last.current = body;
     const r = await fetch(`${API}/api/drawings/${slug}`, {
@@ -1179,6 +1202,9 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
         ref={canvasWrapRef}
         className={`relative rounded-xl overflow-hidden border border-foreground/10 bg-card ${full ? "flex-1" : "h-[70vh]"}`}
       >
+        {paperMode !== "plain" && (
+          <PaperBackdrop mode={paperMode} appState={miniData.app} />
+        )}
         <Excalidraw
           key={slug}
           initialData={initialData}
@@ -1229,6 +1255,36 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
           onSave={manualSave}
           saving={saving}
           savedTick={saved}
+          paperMode={paperMode}
+          onPaperMode={setPaperMode}
+          onZoomDelta={(factor) => {
+            const api = excalRef.current;
+            if (!api) return;
+            const app = api.getAppState() as { width?: number; height?: number; zoom?: { value?: number }; scrollX?: number; scrollY?: number };
+            const cur = app.zoom?.value ?? 1;
+            const next = Math.max(0.05, Math.min(30, cur * factor));
+            if (next === cur) return;
+            const w = app.width ?? 0;
+            const h = app.height ?? 0;
+            // Zoom anchored on viewport center so content stays put.
+            const sx = app.scrollX ?? 0;
+            const sy = app.scrollY ?? 0;
+            const cx = -sx + (w / cur) / 2;
+            const cy = -sy + (h / cur) / 2;
+            api.updateScene({
+              appState: {
+                zoom: { value: next },
+                scrollX: -(cx - (w / next) / 2),
+                scrollY: -(cy - (h / next) / 2),
+              },
+            });
+          }}
+          onZoomReset={() => {
+            const api = excalRef.current;
+            if (!api) return;
+            api.updateScene({ appState: { zoom: { value: 1 } } });
+          }}
+          zoomPct={Math.round(((miniData.app as { zoom?: { value?: number } })?.zoom?.value ?? 1) * 100)}
         />
         {/* Share button removed — realtime WS sync replaces link sharing.
             The iPad dropdown (in TopRightTools) still shows the QR for
@@ -1326,6 +1382,87 @@ export function SketchPreloader() {
 
 // Watches the DOM for Excalidraw's shape-island toolbar, then portals our
 // AI/Chat/Templates/Share/Export buttons inside it so they read as one bar.
+// CSS paper backdrop. Sits absolutely-positioned BEHIND the Excalidraw
+// canvas; canvas viewBackgroundColor is forced to "transparent" when
+// active so the pattern shows through. Scale + scroll follow Excalidraw's
+// appState.zoom + scrollX/Y so the grid/dot/line spacing stays anchored
+// to world coordinates while the user pans/zooms.
+function PaperModeIcon({ mode }: { mode: "plain" | "grid" | "dots" | "lines" }) {
+  const stroke = "currentColor";
+  if (mode === "plain") {
+    return (
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={stroke} strokeWidth="1.2">
+        <rect x="2" y="2" width="10" height="10" rx="1.5" />
+      </svg>
+    );
+  }
+  if (mode === "grid") {
+    return (
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={stroke} strokeWidth="1">
+        <rect x="2" y="2" width="10" height="10" rx="1.5" />
+        <path d="M5.3 2v10M8.6 2v10M2 5.3h10M2 8.6h10" opacity="0.7" />
+      </svg>
+    );
+  }
+  if (mode === "dots") {
+    return (
+      <svg width="14" height="14" viewBox="0 0 14 14" fill={stroke} stroke="none">
+        <rect x="2" y="2" width="10" height="10" rx="1.5" fill="none" stroke={stroke} strokeWidth="1" />
+        <circle cx="5" cy="5" r="0.7" /><circle cx="9" cy="5" r="0.7" />
+        <circle cx="5" cy="9" r="0.7" /><circle cx="9" cy="9" r="0.7" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={stroke} strokeWidth="1">
+      <rect x="2" y="2" width="10" height="10" rx="1.5" />
+      <path d="M2 5.3h10M2 8.6h10" opacity="0.7" />
+    </svg>
+  );
+}
+
+function PaperBackdrop({
+  mode, appState,
+}: {
+  mode: "grid" | "dots" | "lines";
+  appState: Record<string, unknown>;
+}) {
+  const s = appState as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
+  const zoom = s.zoom?.value ?? 1;
+  const sx = (s.scrollX ?? 0) * zoom;
+  const sy = (s.scrollY ?? 0) * zoom;
+  // World-space spacing (px at zoom=1).
+  const baseGrid = 32;
+  const baseDots = 24;
+  const baseLines = 28;
+  const style: React.CSSProperties = {
+    position: "absolute",
+    inset: 0,
+    pointerEvents: "none",
+    zIndex: 0,
+    opacity: 0.55,
+  };
+  // Tailwind tokens via CSS vars defined in globals.css.
+  const lineColor = "color-mix(in oklab, var(--foreground) 18%, transparent)";
+  if (mode === "grid") {
+    const sz = baseGrid * zoom;
+    style.backgroundImage = `linear-gradient(to right, ${lineColor} 1px, transparent 1px), linear-gradient(to bottom, ${lineColor} 1px, transparent 1px)`;
+    style.backgroundSize = `${sz}px ${sz}px, ${sz}px ${sz}px`;
+    style.backgroundPosition = `${sx}px ${sy}px, ${sx}px ${sy}px`;
+  } else if (mode === "dots") {
+    const sz = baseDots * zoom;
+    style.backgroundImage = `radial-gradient(circle, ${lineColor} ${Math.max(1, 1.2 * zoom)}px, transparent ${Math.max(1, 1.2 * zoom)}px)`;
+    style.backgroundSize = `${sz}px ${sz}px`;
+    style.backgroundPosition = `${sx}px ${sy}px`;
+  } else {
+    const sz = baseLines * zoom;
+    style.backgroundImage = `linear-gradient(to bottom, ${lineColor} 1px, transparent 1px)`;
+    style.backgroundSize = `${sz}px ${sz}px`;
+    style.backgroundPosition = `${sx}px ${sy}px`;
+  }
+  return <div style={style} aria-hidden />;
+}
+
 function ShapeIslandTools(props: React.ComponentProps<typeof TopRightTools>) {
   const [host, setHost] = useState<HTMLElement | null>(null);
 
@@ -1365,7 +1502,8 @@ function TopRightTools({
   onAi, onChat, onTemplate, onExportPng, onExportSvg, onCopyJson,
   full, onToggleFull, framesCount, presenting, onPresentToggle,
   penOn, onTogglePen, padUrl, padCount, viewerCount, onSave, saving, savedTick,
-  pendingPads, onApprovePad, onDenyPad,
+  pendingPads, onApprovePad, onDenyPad, paperMode, onPaperMode,
+  onZoomDelta, onZoomReset, zoomPct,
 }: {
   onAi: () => void;
   onChat: () => void;
@@ -1389,8 +1527,13 @@ function TopRightTools({
   pendingPads: Array<{ sessionId: string; approval: "pending" | "approved" | "denied"; label?: string; device?: { ip?: string; screen?: string; language?: string } }>;
   onApprovePad: (sessionId: string) => void;
   onDenyPad: (sessionId: string) => void;
+  paperMode: "plain" | "grid" | "dots" | "lines";
+  onPaperMode: (m: "plain" | "grid" | "dots" | "lines") => void;
+  onZoomDelta: (factor: number) => void;
+  onZoomReset: () => void;
+  zoomPct: number;
 }) {
-  const [open, setOpen] = useState<null | "ai" | "export" | "pad">(null);
+  const [open, setOpen] = useState<null | "ai" | "export" | "pad" | "paper">(null);
   useEffect(() => {
     if (!open) return;
     const onDoc = () => setOpen(null);
@@ -1465,6 +1608,41 @@ function TopRightTools({
           onApprovePad={onApprovePad}
           onDenyPad={onDenyPad}
         />
+      </ExcalDropdown>
+      <div className="inline-flex items-center gap-0.5 rounded-md border border-foreground/10 bg-card/60 px-0.5">
+        <button
+          onClick={() => onZoomDelta(1 / 1.5)}
+          title="Zoom out"
+          className="excal-btn !rounded-none !border-0"
+        >
+          <ZoomOut className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={onZoomReset}
+          title="Reset zoom (100%)"
+          className="px-1.5 py-1 text-[10px] font-mono tabular-nums hover:bg-foreground/5"
+        >
+          {zoomPct}%
+        </button>
+        <button
+          onClick={() => onZoomDelta(1.5)}
+          title="Zoom in"
+          className="excal-btn !rounded-none !border-0"
+        >
+          <ZoomIn className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <ExcalDropdown
+        label="Paper"
+        icon={<PaperModeIcon mode={paperMode} />}
+        open={open === "paper"}
+        onToggle={() => setOpen(open === "paper" ? null : ("paper" as never))}
+      >
+        <li className="excal-popover-section">Paper</li>
+        <ExcalDropdownItem icon={<PaperModeIcon mode="plain" />} label="Plain" onClick={() => { onPaperMode("plain"); setOpen(null); }} hint={paperMode === "plain" ? "current" : undefined} />
+        <ExcalDropdownItem icon={<PaperModeIcon mode="grid" />} label="Grid" onClick={() => { onPaperMode("grid"); setOpen(null); }} hint={paperMode === "grid" ? "current" : undefined} />
+        <ExcalDropdownItem icon={<PaperModeIcon mode="dots" />} label="Dots" onClick={() => { onPaperMode("dots"); setOpen(null); }} hint={paperMode === "dots" ? "current" : undefined} />
+        <ExcalDropdownItem icon={<PaperModeIcon mode="lines" />} label="Lined" onClick={() => { onPaperMode("lines"); setOpen(null); }} hint={paperMode === "lines" ? "current" : undefined} />
       </ExcalDropdown>
       <button onClick={onToggleFull} className="excal-btn" title={full ? "Exit fullscreen (F)" : "Fullscreen (F)"}>
         {full ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
