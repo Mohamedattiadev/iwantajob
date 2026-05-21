@@ -12,7 +12,7 @@ import {
   Eye, Pencil, Image as ImageIcon, FileCode, Copy,
   Network, ArrowDown, Columns3, Grid2x2, Play, Square,
   PanelRightOpen, ZoomIn, ZoomOut,
-  Tablet, ExternalLink, Save, Users, ArrowLeft,
+  Tablet, ExternalLink, Save, Users, ArrowLeft, RefreshCw,
 } from "lucide-react";
 import NextLink from "next/link";
 import { useTheme } from "next-themes";
@@ -1327,6 +1327,12 @@ function PadPanel({ penOn, onTogglePen, url, padCount, viewerCount, pendingPads,
   const [qr, setQr] = useState<string>("");
   const [lanUrl, setLanUrl] = useState<string>(url);
   const [lanWarn, setLanWarn] = useState<string>("");
+  // All candidate LAN IPv4s — laptops with VPN or Docker bridges often
+  // expose several. Stored so the user can rotate to the right NIC if
+  // the auto-picked one (highest priority: 192.168>10>172) doesn't
+  // route to the tablet's Wi-Fi.
+  const [lanIps, setLanIps] = useState<string[]>([]);
+  const [lanIdx, setLanIdx] = useState(0);
 
   // Replace localhost hostname with the dev server's LAN IPv4 so the iPad,
   // which is on another device, can actually reach it.
@@ -1337,18 +1343,17 @@ function PadPanel({ penOn, onTogglePen, url, padCount, viewerCount, pendingPads,
       try {
         const u = new URL(url);
         const isLocal = u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "0.0.0.0";
-        if (!isLocal) { setLanUrl(url); setLanWarn(""); return; }
+        if (!isLocal) { setLanUrl(url); setLanWarn(""); setLanIps([]); return; }
         const r = await fetch("/api/lan", { cache: "no-store" });
         const d = await r.json();
-        const ip = Array.isArray(d.lan) ? d.lan[0] : undefined;
-        if (!ip) {
+        const ips: string[] = Array.isArray(d.lan) ? d.lan : [];
+        if (!ips.length) {
           if (!cancelled) { setLanUrl(url); setLanWarn("No LAN IP detected — iPad won't reach localhost."); }
           return;
         }
-        u.hostname = ip;
         if (!cancelled) {
-          setLanUrl(u.toString());
-          setLanWarn(`iPad must be on the same Wi-Fi as ${ip}.`);
+          setLanIps(ips);
+          setLanIdx(0);
         }
       } catch {
         if (!cancelled) { setLanUrl(url); setLanWarn("LAN lookup failed — link points to localhost."); }
@@ -1356,6 +1361,29 @@ function PadPanel({ penOn, onTogglePen, url, padCount, viewerCount, pendingPads,
     })();
     return () => { cancelled = true; };
   }, [url]);
+
+  // Rebuild lanUrl whenever the selected NIC changes. Separated from the
+  // fetch effect so cycling NICs doesn't re-hit `/api/lan`.
+  useEffect(() => {
+    if (!lanIps.length || !url) return;
+    try {
+      const u = new URL(url);
+      const ip = lanIps[lanIdx] ?? lanIps[0];
+      u.hostname = ip;
+      setLanUrl(u.toString());
+      setLanWarn(
+        lanIps.length > 1
+          ? `iPad must be on the same Wi-Fi as ${ip}. Tap ↻ to try ${lanIps.length - 1} other NIC${lanIps.length > 2 ? "s" : ""}.`
+          : `iPad must be on the same Wi-Fi as ${ip}.`,
+      );
+    } catch {}
+  }, [lanIps, lanIdx, url]);
+
+  const cycleIp = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (lanIps.length <= 1) return;
+    setLanIdx((i) => (i + 1) % lanIps.length);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1428,6 +1456,16 @@ function PadPanel({ penOn, onTogglePen, url, padCount, viewerCount, pendingPads,
           <ExternalLink className="h-3.5 w-3.5" />
           <span>Open</span>
         </a>
+        {lanIps.length > 1 && (
+          <button
+            onClick={cycleIp}
+            className="excal-pad-v2-action"
+            title={`Cycle NIC — currently ${lanIps[lanIdx]} (${lanIdx + 1}/${lanIps.length})`}
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            <span>NIC {lanIdx + 1}/{lanIps.length}</span>
+          </button>
+        )}
       </div>
       {pendingPads.filter((p) => p.approval === "pending").length > 0 && (
         <div className="mt-3 space-y-2">
