@@ -170,16 +170,23 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
     if (!laserLockRef.current) return;
     if (payload.pointer.tool !== "laser") return;
     const { x, y } = payload.pointer;
-    if (payload.button === "down") {
+    const wasDown = laserDrawingRef.current;
+    const isDown = payload.button === "down";
+    if (isDown && !wasDown) {
+      // First sample of a new stroke.
       laserDrawingRef.current = true;
       laserBaseRef.current = [x, y];
       laserPtsRef.current = [[0, 0]];
       return;
     }
-    if (laserDrawingRef.current) {
+    if (isDown && wasDown) {
       laserPtsRef.current.push([x - laserBaseRef.current[0], y - laserBaseRef.current[1]]);
+      return;
     }
-    if (payload.button === "up" && laserDrawingRef.current) {
+    if (!isDown && wasDown) {
+      // Stroke ended — also record the final sample so the tail
+      // lands on the persisted freedraw, not in the air.
+      laserPtsRef.current.push([x - laserBaseRef.current[0], y - laserBaseRef.current[1]]);
       laserDrawingRef.current = false;
       const pts = laserPtsRef.current.slice();
       laserPtsRef.current = [];
@@ -226,10 +233,21 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
         pressures: [],
       };
       try {
+        const mod = excalModRef.current as { convertToExcalidrawElements?: (els: unknown[], opts?: { regenerateIds?: boolean }) => unknown[] } | null;
+        let finalStroke: unknown = stroke;
+        if (mod?.convertToExcalidrawElements) {
+          const conv = mod.convertToExcalidrawElements([stroke], { regenerateIds: false });
+          if (Array.isArray(conv) && conv.length) finalStroke = conv[0];
+        }
         const els = a.getSceneElements() as readonly unknown[];
-        a.updateScene({ elements: [...els, stroke] as never });
+        a.updateScene({ elements: [...els, finalStroke] as never });
         persistedLaserIdsRef.current.add(id);
-      } catch {}
+      } catch (err) {
+        // Surface failure so we can tell whether it's a permissions
+        // issue vs a malformed element vs the API not being ready.
+        // eslint-disable-next-line no-console
+        console.warn("[laser-lock] could not persist stroke", err);
+      }
     }
   }, []);
   const bookPageRef = useRef(0);
