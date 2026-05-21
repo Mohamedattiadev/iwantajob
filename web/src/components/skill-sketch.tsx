@@ -149,12 +149,18 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     return () => window.removeEventListener("keydown", onKey);
   }, [presenting, presentIdx, showFrame]);
   const [miniData, setMiniData] = useState<{ els: readonly unknown[]; app: Record<string, unknown> }>({ els: [], app: {} });
-  // Seed the minimap from the loaded doc so it shows real geometry before
-  // the user touches the canvas — otherwise the minimap reads 0 elements
-  // on every fresh page load until the first onChange.
+  // Seed the minimap from the loaded doc so it shows real geometry
+  // before the user touches the canvas. SWR refetches every 500 ms
+  // and returns a new `doc` reference each time, so we gate on
+  // element count to avoid a setState-on-every-poll re-render storm
+  // that compounded with Excalidraw's MainMenu rerender and tripped
+  // React's update-depth limit.
+  const seededLen = useRef(-1);
   useEffect(() => {
     if (!doc) return;
     const els = Array.isArray(doc.elements) ? doc.elements : [];
+    if (els.length === seededLen.current) return;
+    seededLen.current = els.length;
     setMiniData({ els: els as readonly unknown[], app: (doc.appState ?? {}) as Record<string, unknown> });
   }, [doc]);
   const [miniOpen, setMiniOpen] = useState(true);
@@ -216,7 +222,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       try {
         (api.updateScene as (d: { elements?: unknown[] }) => void)({ elements: remoteEls as unknown[] });
       } catch {}
-      queueMicrotask(() => { applyingRemoteRef.current = false; });
+      setTimeout(() => { applyingRemoteRef.current = false; }, 0);
       const mod = excalModRef.current;
       if (mod) {
         try {
@@ -244,7 +250,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
         elements: reconciled as unknown as unknown[],
         captureUpdate: mod.CaptureUpdateAction.NEVER,
       });
-      queueMicrotask(() => { applyingRemoteRef.current = false; });
+      setTimeout(() => { applyingRemoteRef.current = false; }, 0);
     } catch { applyingRemoteRef.current = false; }
   }, [slug, doc, excalReady]);
   useEffect(() => { appliedFor.current = ""; lastBroadcastedOrReceivedSceneVersion.current = -1; }, [slug]);
@@ -280,8 +286,12 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     const r = await fetch(`${API}/api/drawings/${slug}`, {
       method: "PUT", headers: { "Content-Type": "application/json", ...authHeaders() }, body,
     });
-    if (r.ok) { setSaved(true); setTimeout(() => setSaved(false), 1500); mutate(); }
-  }, [skill, slug, mutate]);
+    // No `mutate()` here. The SWR poll already revalidates every
+    // 500 ms, and calling mutate from save was reigniting the
+    // save → refetch → apply → onChange feedback loop that React
+    // caught as "Maximum update depth exceeded".
+    if (r.ok) { setSaved(true); setTimeout(() => setSaved(false), 1500); }
+  }, [skill, slug]);
 
   // Manual save: bypass the debounce + dedupe and force-flush the live scene.
   // Auto-save covers the happy path; this gives the user a recovery handle for
@@ -309,7 +319,6 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       last.current = body;
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
-      mutate();
       toast.success("Saved");
     } catch (e) {
       toast.error("Save failed", { description: String(e) });
@@ -530,17 +539,12 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     files: Record<string, unknown>,
   ) => {
     // If onChange is being triggered by our own `updateScene` call
-    // (remote apply, initial seed, reset), suppress save+broadcast.
-    // We still refresh the minimap so the dashed viewport tracks the
-    // new scene immediately.
-    if (applyingRemoteRef.current) {
-      const tnow = Date.now();
-      if (tnow - miniThrottle.current > 33) {
-        miniThrottle.current = tnow;
-        setMiniData({ els: elements, app: appState as Record<string, unknown> });
-      }
-      return;
-    }
+    // (remote apply, initial seed, reset), suppress everything —
+    // including setMiniData, which would otherwise re-render
+    // SkillSketch, which re-renders Excalidraw's MainMenu, which
+    // emits, which fires another onChange echo, etc. The seed effect
+    // and the reconcile effect both update miniData directly.
+    if (applyingRemoteRef.current) return;
     const mod = excalModRef.current;
     if (mod) {
       try {
@@ -641,7 +645,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
                 elements: reconciled as unknown as unknown[],
                 captureUpdate: mod.CaptureUpdateAction.NEVER,
               });
-              queueMicrotask(() => { applyingRemoteRef.current = false; });
+              setTimeout(() => { applyingRemoteRef.current = false; }, 0);
               setMiniData({ els: reconciled as unknown as readonly unknown[], app: a.getAppState() as Record<string, unknown> });
             } catch { applyingRemoteRef.current = false; }
           });

@@ -166,7 +166,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
           });
         }
       } catch {}
-      queueMicrotask(() => { applyingRemoteRef.current = false; });
+      setTimeout(() => { applyingRemoteRef.current = false; }, 0);
       const mod = excalModRef.current;
       if (mod) {
         try {
@@ -193,7 +193,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
         elements: reconciled as unknown as unknown[],
         captureUpdate: mod.CaptureUpdateAction.NEVER,
       });
-      queueMicrotask(() => { applyingRemoteRef.current = false; });
+      setTimeout(() => { applyingRemoteRef.current = false; }, 0);
     } catch { applyingRemoteRef.current = false; }
   }, [slug, data, excalReady]);
   // Reset the applied flag when slug changes so the next data arrival
@@ -462,7 +462,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
                 elements: reconciled as unknown as unknown[],
                 captureUpdate: mod.CaptureUpdateAction.NEVER,
               });
-              queueMicrotask(() => { applyingRemoteRef.current = false; });
+              setTimeout(() => { applyingRemoteRef.current = false; }, 0);
               setMiniData({ els: reconciled as unknown as readonly unknown[], app: a.getAppState() as Record<string, unknown> });
             } catch { applyingRemoteRef.current = false; }
           });
