@@ -169,6 +169,32 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # ── LAN auth token ───────────────────────────────────────────────────
+    # If SKETCH_AUTH_TOKEN is set in the environment, every request to a
+    # protected route (drawings CRUD, presence heartbeats, sketch AI, plus
+    # the live-collab WebSocket) must present the same token via the
+    # `X-Auth-Token` header OR a `?t=` query param. With the token unset,
+    # the server stays open (dev convenience). Generate one with
+    # `python -c "import secrets;print(secrets.token_urlsafe(16))"` and
+    # export before launching `run`. The laptop UI puts the token into the
+    # iPad QR automatically so the pad inherits it on first open.
+    AUTH_TOKEN = os.environ.get("SKETCH_AUTH_TOKEN", "").strip()
+    PROTECTED_PREFIXES = ("/api/drawings", "/api/presence", "/api/sketch")
+
+    @app.middleware("http")
+    async def _auth_mw(request, call_next):  # type: ignore[no-untyped-def]
+        if not AUTH_TOKEN:
+            return await call_next(request)
+        path = request.url.path
+        if not any(path.startswith(p) for p in PROTECTED_PREFIXES):
+            return await call_next(request)
+        if request.method == "OPTIONS":
+            return await call_next(request)
+        sent = request.headers.get("x-auth-token") or request.query_params.get("t")
+        if sent != AUTH_TOKEN:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return await call_next(request)
+
     # In-memory cache for _load(): invalidates when the SQLite file mtime changes
     # or an Application/Profile mutation bumps `_cache_bump`. ~2s → ~5ms per call.
     from .config import DB_PATH as _DB_PATH
@@ -1269,6 +1295,11 @@ Return STRICT JSON only — no prose, no markdown — in this exact shape:
 
     @app.websocket("/ws/drawings/{slug}")
     async def ws_drawing(ws: WebSocket, slug: str):
+        # Token check BEFORE accept — drop unauth handshakes with 1008.
+        if AUTH_TOKEN:
+            if ws.query_params.get("t") != AUTH_TOKEN:
+                await ws.close(code=1008)
+                return
         await ws.accept()
         with rooms_lock:
             peers = rooms.setdefault(slug, set())

@@ -21,6 +21,7 @@ import { API, fetcher } from "@/lib/api";
 import useSWR from "swr";
 import { TEMPLATES, TEMPLATE_META, type TemplateKey } from "@/lib/sketch-templates";
 import { pickMinimapCornerStyle, shouldApplyIncomingScene, computeFitAllAppState } from "@/lib/sketch";
+import { authHeaders, readSketchToken, appendTokenToUrl } from "@/lib/auth";
 import "@excalidraw/excalidraw/index.css";
 
 type AiStyle = "flowchart" | "mindmap" | "tree" | "sequence" | "comparison" | "matrix" | "swimlane" | "venn" | "freeform";
@@ -169,7 +170,7 @@ export function SkillSketch({ skill }: { skill: string }) {
     if (body === last.current) return;
     last.current = body;
     const r = await fetch(`${API}/api/drawings/${slug}`, {
-      method: "PUT", headers: { "Content-Type": "application/json" }, body,
+      method: "PUT", headers: { "Content-Type": "application/json", ...authHeaders() }, body,
     });
     if (r.ok) { setSaved(true); setTimeout(() => setSaved(false), 1500); mutate(); }
   }, [skill, slug, mutate]);
@@ -194,7 +195,7 @@ export function SkillSketch({ skill }: { skill: string }) {
         },
       });
       const r = await fetch(`${API}/api/drawings/${slug}`, {
-        method: "PUT", headers: { "Content-Type": "application/json" }, body,
+        method: "PUT", headers: { "Content-Type": "application/json", ...authHeaders() }, body,
       });
       if (!r.ok) throw new Error(`${r.status}`);
       last.current = body;
@@ -223,7 +224,7 @@ export function SkillSketch({ skill }: { skill: string }) {
     const beat = async () => {
       try {
         const r = await fetch(`/api/presence/${encodeURIComponent(slug)}`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
+          method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() },
           body: JSON.stringify({ sessionId: sid, role: "host" }),
         });
         if (r.ok) setPresence(await r.json());
@@ -346,7 +347,8 @@ export function SkillSketch({ skill }: { skill: string }) {
     if (typeof window === "undefined") return;
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
     const host = window.location.hostname;
-    const url = `${proto}://${host}:8000/ws/drawings/${encodeURIComponent(slug)}`;
+    const tok = readSketchToken();
+    const url = `${proto}://${host}:8000/ws/drawings/${encodeURIComponent(slug)}${tok ? `?t=${encodeURIComponent(tok)}` : ""}`;
     let ws: WebSocket | null = null;
     let alive = true;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -415,7 +417,7 @@ export function SkillSketch({ skill }: { skill: string }) {
   const reset = async () => {
     if (!confirm(`Clear all elements on ${skill} sketch?`)) return;
     await fetch(`${API}/api/drawings/${slug}`, {
-      method: "PUT", headers: { "Content-Type": "application/json" },
+      method: "PUT", headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ data: { title: skill, elements: [], appState: {}, files: {} } }),
     });
     last.current = "";
@@ -497,7 +499,7 @@ export function SkillSketch({ skill }: { skill: string }) {
     setAiBusy(true);
     try {
       const r = await fetch(`${API}/api/sketch/generate`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ prompt, style: aiStyle, skill }),
       });
       const d = await r.json();
@@ -516,7 +518,7 @@ export function SkillSketch({ skill }: { skill: string }) {
   };
 
   const copyShareLink = async (mode: "view" | "edit" = "view") => {
-    const url = `${window.location.origin}/sketch/${slug}${mode === "edit" ? "?mode=edit" : ""}`;
+    const url = appendTokenToUrl(`${window.location.origin}/sketch/${slug}${mode === "edit" ? "?mode=edit" : ""}`);
     try {
       await navigator.clipboard.writeText(url);
       toast.success(`${mode === "edit" ? "Editor" : "Viewer"} link copied`, { description: url });
@@ -713,7 +715,7 @@ export function SkillSketch({ skill }: { skill: string }) {
           }}
           penOn={penMode}
           onTogglePen={togglePen}
-          padUrl={typeof window !== "undefined" ? `${window.location.origin}/sketch/${slug}?mode=edit&pen=1` : ""}
+          padUrl={typeof window !== "undefined" ? appendTokenToUrl(`${window.location.origin}/sketch/${slug}?mode=edit&pen=1`) : ""}
           padCount={presence.pad}
           viewerCount={presence.viewer}
           onSave={manualSave}
@@ -1605,7 +1607,7 @@ function SketchChatPanel({
     try {
       const scene = summarizeScene();
       const r = await fetch(`${API}/api/sketch/ask`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           question: q,
           skill,
@@ -1730,7 +1732,7 @@ function AiPromptDialog({
     setImproving(true);
     try {
       const r = await fetch(`${API}/api/ai/search-improve`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           query: text,
           context: "learn",

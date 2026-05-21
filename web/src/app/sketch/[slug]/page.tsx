@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { API, fetcher } from "@/lib/api";
+import { authHeaders, readSketchToken } from "@/lib/auth";
 import {
   sceneFingerprint, patchFreedrawForPen, shouldApplyIncomingScene,
   computeFitAllAppState, PEN_PROFILES, PEN_KEYS, type PenKey,
@@ -119,7 +120,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     if (body === lastBody.current) return;
     lastBody.current = body;
     const r = await fetch(`${API}/api/drawings/${encodeURIComponent(slug)}`, {
-      method: "PUT", headers: { "Content-Type": "application/json" }, body,
+      method: "PUT", headers: { "Content-Type": "application/json", ...authHeaders() }, body,
     });
     if (r.ok) { setSavedTick(true); setTimeout(() => setSavedTick(false), 1200); mutate(); }
   }, [data?.title, mutate, slug]);
@@ -140,7 +141,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
         },
       });
       const r = await fetch(`${API}/api/drawings/${encodeURIComponent(slug)}`, {
-        method: "PUT", headers: { "Content-Type": "application/json" }, body,
+        method: "PUT", headers: { "Content-Type": "application/json", ...authHeaders() }, body,
       });
       if (!r.ok) throw new Error(`${r.status}`);
       lastBody.current = body;
@@ -224,7 +225,8 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     // on http here.
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
     const host = window.location.hostname;
-    const url = `${proto}://${host}:8000/ws/drawings/${encodeURIComponent(slug)}`;
+    const tok = readSketchToken();
+    const url = `${proto}://${host}:8000/ws/drawings/${encodeURIComponent(slug)}${tok ? `?t=${encodeURIComponent(tok)}` : ""}`;
     let ws: WebSocket | null = null;
     let alive = true;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -322,7 +324,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     const role = penMode ? "pad" : editMode ? "viewer" : "viewer";
     const beat = () => {
       fetch(`/api/presence/${encodeURIComponent(slug)}`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ sessionId: sid, role }),
       }).catch(() => {});
     };
@@ -382,12 +384,14 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
 
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-background" style={{ touchAction: "none", WebkitUserSelect: "none", userSelect: "none" }}>
-      <header className={`relative flex items-center px-4 py-2 border-b border-border/50 bg-card/60 backdrop-blur shrink-0 ${penMode ? "justify-center" : "justify-between"}`}>
+      <header className={`relative flex items-center px-4 py-2 border-b border-border/50 bg-card/60 backdrop-blur shrink-0 ${penMode ? "h-12" : "justify-between"}`}>
         {penMode ? (
-          // Tablet header — one flat row, every chip in the center cluster.
-          // Using a single flex with justify-center guarantees true horizontal
-          // centering regardless of how many chips render.
-          <div className="inline-flex items-center gap-3 min-w-0">
+          // Tablet header — absolutely centered cluster. Using
+          // left:50% + translate-x:-50% guarantees the row sits at the
+          // true horizontal center of the viewport regardless of chip count
+          // (a justify-center flex would still drift because the row itself
+          // is left-anchored when other absolute siblings exist).
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 inline-flex items-center gap-3 whitespace-nowrap">
             <Link href="/" className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
               <ArrowLeft className="h-3.5 w-3.5" /> Home
             </Link>

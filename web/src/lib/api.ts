@@ -1,3 +1,5 @@
+import { authHeaders } from "./auth";
+
 // Same-origin: backend lives under `/be/api/*` on the Next.js server,
 // which proxies to the FastAPI host (see `next.config.ts`). iPad/LAN
 // clients only need :3000. Local Next.js route handlers (e.g.
@@ -18,7 +20,10 @@ export const fetcher = async <T = unknown>(url: string): Promise<T> => {
   const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
   const t = ctrl ? setTimeout(() => ctrl.abort(), 8000) : null;
   try {
-    const r = await fetch(`${API}${url}`, ctrl ? { signal: ctrl.signal } : undefined);
+    const r = await fetch(`${API}${url}`, {
+      headers: authHeaders(),
+      ...(ctrl ? { signal: ctrl.signal } : {}),
+    });
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return await (r.json() as Promise<T>);
   } catch (e) {
@@ -34,7 +39,7 @@ export const fetcher = async <T = unknown>(url: string): Promise<T> => {
 export const post = async <T = unknown>(url: string, body?: unknown): Promise<T> => {
   const r = await fetch(`${API}${url}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);

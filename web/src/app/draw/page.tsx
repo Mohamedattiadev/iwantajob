@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/page-header";
 import { API, fetcher } from "@/lib/api";
+import { authHeaders } from "@/lib/auth";
 import "@excalidraw/excalidraw/index.css";
 
 const Excalidraw = dynamic(
@@ -47,7 +48,7 @@ function DrawInner() {
     lastSerialized.current = body;
     const r = await fetch(`${API}/api/drawings/${encodeURIComponent(name)}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       body,
     });
     if (r.ok) {
@@ -77,7 +78,7 @@ function DrawInner() {
 
   const remove = async () => {
     if (!confirm(`Delete drawing "${name}"?`)) return;
-    await fetch(`${API}/api/drawings/${encodeURIComponent(name)}`, { method: "DELETE" });
+    await fetch(`${API}/api/drawings/${encodeURIComponent(name)}`, { method: "DELETE", headers: authHeaders() });
     list.mutate();
     router.push("/draw");
   };
