@@ -212,11 +212,15 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     try {
       api.updateScene({
         appState: {
-          viewBackgroundColor: paperMode === "plain" ? "#ffffff" : "transparent",
+          // In book mode the page divs paint the background; canvas
+          // MUST stay transparent so pages stay visible — even when
+          // the global paper mode is "plain".
+          viewBackgroundColor:
+            layoutMode === "book" || paperMode !== "plain" ? "transparent" : "#ffffff",
         },
       });
     } catch {}
-  }, [paperMode]);
+  }, [paperMode, layoutMode]);
   const [saved, setSaved] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
@@ -705,12 +709,11 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       } catch {}
     };
     beat();
-    // Adaptive heartbeat: 4 s while tab visible, 30 s when hidden
-    // (long enough to keep the presence row alive past STALE_MS
-    // bumps would normally evict it — but the route prunes only on
-    // request, so a slow background heartbeat is fine).
+    // Adaptive heartbeat: 8 s while tab visible, 30 s when hidden.
+    // Backend prunes at 15 s so 8 s keeps the row alive with one
+    // beat per window. Was 4 s and produced log spam in dev.
     let id: ReturnType<typeof setInterval>;
-    const start = () => { id = setInterval(beat, document.visibilityState === "hidden" ? 30000 : 4000); };
+    const start = () => { id = setInterval(beat, document.visibilityState === "hidden" ? 30000 : 8000); };
     const restart = () => { clearInterval(id); start(); };
     start();
     document.addEventListener("visibilitychange", restart);
@@ -1471,14 +1474,19 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
                       // export is page-sized regardless of stroke spread.
                       getDimensions: () => ({ width: PX_W, height: PX_H, scale: PX_W / BOOK_PAGE_W }),
                     });
-                    // Composite onto a white page-shaped canvas so empty
-                    // pages still come out as white sheets, not transparent.
+                    // Composite onto a white page-shaped canvas with
+                    // the per-page paper pattern painted in first so
+                    // the PDF matches what's on screen.
                     const out = document.createElement("canvas");
                     out.width = PX_W; out.height = PX_H;
                     const ctx = out.getContext("2d");
                     if (!ctx) throw new Error("2d context unavailable");
                     ctx.fillStyle = "#ffffff";
                     ctx.fillRect(0, 0, PX_W, PX_H);
+                    const pgMeta = bookPagesRef.current[i] ?? {};
+                    const effPaper: PaperMode =
+                      (!pgMeta.paper || pgMeta.paper === "inherit") ? paperMode : pgMeta.paper;
+                    drawPaperPattern(ctx, PX_W, PX_H, effPaper, PX_W / BOOK_PAGE_W);
                     ctx.drawImage(canvas, 0, 0, PX_W, PX_H);
                     const dataUrl = out.toDataURL("image/png");
                     if (i > 0) pdf.addPage([PX_W, PX_H], "portrait");
@@ -1495,7 +1503,9 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
               <BookOutlinePanel
                 pages={bookPages}
                 elements={miniData.els}
+                currentPage={bookPage}
                 onJump={(i) => goToBookPage(i)}
+                onClose={() => setBookOutlineOpen(false)}
               />
             )}
           </>
@@ -1749,6 +1759,46 @@ function bookPageTop(idx: number): number {
 // Visual page guides for "book" mode. A4 portrait at world-space
 // (~794×1123 css px @ 96dpi). Twelve pages stacked vertically, with
 // a 24px gap, starting at (0,0) in world coords.
+// Paint a paper pattern (grid/dots/lines) onto a 2D canvas. Scale is
+// px-per-world-px (so the PDF render at 2480×3508 uses scale ≈ 3.12).
+// Color picked for ~300 dpi print legibility on white paper.
+function drawPaperPattern(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  mode: PaperMode,
+  scale: number,
+) {
+  if (mode === "plain") return;
+  ctx.save();
+  ctx.fillStyle = "rgba(27,27,31,0.32)";
+  ctx.strokeStyle = "rgba(27,27,31,0.32)";
+  if (mode === "grid") {
+    const sz = 32 * scale;
+    ctx.lineWidth = Math.max(1, scale);
+    ctx.beginPath();
+    for (let x = 0; x <= w; x += sz) { ctx.moveTo(x, 0); ctx.lineTo(x, h); }
+    for (let y = 0; y <= h; y += sz) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+    ctx.stroke();
+  } else if (mode === "dots") {
+    const sz = 24 * scale;
+    const r = Math.max(1, 1.2 * scale);
+    for (let x = 0; x <= w; x += sz) {
+      for (let y = 0; y <= h; y += sz) {
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  } else {
+    const sz = 28 * scale;
+    ctx.lineWidth = Math.max(1, scale);
+    ctx.beginPath();
+    for (let y = 0; y <= h; y += sz) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
 function pagePaperBackgroundCss(mode: PaperMode, zoom: number): React.CSSProperties {
   const lineColor = "color-mix(in oklab, #1b1b1f 24%, transparent)";
   if (mode === "plain") return {};
@@ -2022,62 +2072,120 @@ function BookNavWidget({
   );
 }
 
-// Outline derived from text elements: for each page (by world y),
-// list the text strings on it. Click jumps to that page.
+// Right-side outline panel — Notion-style two-column list with tiny
+// page thumbnails on the left and a hierarchical text outline on
+// the right. Headings = the first text on each page (largest size
+// wins), body lines = subsequent texts.
 function BookOutlinePanel({
-  pages, elements, onJump,
+  pages, elements, currentPage, onJump, onClose,
 }: {
   pages: BookPageMeta[];
   elements: readonly unknown[];
+  currentPage: number;
   onJump: (i: number) => void;
+  onClose: () => void;
 }) {
   const byPage = useMemo(() => {
-    const map: string[][] = pages.map(() => []);
+    type TextEl = { text: string; fontSize: number; y: number };
+    const out: TextEl[][] = pages.map(() => []);
     for (const raw of elements) {
-      const e = raw as { type?: string; isDeleted?: boolean; y?: number; text?: string } | null;
+      const e = raw as { type?: string; isDeleted?: boolean; y?: number; text?: string; fontSize?: number } | null;
       if (!e || e.isDeleted || e.type !== "text" || !e.text) continue;
       const y = e.y ?? 0;
       const pageIdx = Math.floor(y / (BOOK_PAGE_H + BOOK_PAGE_GAP));
-      if (pageIdx >= 0 && pageIdx < map.length) map[pageIdx].push(String(e.text).split("\n")[0].slice(0, 60));
+      if (pageIdx < 0 || pageIdx >= out.length) continue;
+      out[pageIdx].push({
+        text: String(e.text).split("\n").map((s) => s.trim()).filter(Boolean).join(" · ").slice(0, 100),
+        fontSize: typeof e.fontSize === "number" ? e.fontSize : 20,
+        y,
+      });
     }
-    return map;
+    // Sort each page's items by y ascending so reading order matches.
+    for (const arr of out) arr.sort((a, b) => a.y - b.y);
+    return out;
   }, [pages, elements]);
   return (
-    <div style={{
-      position: "absolute",
-      top: 12, right: 12,
-      width: 220,
-      maxHeight: "60vh",
-      overflowY: "auto",
-      padding: 8,
-      borderRadius: 10,
-      background: "var(--island-bg-color, var(--background))",
-      boxShadow: "0 8px 24px rgba(0,0,0,0.28), 0 0 0 1px color-mix(in oklab, var(--foreground) 12%, transparent)",
-      zIndex: 5,
-      fontSize: 11,
-      color: "var(--foreground)",
-    }}>
-      <div style={{ fontSize: 10, opacity: 0.6, marginBottom: 4, padding: "0 4px" }}>Outline</div>
-      {byPage.map((lines, i) => (
+    <div
+      style={{
+        position: "absolute",
+        top: 12, right: 12, bottom: 12,
+        width: 300,
+        display: "flex", flexDirection: "column",
+        borderRadius: 12,
+        background: "var(--island-bg-color, var(--background))",
+        boxShadow:
+          "0 12px 32px rgba(0,0,0,0.35), 0 0 0 1px color-mix(in oklab, var(--foreground) 12%, transparent)",
+        zIndex: 5,
+        color: "var(--foreground)",
+        overflow: "hidden",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", padding: "10px 12px", borderBottom: "1px solid color-mix(in oklab, var(--foreground) 8%, transparent)" }}>
+        <BookOpen className="h-3.5 w-3.5" style={{ opacity: 0.7, marginRight: 6 }} />
+        <span style={{ fontSize: 12, fontWeight: 600 }}>Outline</span>
+        <span style={{ marginLeft: "auto", fontSize: 10, opacity: 0.5 }}>{pages.length} page{pages.length === 1 ? "" : "s"}</span>
         <button
-          key={i}
-          onClick={() => onJump(i)}
-          style={{
-            display: "block", width: "100%", textAlign: "left",
-            padding: "4px 6px", marginBottom: 2, borderRadius: 6,
-            border: "none", background: "transparent", color: "inherit", cursor: "pointer",
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = "color-mix(in oklab, var(--foreground) 6%, transparent)")}
-          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-        >
-          <div style={{ fontWeight: 600, fontSize: 10, opacity: 0.7 }}>Page {i + 1}</div>
-          {lines.length === 0
-            ? <div style={{ opacity: 0.4, fontSize: 10 }}>—</div>
-            : lines.slice(0, 4).map((l, j) => (
-              <div key={j} style={{ fontSize: 10.5, opacity: 0.85, paddingLeft: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l}</div>
-            ))}
-        </button>
-      ))}
+          onClick={onClose}
+          title="Close outline"
+          style={{ marginLeft: 8, background: "transparent", border: "none", color: "inherit", cursor: "pointer", padding: 2, borderRadius: 4 }}
+        ><X className="h-3.5 w-3.5" /></button>
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: "6px 0" }}>
+        {byPage.map((items, i) => {
+          const head = items[0];
+          const rest = items.slice(1, 6);
+          const active = i === currentPage;
+          return (
+            <button
+              key={i}
+              onClick={() => onJump(i)}
+              style={{
+                position: "relative",
+                width: "100%", textAlign: "left",
+                padding: "8px 14px 8px 22px",
+                border: "none", background: "transparent",
+                color: "inherit", cursor: "pointer",
+                borderLeft: active ? "2px solid var(--color-primary, #6965db)" : "2px solid transparent",
+                transition: "background 120ms ease",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "color-mix(in oklab, var(--foreground) 5%, transparent)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                <span style={{ fontSize: 10, opacity: 0.45, fontVariantNumeric: "tabular-nums", minWidth: 18 }}>
+                  {String(i + 1).padStart(2, "0")}
+                </span>
+                <span
+                  style={{
+                    fontSize: head ? 13 : 12, fontWeight: head ? 600 : 400,
+                    opacity: head ? 1 : 0.5,
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    flex: 1, minWidth: 0,
+                  }}
+                >
+                  {head ? head.text : "Untitled page"}
+                </span>
+              </div>
+              {rest.length > 0 && (
+                <div style={{ marginTop: 4, marginLeft: 24, display: "flex", flexDirection: "column", gap: 2 }}>
+                  {rest.map((it, j) => (
+                    <div
+                      key={j}
+                      style={{
+                        fontSize: 11, opacity: 0.7,
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      }}
+                    >· {it.text}</div>
+                  ))}
+                  {items.length > 6 && (
+                    <div style={{ fontSize: 10, opacity: 0.4 }}>+{items.length - 6} more</div>
+                  )}
+                </div>
+              )}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
