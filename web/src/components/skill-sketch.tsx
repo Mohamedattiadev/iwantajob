@@ -43,6 +43,7 @@ const Excalidraw = dynamic(
 type DrawingDoc = {
   elements?: unknown[];
   paperMode?: "plain" | "grid" | "dots" | "lines";
+  layoutMode?: "board" | "book";
   appState?: Record<string, unknown>;
   files?: Record<string, unknown>;
   title?: string;
@@ -96,6 +97,12 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   // shows through. Persisted in the saved doc under `paperMode`.
   type PaperMode = "plain" | "grid" | "dots" | "lines";
   const [paperMode, setPaperMode] = useState<PaperMode>("plain");
+  // Layout mode — `board` is the default infinite canvas; `book`
+  // overlays A4-shaped page guides so the user can plan content
+  // page-by-page. Doesn't change anything Excalidraw stores —
+  // purely a visual guide + a `Page` quick-zoom nav.
+  type LayoutMode = "board" | "book";
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>("board");
   // Whenever paperMode changes, force Excalidraw's viewBackgroundColor
   // to transparent (so the wrapper pattern shows) or back to white.
   useEffect(() => {
@@ -258,7 +265,14 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   // Refs the MainMenu can read without triggering re-memo on every
   // SkillSketch render. Updated in a layout effect below.
   const paperModeRef = useRef<PaperMode>("plain");
-  const exportRef = useRef<{ png?: () => void; svg?: () => void; json?: () => void; setPaper?: (m: PaperMode) => void }>({});
+  const exportRef = useRef<{
+    png?: () => void;
+    svg?: () => void;
+    json?: () => void;
+    excali?: () => void;
+    setPaper?: (m: PaperMode) => void;
+    setLayout?: (m: "board" | "book") => void;
+  }>({});
 
   // Memoize the MainMenu subtree. Without this, every SkillSketch
   // render builds a fresh React element tree for the menu items;
@@ -299,14 +313,23 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
         <MM.DefaultItems.Help />
         <MM.Separator />
         <SidebarRow label="Paper">
-          <SidebarIconBtn title="Plain" onClick={() => exportRef.current.setPaper?.("plain")}><PaperModeIcon mode="plain" /></SidebarIconBtn>
-          <SidebarIconBtn title="Grid" onClick={() => exportRef.current.setPaper?.("grid")}><PaperModeIcon mode="grid" /></SidebarIconBtn>
-          <SidebarIconBtn title="Dots" onClick={() => exportRef.current.setPaper?.("dots")}><PaperModeIcon mode="dots" /></SidebarIconBtn>
-          <SidebarIconBtn title="Lined" onClick={() => exportRef.current.setPaper?.("lines")}><PaperModeIcon mode="lines" /></SidebarIconBtn>
+          <SidebarIconBtn title="Plain" active={paperMode === "plain"} onClick={() => exportRef.current.setPaper?.("plain")}><PaperModeIcon mode="plain" /></SidebarIconBtn>
+          <SidebarIconBtn title="Grid" active={paperMode === "grid"} onClick={() => exportRef.current.setPaper?.("grid")}><PaperModeIcon mode="grid" /></SidebarIconBtn>
+          <SidebarIconBtn title="Dots" active={paperMode === "dots"} onClick={() => exportRef.current.setPaper?.("dots")}><PaperModeIcon mode="dots" /></SidebarIconBtn>
+          <SidebarIconBtn title="Lined" active={paperMode === "lines"} onClick={() => exportRef.current.setPaper?.("lines")}><PaperModeIcon mode="lines" /></SidebarIconBtn>
+        </SidebarRow>
+        <SidebarRow label="Layout">
+          <SidebarIconBtn title="Board (infinite canvas)" active={layoutMode === "board"} onClick={() => exportRef.current.setLayout?.("board")}>
+            <LayoutIcon mode="board" />
+          </SidebarIconBtn>
+          <SidebarIconBtn title="Book (paged)" active={layoutMode === "book"} onClick={() => exportRef.current.setLayout?.("book")}>
+            <LayoutIcon mode="book" />
+          </SidebarIconBtn>
         </SidebarRow>
         <SidebarRow label="Export">
           <SidebarIconBtn title="Export PNG" onClick={() => exportRef.current.png?.()}><ImageIcon style={{ width: 14, height: 14 }} /></SidebarIconBtn>
           <SidebarIconBtn title="Export SVG" onClick={() => exportRef.current.svg?.()}><FileCode style={{ width: 14, height: 14 }} /></SidebarIconBtn>
+          <SidebarIconBtn title="Export .excalidraw" onClick={() => exportRef.current.excali?.()}><Download style={{ width: 14, height: 14 }} /></SidebarIconBtn>
           <SidebarIconBtn title="Copy scene JSON" onClick={() => exportRef.current.json?.()}><Copy style={{ width: 14, height: 14 }} /></SidebarIconBtn>
         </SidebarRow>
         <MM.Separator />
@@ -316,7 +339,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
         <MM.DefaultItems.ClearCanvas />
       </MM>
     );
-  }, [excalMod, homeHref]);
+  }, [excalMod, homeHref, paperMode, layoutMode]);
   const appliedFor = useRef<string>("");
   // Apply server scene ONCE per slug on first read. Subsequent SWR
   // polls don't push into Excalidraw — the realtime path is the WS
@@ -335,6 +358,9 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       appliedFor.current = slug;
       if (doc.paperMode && doc.paperMode !== paperMode) {
         setPaperMode(doc.paperMode);
+      }
+      if (doc.layoutMode && doc.layoutMode !== layoutMode) {
+        setLayoutMode(doc.layoutMode);
       }
       // Defer the very first updateScene off the React commit phase
       // too. Excalidraw's internal store fires its subscriber set
@@ -413,7 +439,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   }, [slug, !!doc]);
 
   const save = useCallback(async (payload: object) => {
-    const body = JSON.stringify({ data: { ...payload, title: skill, paperMode } });
+    const body = JSON.stringify({ data: { ...payload, title: skill, paperMode, layoutMode } });
     if (body === last.current) return;
     last.current = body;
     const r = await fetch(`${API}/api/drawings/${slug}`, {
@@ -1159,6 +1185,27 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     triggerDownload(blob, `${skill}-sketch.svg`);
   };
 
+  // Native Excalidraw file export — opens cleanly in excalidraw.com,
+  // VS Code Excalidraw extension, or any Excalidraw-compatible tool.
+  const exportExcalidraw = async () => {
+    const api = excalRef.current;
+    if (!api) return toast.error("Canvas not ready");
+    const app = api.getAppState() as Record<string, unknown>;
+    const scene = {
+      type: "excalidraw",
+      version: 2,
+      source: "iwantajob",
+      elements: api.getSceneElements(),
+      appState: {
+        gridSize: app.gridSize ?? null,
+        viewBackgroundColor: (app.viewBackgroundColor as string) ?? "#ffffff",
+      },
+      files: api.getFiles(),
+    };
+    const blob = new Blob([JSON.stringify(scene, null, 2)], { type: "application/json" });
+    triggerDownload(blob, `${skill}-sketch.excalidraw`);
+  };
+
   const copyShareJson = async () => {
     const api = excalRef.current;
     if (!api) return toast.error("Canvas not ready");
@@ -1183,7 +1230,9 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     exportRef.current.png = exportPng;
     exportRef.current.svg = exportSvg;
     exportRef.current.json = copyShareJson;
+    exportRef.current.excali = exportExcalidraw;
     exportRef.current.setPaper = setPaperMode;
+    exportRef.current.setLayout = setLayoutMode;
   });
   useEffect(() => { paperModeRef.current = paperMode; }, [paperMode]);
 
@@ -1232,6 +1281,9 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       >
         {paperMode !== "plain" && (
           <PaperBackdrop mode={paperMode} appState={miniData.app} />
+        )}
+        {layoutMode === "book" && (
+          <BookPagesOverlay appState={miniData.app} />
         )}
         <Excalidraw
           key={slug}
@@ -1426,21 +1478,89 @@ function SidebarRow({ label, children }: { label: string; children: React.ReactN
     </div>
   );
 }
-function SidebarIconBtn({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
+function SidebarIconBtn({
+  title, onClick, active, children,
+}: {
+  title: string; onClick: () => void; active?: boolean; children: React.ReactNode;
+}) {
   return (
     <button
       type="button"
       title={title}
+      aria-pressed={active ?? undefined}
       onClick={onClick}
       style={{
         display: "inline-flex", alignItems: "center", justifyContent: "center",
-        width: 26, height: 26, borderRadius: 6,
-        border: "1px solid color-mix(in oklab, var(--foreground) 12%, transparent)",
-        background: "transparent", color: "var(--foreground)", cursor: "pointer",
+        width: 28, height: 28, borderRadius: 8,
+        border: active
+          ? "1.5px solid var(--color-primary, #6965db)"
+          : "1px solid color-mix(in oklab, var(--foreground) 12%, transparent)",
+        background: active
+          ? "color-mix(in oklab, var(--color-primary, #6965db) 18%, transparent)"
+          : "transparent",
+        color: active ? "var(--color-primary, #6965db)" : "var(--foreground)",
+        cursor: "pointer",
+        transition: "background 120ms ease, border-color 120ms ease",
       }}
     >
       {children}
     </button>
+  );
+}
+
+// Visual page guides for "book" mode. A4 portrait at world-space
+// (~794×1123 css px @ 96dpi). Five pages stacked vertically, with
+// a 24px gap, starting at (0,0) in world coords.
+function BookPagesOverlay({ appState }: { appState: Record<string, unknown> }) {
+  const s = appState as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
+  const zoom = s.zoom?.value ?? 1;
+  const sx = (s.scrollX ?? 0) * zoom;
+  const sy = (s.scrollY ?? 0) * zoom;
+  const PAGE_W = 794;
+  const PAGE_H = 1123;
+  const GAP = 24;
+  const pages = [];
+  for (let i = 0; i < 6; i++) {
+    const top = i * (PAGE_H + GAP);
+    pages.push(
+      <div
+        key={i}
+        style={{
+          position: "absolute",
+          left: sx,
+          top: sy + top * zoom,
+          width: PAGE_W * zoom,
+          height: PAGE_H * zoom,
+          borderRadius: 4 * zoom,
+          background: "color-mix(in oklab, var(--background) 80%, transparent)",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.18), 0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent)",
+          pointerEvents: "none",
+        }}
+      />,
+    );
+  }
+  return (
+    <div aria-hidden style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none", zIndex: 0 }}>
+      {pages}
+    </div>
+  );
+}
+
+function LayoutIcon({ mode }: { mode: "board" | "book" }) {
+  const stroke = "currentColor";
+  if (mode === "board") {
+    return (
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={stroke} strokeWidth="1.2">
+        <rect x="1.5" y="3" width="11" height="8" rx="1" />
+      </svg>
+    );
+  }
+  // book: two stacked rectangles representing pages.
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={stroke} strokeWidth="1.2">
+      <rect x="2" y="1.8" width="9" height="5.2" rx="0.8" />
+      <rect x="2" y="7.4" width="9" height="5" rx="0.8" />
+    </svg>
   );
 }
 
