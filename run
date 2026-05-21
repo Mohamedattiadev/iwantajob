@@ -4,6 +4,10 @@
 #   ./run up           # alias
 #   ./run up --bg      # start in background (old behavior)
 #   ./run lan          # like `up` but binds 0.0.0.0 so iPad/other devices on same Wi-Fi can use it
+#   ./run prod         # production: builds web, serves `next start` (no HMR) on 0.0.0.0 — what iPad needs
+#   ./run serve        # serve prod build without rebuilding (fast — used by systemd unit)
+#   ./run install-svc  # install + enable systemd user unit (autostarts on login)
+#   ./run uninstall-svc
 #   ./run down         # stop both
 #   ./run restart      # down + up --bg
 #   ./run logs         # tail backgrounded logs
@@ -195,6 +199,90 @@ run_lan() {
   cleanup
 }
 
+# Production mode for iPad/LAN testing. `next dev` ships unminified, HMR-wired
+# bundles + a websocket back to the laptop that iPad Safari can choke on
+# (hydration stalls, "Loading Excalidraw bundle…" never finishes). Prod build
+# is minified, tree-shaken, no HMR — what excalidraw.com effectively serves.
+run_prod() {
+  stop_all >/dev/null 2>&1 || true
+  _check_venv
+  if [ ! -d "$ROOT/web/node_modules" ]; then
+    info "installing web deps (first run)…"
+    ( cd "$ROOT/web" && npm install --silent )
+  fi
+  local ip; ip=$(_lan_ip)
+  if [ -z "$ip" ]; then
+    err "could not detect LAN IP. Plug into Wi-Fi/Ethernet and retry."
+    exit 1
+  fi
+
+  if [ "${SKIP_BUILD:-0}" != "1" ]; then
+    info "building frontend (next build) — minute or two, one-time per code change"
+    ( cd "$ROOT/web" && npm run build ) || { err "build failed"; exit 1; }
+    ok "build done"
+  else
+    info "SKIP_BUILD=1 → reusing existing .next build"
+    if [ ! -f "$ROOT/web/.next/BUILD_ID" ]; then
+      err "no build artifact found at web/.next. Run './run prod' once first."
+      exit 1
+    fi
+  fi
+
+  info "starting backend + frontend (prod) on 0.0.0.0 (Ctrl-C to stop)"
+  : > "$BACK_LOG"; : > "$FRONT_LOG"
+
+  ( cd "$ROOT/scraper" && exec .venv/bin/jobscraper serve --host 0.0.0.0 --port 8000 ) \
+      > >(tee -a "$BACK_LOG"  | sed -u "s/^/$(printf '\033[35m[back] \033[0m')/") 2>&1 &
+  BACK_PID=$!
+  echo $BACK_PID > "$BACK_PIDFILE"
+
+  ( cd "$ROOT/web" && exec npm run start ) \
+      > >(tee -a "$FRONT_LOG" | sed -u "s/^/$(printf '\033[36m[front]\033[0m')/") 2>&1 &
+  FRONT_PID=$!
+  echo $FRONT_PID > "$FRONT_PIDFILE"
+
+  cleanup() {
+    echo
+    info "stopping..."
+    kill -TERM "$BACK_PID"  2>/dev/null || true
+    kill -TERM "$FRONT_PID" 2>/dev/null || true
+    sleep 1
+    kill -KILL "$BACK_PID"  2>/dev/null || true
+    kill -KILL "$FRONT_PID" 2>/dev/null || true
+    pkill -f "jobscraper serve" 2>/dev/null || true
+    pkill -f "next start"       2>/dev/null || true
+    rm -f "$BACK_PIDFILE" "$FRONT_PIDFILE"
+    ok "stopped"
+    exit 0
+  }
+  trap cleanup INT TERM
+
+  ( for i in $(seq 1 25); do
+      if curl -sf "http://127.0.0.1:8000/api/health" > /dev/null; then break; fi
+      sleep 1
+    done
+    for i in $(seq 1 60); do
+      if curl -sf "http://127.0.0.1:3000" > /dev/null; then break; fi
+      sleep 1
+    done
+    echo
+    color "32" "═══════════════════════════════════════════"; echo
+    color "32" "  PROD ready — iPad-friendly bundle:"; echo
+    color "36" "  http://$ip:3000"; echo
+    color "33" "  (minified, no HMR, no dev overlay. Refresh iPad fully.)"; echo
+    if command -v qrencode >/dev/null 2>&1; then
+      qrencode -t ANSIUTF8 "http://$ip:3000"
+    else
+      info "tip: install qrencode for a scannable QR (pacman -S qrencode)"
+    fi
+    color "33" "  re-run ./run prod after any code change to rebuild."; echo
+    color "32" "═══════════════════════════════════════════"; echo
+  ) &
+
+  wait $BACK_PID $FRONT_PID
+  cleanup
+}
+
 # Foreground: run both, stream prefixed logs, Ctrl-C kills both cleanly.
 # Uses temp FIFOs so we can sed-prefix each stream and interleave to stdout.
 run_foreground() {
@@ -264,6 +352,23 @@ case "$cmd" in
     fi
     ;;
   lan)         run_lan ;;
+  prod)        run_prod ;;
+  serve)       SKIP_BUILD=1 run_prod ;;
+  install-svc)
+    src="$ROOT/systemd/wOrk.service"
+    dst_dir="$HOME/.config/systemd/user"
+    mkdir -p "$dst_dir"
+    cp "$src" "$dst_dir/wOrk.service"
+    systemctl --user daemon-reload
+    systemctl --user enable --now wOrk.service
+    ok "wOrk.service installed + started. Logs: journalctl --user -u wOrk -f"
+    ;;
+  uninstall-svc)
+    systemctl --user disable --now wOrk.service 2>/dev/null || true
+    rm -f "$HOME/.config/systemd/user/wOrk.service"
+    systemctl --user daemon-reload
+    ok "wOrk.service removed"
+    ;;
   down|stop)   stop_all ;;
   restart)     stop_all; start_backend_bg; start_frontend_bg; status ;;
   status)      status ;;
@@ -271,5 +376,5 @@ case "$cmd" in
   logs:back)   tail -n 100 -f "$BACK_LOG" ;;
   logs:front)  tail -n 100 -f "$FRONT_LOG" ;;
   open)        xdg-open http://127.0.0.1:3000 >/dev/null 2>&1 || open http://127.0.0.1:3000 ;;
-  *)           echo "Usage: ./run [up [--bg]|lan|down|restart|status|logs|logs:back|logs:front|open]"; exit 1 ;;
+  *)           echo "Usage: ./run [up [--bg]|lan|prod|serve|install-svc|uninstall-svc|down|restart|status|logs|logs:back|logs:front|open]"; exit 1 ;;
 esac

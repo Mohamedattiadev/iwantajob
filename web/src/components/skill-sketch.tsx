@@ -253,21 +253,139 @@ export function SkillSketch({ skill }: { skill: string }) {
   }, [manualSave]);
 
   const miniThrottle = useRef(0);
+  const lastEditAt = useRef(0);
+  const lastSeenFingerprint = useRef("");
+  const wsRef = useRef<WebSocket | null>(null);
+  const localDrawingUntil = useRef(0);
+  // Prevent stale save timers from a previous skill firing after navigation
+  // and overwriting the new skill's data (or worse, the iPad's drawing on
+  // the previous skill). Clear on slug change + on unmount.
+  useEffect(() => {
+    return () => {
+      if (t.current) { clearTimeout(t.current); t.current = null; }
+      last.current = "";
+    };
+  }, [slug]);
+  // Realtime peer count from the WS room. When > 0 (iPad connected), the
+  // laptop yields authorship: autosave PUTs paused + outgoing scene
+  // broadcasts skipped. iPad becomes the sole writer to avoid table-overwrite
+  // races. The laptop still RECEIVES iPad's scenes via WS to stay in view.
+  const [livePeers, setLivePeers] = useState(0);
+  const livePeersRef = useRef(0);
+  useEffect(() => { livePeersRef.current = livePeers; }, [livePeers]);
   const onChange = useCallback((
     elements: readonly unknown[],
     appState: unknown,
     files: Record<string, unknown>,
   ) => {
+    // Block save until the server's scene has been seen at least once.
+    // Without this, Excalidraw's mount-time empty onChange would PUT empty
+    // elements to the backend and wipe the drawing on every reload.
+    if (!doc) return;
+    lastEditAt.current = Date.now();
+    // Inline fingerprint (count + last visible id) so iPad pulls cleanly.
+    let cnt = 0; let lid = "";
+    for (const raw of elements) {
+      const e = raw as { id?: string; isDeleted?: boolean } | null;
+      if (!e || e.isDeleted) continue;
+      cnt++;
+      if (e.id) lid = e.id;
+    }
+    lastSeenFingerprint.current = `${cnt}:${lid}`;
     if (t.current) clearTimeout(t.current);
-    t.current = setTimeout(() => {
-      save({ elements: [...elements], appState: appState as Record<string, unknown>, files });
-    }, DEBOUNCE_MS);
+    // Suspend autosave while iPad (or any peer) is connected — iPad owns
+    // writes during a collab session so we don't race-overwrite the table.
+    // Re-check inside the timer callback too, because peer count can flip
+    // between the timer being armed and the callback firing.
+    if (livePeersRef.current === 0) {
+      t.current = setTimeout(() => {
+        if (livePeersRef.current > 0) return;
+        save({ elements: [...elements], appState: appState as Record<string, unknown>, files });
+      }, DEBOUNCE_MS);
+    }
     const now = Date.now();
     if (now - miniThrottle.current > 120) {
       miniThrottle.current = now;
       setMiniData({ els: elements, app: appState as Record<string, unknown> });
     }
+    // Outgoing broadcast stays on regardless of peers — iPad needs to see
+    // laptop strokes too. Only DB autosave is suspended (above) so writes
+    // don't race; the iPad applies our scene and re-saves on its next debounce.
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(JSON.stringify({
+          type: "scene",
+          elements,
+          appState: { viewBackgroundColor: (appState as { viewBackgroundColor?: string })?.viewBackgroundColor },
+          ts: now,
+        }));
+      } catch {}
+    }
   }, [save]);
+
+  // Realtime collab WebSocket — pairs with the FastAPI `/ws/drawings/{slug}`
+  // room. Outgoing throttled (~150ms); incoming applied via updateScene
+  // unless the local pointer is mid-stroke.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const proto = window.location.protocol === "https:" ? "wss" : "ws";
+    const host = window.location.hostname;
+    const url = `${proto}://${host}:8000/ws/drawings/${encodeURIComponent(slug)}`;
+    let ws: WebSocket | null = null;
+    let alive = true;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    const connect = () => {
+      if (!alive) return;
+      try { ws = new WebSocket(url); } catch { return; }
+      wsRef.current = ws;
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data) as { type: string; elements?: unknown[]; count?: number };
+          if (msg.type === "peers") {
+            // Subtract 1 because the server counts ourselves in the room.
+            setLivePeers(Math.max(0, (msg.count ?? 1) - 1));
+            return;
+          }
+          if (msg.type !== "scene" || !Array.isArray(msg.elements)) return;
+          const api = excalRef.current;
+          if (!api) return;
+          if (Date.now() < localDrawingUntil.current) return;
+          (api.updateScene as unknown as (d: { elements?: unknown[] }) => void)({ elements: msg.elements });
+          let cnt = 0; let lid = "";
+          for (const raw of msg.elements) {
+            const e = raw as { id?: string; isDeleted?: boolean } | null;
+            if (!e || e.isDeleted) continue;
+            cnt++;
+            if (e.id) lid = e.id;
+          }
+          lastSeenFingerprint.current = `${cnt}:${lid}`;
+        } catch {}
+      };
+      ws.onclose = () => {
+        wsRef.current = null;
+        setLivePeers(0);
+        if (alive) reconnectTimer = setTimeout(connect, 1500);
+      };
+      ws.onerror = () => { try { ws?.close(); } catch {} };
+    };
+    connect();
+    return () => {
+      alive = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try { ws?.close(); } catch {}
+      wsRef.current = null;
+    };
+  }, [slug]);
+
+  useEffect(() => {
+    const bump = () => { localDrawingUntil.current = Date.now() + 400; };
+    window.addEventListener("pointerdown", bump, { passive: true });
+    window.addEventListener("pointermove", bump, { passive: true });
+    return () => {
+      window.removeEventListener("pointerdown", bump);
+      window.removeEventListener("pointermove", bump);
+    };
+  }, []);
 
   const onMiniNav = (worldX: number, worldY: number) => {
     const api = excalRef.current as (ExcalApi & {
@@ -504,7 +622,9 @@ export function SkillSketch({ skill }: { skill: string }) {
     <div className={full ? "fixed inset-0 z-50 bg-background p-3 flex flex-col gap-2" : "flex flex-col gap-2"}>
       {!full && (
         <div className="flex items-center gap-3 text-xs">
-          <span className="text-muted-foreground">Sketch · auto-saves</span>
+          <span className="text-muted-foreground">
+            Sketch · {livePeers > 0 ? "live (iPad owns saves)" : "auto-saves"}
+          </span>
           <button
             type="button"
             onClick={manualSave}
@@ -589,11 +709,13 @@ export function SkillSketch({ skill }: { skill: string }) {
           padUrl={typeof window !== "undefined" ? `${window.location.origin}/sketch/${slug}?mode=edit&pen=1` : ""}
           padCount={presence.pad}
           viewerCount={presence.viewer}
+          onSave={manualSave}
+          saving={saving}
+          savedTick={saved}
         />
-        <FloatingShare
-          onShareView={() => copyShareLink("view")}
-          onShareEdit={() => copyShareLink("edit")}
-        />
+        {/* Share button removed — realtime WS sync replaces link sharing.
+            The iPad dropdown (in TopRightTools) still shows the QR for
+            opening on tablet. */}
         {previewOpen && (
           <PresentPreviewPanel
             elements={miniData.els}
@@ -708,7 +830,7 @@ function ShapeIslandTools(props: React.ComponentProps<typeof TopRightTools>) {
 function TopRightTools({
   onAi, onChat, onTemplate, onExportPng, onExportSvg, onCopyJson,
   full, onToggleFull, framesCount, presenting, onPresentToggle,
-  penOn, onTogglePen, padUrl, padCount, viewerCount,
+  penOn, onTogglePen, padUrl, padCount, viewerCount, onSave, saving, savedTick,
 }: {
   onAi: () => void;
   onChat: () => void;
@@ -726,6 +848,9 @@ function TopRightTools({
   padUrl: string;
   padCount: number;
   viewerCount: number;
+  onSave: () => void;
+  saving: boolean;
+  savedTick: boolean;
 }) {
   const [open, setOpen] = useState<null | "ai" | "export" | "pad">(null);
   useEffect(() => {
@@ -738,6 +863,16 @@ function TopRightTools({
 
   return (
     <div onClick={stop} className="excal-tools inline-flex items-center gap-1">
+      <button
+        onClick={onSave}
+        disabled={saving}
+        className={`excal-btn ${savedTick ? "excal-btn-active" : ""}`}
+        title={saving ? "Saving…" : "Save now (Ctrl/Cmd+S)"}
+      >
+        {savedTick
+          ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+          : <Save className="h-3.5 w-3.5" />}
+      </button>
       <ExcalDropdown
         label="AI & templates"
         icon={<Sparkles className="h-3.5 w-3.5" />}
@@ -1209,17 +1344,18 @@ function ExcalDropdownItem({ icon, label, hint, onClick }: { icon: React.ReactNo
   );
 }
 
-function Minimap({
-  elements, appState, open, onToggle, onNavigate,
+export function Minimap({
+  elements, appState, open, onToggle, onNavigate, size = "sm",
 }: {
   elements: readonly unknown[];
   appState: Record<string, unknown>;
   open: boolean;
   onToggle: () => void;
   onNavigate: (worldX: number, worldY: number) => void;
+  size?: "sm" | "lg";
 }) {
-  const W = 220;
-  const H = 150;
+  const W = size === "lg" ? 320 : 220;
+  const H = size === "lg" ? 220 : 150;
   const PAD = 24;
 
   // Compute scene bbox + viewport rect in world coords.

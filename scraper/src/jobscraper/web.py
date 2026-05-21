@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
 from pydantic import BaseModel
@@ -1246,6 +1246,61 @@ Return STRICT JSON only — no prose, no markdown — in this exact shape:
     @app.delete("/api/drawings/{name}", status_code=204)
     def api_drawing_delete(name: str):
         drawings_mod.delete(name)
+
+    # ── Live collab WebSocket ────────────────────────────────────────────
+    # Per-slug room. Each connected client sends its current scene whenever
+    # it changes; server fans it out to every other socket in the same room.
+    # No merging on the server — clients run last-writer-wins. The HTTP
+    # PUT/GET still owns persistence; WS is the realtime overlay so iPad ↔
+    # laptop see each other's strokes within ~100ms.
+    rooms: dict[str, set[WebSocket]] = {}
+    rooms_lock = threading.Lock()
+
+    async def _broadcast_peers(slug: str) -> None:
+        with rooms_lock:
+            targets = list(rooms.get(slug, set()))
+        count = len(targets)
+        payload = {"type": "peers", "count": count}
+        for peer in targets:
+            try:
+                await peer.send_json(payload)
+            except Exception:
+                pass
+
+    @app.websocket("/ws/drawings/{slug}")
+    async def ws_drawing(ws: WebSocket, slug: str):
+        await ws.accept()
+        with rooms_lock:
+            peers = rooms.setdefault(slug, set())
+            peers.add(ws)
+        # Tell everyone (including the new client) the updated peer count
+        # so the laptop can decide whether to suspend its own autosave and
+        # let the iPad own persistence.
+        await _broadcast_peers(slug)
+        try:
+            while True:
+                msg = await ws.receive_text()
+                with rooms_lock:
+                    targets = list(rooms.get(slug, set()))
+                for peer in targets:
+                    if peer is ws:
+                        continue
+                    try:
+                        await peer.send_text(msg)
+                    except Exception:
+                        pass
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+        finally:
+            with rooms_lock:
+                peers = rooms.get(slug)
+                if peers is not None:
+                    peers.discard(ws)
+                    if not peers:
+                        rooms.pop(slug, None)
+            await _broadcast_peers(slug)
 
     @app.get("/api/health")
     def health():

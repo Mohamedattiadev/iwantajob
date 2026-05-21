@@ -9,13 +9,12 @@ const BACKEND = process.env.BACKEND_URL || "http://127.0.0.1:8000";
 
 const nextConfig: NextConfig = {
   async rewrites() {
-    return {
-      beforeFiles: [],
-      afterFiles: [
-        { source: "/api/:path*", destination: `${BACKEND}/api/:path*` },
-      ],
-      fallback: [],
-    };
+    // Dedicated `/be/api/*` prefix avoids colliding with Next.js route
+    // handlers under `/api/*` (e.g. `/api/presence/[slug]`). Frontend
+    // hits `/be/api/foo`; Next.js proxies → `${BACKEND}/api/foo`.
+    return [
+      { source: "/be/api/:path*", destination: `${BACKEND}/api/:path*` },
+    ];
   },
 };
 

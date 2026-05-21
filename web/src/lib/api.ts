@@ -1,20 +1,34 @@
-// Same-origin: every `/api/*` request goes to the Next.js server, which
-// proxies to the FastAPI backend via `next.config.ts` rewrites. iPad/LAN
-// clients never need a direct route to port 8000 — they only need :3000.
-// Explicit `NEXT_PUBLIC_API_URL` still wins for production deploys where
-// the API lives on a different host.
+// Same-origin: backend lives under `/be/api/*` on the Next.js server,
+// which proxies to the FastAPI host (see `next.config.ts`). iPad/LAN
+// clients only need :3000. Local Next.js route handlers (e.g.
+// `/api/presence/*`, `/api/lan`) stay on the bare `/api` namespace and
+// are unaffected. Explicit `NEXT_PUBLIC_API_URL` still wins for prod.
 function resolveApi(): string {
   const env = process.env.NEXT_PUBLIC_API_URL;
   if (env) return env;
   if (typeof window === "undefined") return "http://127.0.0.1:8000";
-  return ""; // same-origin → "/api/foo"
+  return "/be"; // browser → "/be/api/foo" → rewritten to backend
 }
 export const API = resolveApi();
 
 export const fetcher = async <T = unknown>(url: string): Promise<T> => {
-  const r = await fetch(`${API}${url}`);
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-  return r.json() as Promise<T>;
+  // 8s timeout so iPad/Brave doesn't sit in a permanent "fetching" state
+  // when Shields, mixed content, or a stalled backend silently drops the
+  // request. SWR surfaces the error to the UI for an actionable message.
+  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const t = ctrl ? setTimeout(() => ctrl.abort(), 8000) : null;
+  try {
+    const r = await fetch(`${API}${url}`, ctrl ? { signal: ctrl.signal } : undefined);
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    return await (r.json() as Promise<T>);
+  } catch (e) {
+    if ((e as Error).name === "AbortError") {
+      throw new Error("timeout — fetch did not respond in 8s. Check Brave Shields / network.");
+    }
+    throw e;
+  } finally {
+    if (t) clearTimeout(t);
+  }
 };
 
 export const post = async <T = unknown>(url: string, body?: unknown): Promise<T> => {

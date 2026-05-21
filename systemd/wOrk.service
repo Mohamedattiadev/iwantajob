@@ -1,0 +1,18 @@
+[Unit]
+Description=W/ORK — personal job-market launchpad (backend + frontend, prod)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Attia-Pro/Projectos/IWANTAJOB
+ExecStart=%h/Attia-Pro/Projectos/IWANTAJOB/run serve
+ExecStop=%h/Attia-Pro/Projectos/IWANTAJOB/run down
+Restart=on-failure
+RestartSec=5
+# `next start` doesn't rebuild; skipping rebuild when nothing changed keeps
+# boots fast. To force a rebuild on next start, delete web/.next/BUILD_ID
+# before starting, or call `npm run build` manually.
+
+[Install]
+WantedBy=default.target
