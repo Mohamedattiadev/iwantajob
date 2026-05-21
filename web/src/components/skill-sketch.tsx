@@ -518,11 +518,28 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     appState: unknown,
     files: Record<string, unknown>,
   ) => {
-    // No early guards on `doc` / `appliedFor` — the backend's
-    // id+version reconciliation makes an empty/early PUT a no-op
-    // (incoming has no ids, existing elements always win), and the
-    // user-reported autosave-stuck symptom traces straight back to
-    // these gates blocking PUTs that should have fired.
+    // Skip onChange callbacks that are pure echoes of `updateScene`
+    // (remote apply, initial scene seeding). `getSceneVersion` only
+    // advances on a genuine local mutation, so checking it against
+    // the shared counter is the cheapest way to break the
+    // save → mutate → refetch → apply → onChange → save loop that
+    // produced "Maximum update depth exceeded".
+    const mod = excalModRef.current;
+    if (mod) {
+      try {
+        const sceneVersion = mod.getSceneVersion(elements as never);
+        if (sceneVersion <= lastBroadcastedOrReceivedSceneVersion.current) {
+          // Still keep the minimap current — just no save/broadcast.
+          const tnow = Date.now();
+          if (tnow - miniThrottle.current > 33) {
+            miniThrottle.current = tnow;
+            setMiniData({ els: elements, app: appState as Record<string, unknown> });
+          }
+          return;
+        }
+        lastBroadcastedOrReceivedSceneVersion.current = sceneVersion;
+      } catch {}
+    }
     lastEditAt.current = Date.now();
     if (t.current) clearTimeout(t.current);
     // Both sides autosave — backend reconciles by (id, version) so
@@ -535,34 +552,22 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       miniThrottle.current = now;
       setMiniData({ els: elements, app: appState as Record<string, unknown> });
     }
-    // Realtime broadcast — Excalidraw collab pattern. Only emit when
-    // scene version advances past last broadcast/receive. Tracking
-    // here also doubles as the SWR-poll reapply gate. Note: we
-    // update `pendingSend` even if the socket isn't open yet; the
-    // ws.onopen handler will flush it as soon as the connection is
-    // ready, so strokes drawn during the WS handshake aren't lost.
-    const mod = excalModRef.current;
+    // Realtime broadcast — version already advanced above in the
+    // echo-gate, so we just stage the pending payload here. ws.onopen
+    // drains it if the socket isn't open yet.
     if (mod) {
       try {
-        const sceneVersion = mod.getSceneVersion(elements as never);
-        if (sceneVersion > lastBroadcastedOrReceivedSceneVersion.current) {
-          lastBroadcastedOrReceivedSceneVersion.current = sceneVersion;
-          const bg = (appState as { viewBackgroundColor?: string })?.viewBackgroundColor;
-          pendingSend.current = { elements, bg };
-          // Only run the throttle/trailing-flush dance when WS is
-          // actually open; otherwise rely on onopen to drain pending.
-          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            // Leading-edge 16 ms with trailing flush — keeps stroke
-            // tail frames from being dropped inside a throttle gap.
-            if (now - wsSendThrottle.current >= 16) {
+        const bg = (appState as { viewBackgroundColor?: string })?.viewBackgroundColor;
+        pendingSend.current = { elements, bg };
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          if (now - wsSendThrottle.current >= 16) {
+            flushPending();
+          } else if (!trailingTimer.current) {
+            const wait = Math.max(4, 16 - (now - wsSendThrottle.current));
+            trailingTimer.current = setTimeout(() => {
+              trailingTimer.current = null;
               flushPending();
-            } else if (!trailingTimer.current) {
-              const wait = Math.max(4, 16 - (now - wsSendThrottle.current));
-              trailingTimer.current = setTimeout(() => {
-                trailingTimer.current = null;
-                flushPending();
-              }, wait);
-            }
+            }, wait);
           }
         }
       } catch {}
