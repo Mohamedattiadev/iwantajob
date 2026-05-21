@@ -68,13 +68,24 @@ type ExcalApi = {
 
 export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: string; homeHref?: string; defaultFull?: boolean }) {
   const slug = `skill-${skillSlug(skill)}`;
-  // Realtime sync goes through WS now. Keep SWR polling as a slow
-  // safety net (5 s) so a missed WS frame can't permanently leave
-  // peers out of sync.
+  // Adaptive poll: 500 ms while a peer is connected (need fast sync),
+  // 3 s otherwise, paused when the tab is hidden. Even with 304s the
+  // request frequency itself eats wakeups + dev-server logs. SWR's
+  // `refreshInterval` accepts a function — return 0 to disable.
+  const [livePeers, setLivePeers] = useState(0);
+  const livePeersRef = useRef(0);
+  useEffect(() => { livePeersRef.current = livePeers; }, [livePeers]);
   const { data: doc, mutate } = useSWR<DrawingDoc>(
     `/api/drawings/${slug}`,
     fetcher,
-    { refreshInterval: 500, dedupingInterval: 0, revalidateOnFocus: false },
+    {
+      refreshInterval: () => {
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") return 0;
+        return livePeersRef.current > 0 ? 500 : 3000;
+      },
+      dedupingInterval: 0,
+      revalidateOnFocus: true,
+    },
   );
   const { resolvedTheme } = useTheme();
   const [full, setFull] = useState(defaultFull);
@@ -513,7 +524,15 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       } catch {}
     };
     beat();
-    const id = setInterval(beat, 4000);
+    // Adaptive heartbeat: 4 s while tab visible, 30 s when hidden
+    // (long enough to keep the presence row alive past STALE_MS
+    // bumps would normally evict it — but the route prunes only on
+    // request, so a slow background heartbeat is fine).
+    let id: ReturnType<typeof setInterval>;
+    const start = () => { id = setInterval(beat, document.visibilityState === "hidden" ? 30000 : 4000); };
+    const restart = () => { clearInterval(id); start(); };
+    start();
+    document.addEventListener("visibilitychange", restart);
     const onUnload = () => {
       // DELETE with keepalive is reliable on page hide in modern browsers
       // and avoids the prior POST-without-body which the route 400s on.
@@ -522,7 +541,12 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       } catch {}
     };
     window.addEventListener("beforeunload", onUnload);
-    return () => { clearInterval(id); window.removeEventListener("beforeunload", onUnload); onUnload(); };
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", restart);
+      window.removeEventListener("beforeunload", onUnload);
+      onUnload();
+    };
   }, [slug, decidePad]);
 
   useEffect(() => {
@@ -608,13 +632,6 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       last.current = "";
     };
   }, [slug]);
-  // Realtime peer count from the WS room. When > 0 (iPad connected), the
-  // laptop yields authorship: autosave PUTs paused + outgoing scene
-  // broadcasts skipped. iPad becomes the sole writer to avoid table-overwrite
-  // races. The laptop still RECEIVES iPad's scenes via WS to stay in view.
-  const [livePeers, setLivePeers] = useState(0);
-  const livePeersRef = useRef(0);
-  useEffect(() => { livePeersRef.current = livePeers; }, [livePeers]);
   const onChange = useCallback((
     elements: readonly unknown[],
     appState: unknown,
