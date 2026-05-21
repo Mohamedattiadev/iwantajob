@@ -126,7 +126,25 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     if (!api) return;
     const els = Array.isArray(data.elements) ? data.elements : [];
     try {
-      (api.updateScene as (d: { elements?: unknown[] }) => void)({ elements: els as unknown[] });
+      (api.updateScene as (d: { elements?: unknown[]; appState?: Record<string, unknown> }) => void)({
+        elements: els as unknown[],
+      });
+    } catch {}
+    // Auto-fit so the tablet shows the laptop's strokes regardless of
+    // where the host scrolled. Without this, elements at large world
+    // coords sit off-screen and the canvas looks blank even though
+    // updateScene applied 65 elements (the bug user reported).
+    try {
+      const app = api.getAppState() as { width?: number; height?: number };
+      const fit = computeFitAllAppState(
+        els as Array<{ x?: number; y?: number; width?: number; height?: number; isDeleted?: boolean } | null>,
+        { width: app.width ?? window.innerWidth, height: app.height ?? window.innerHeight },
+      );
+      if (fit) {
+        (api.updateScene as (d: { appState?: Record<string, unknown> }) => void)({
+          appState: { zoom: { value: fit.zoom }, scrollX: fit.scrollX, scrollY: fit.scrollY },
+        });
+      }
     } catch {}
   }, [slug, data, excalReady]);
   // Reset the applied flag when slug changes so the next data arrival

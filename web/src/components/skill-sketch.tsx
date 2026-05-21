@@ -552,19 +552,55 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     };
   }, [slug]);
 
+  // rAF-coalesce pan updates so a 60Hz drag doesn't trigger 60
+  // React renders — the per-stroke jitter that made the minimap
+  // feel clunky.
+  const miniNavPending = useRef<{ wx: number; wy: number } | null>(null);
+  const miniNavRaf = useRef<number | null>(null);
   const onMiniNav = (worldX: number, worldY: number) => {
-    const api = excalRef.current as (ExcalApi & {
-      updateScene?: (d: { appState?: Record<string, unknown> }) => void;
-    }) | null;
+    miniNavPending.current = { wx: worldX, wy: worldY };
+    if (miniNavRaf.current != null) return;
+    miniNavRaf.current = requestAnimationFrame(() => {
+      miniNavRaf.current = null;
+      const pending = miniNavPending.current;
+      miniNavPending.current = null;
+      if (!pending) return;
+      const api = excalRef.current as (ExcalApi & {
+        updateScene?: (d: { appState?: Record<string, unknown> }) => void;
+      }) | null;
+      if (!api) return;
+      const app = api.getAppState() as { width?: number; height?: number; zoom?: { value?: number } };
+      const zoom = app.zoom?.value ?? 1;
+      const w = app.width ?? 0;
+      const h = app.height ?? 0;
+      api.updateScene({
+        appState: {
+          scrollX: -(pending.wx - (w / zoom) / 2),
+          scrollY: -(pending.wy - (h / zoom) / 2),
+        },
+      });
+    });
+  };
+  // Wheel-zoom on the minimap: anchor zoom around the pointer's world
+  // position so the point under the cursor stays put (Figma/Photoshop
+  // behavior). Without this, wheel just panned the canvas, which is
+  // never what you want from a minimap.
+  const onMiniZoom = (worldX: number, worldY: number, deltaY: number) => {
+    const api = excalRef.current;
     if (!api) return;
     const app = api.getAppState() as { width?: number; height?: number; zoom?: { value?: number } };
-    const zoom = app.zoom?.value ?? 1;
     const w = app.width ?? 0;
     const h = app.height ?? 0;
+    const curZoom = app.zoom?.value ?? 1;
+    // Exponential zoom step — matches Excalidraw's pinch feel.
+    const factor = Math.exp(-deltaY * 0.0015);
+    const nextZoom = Math.max(0.1, Math.min(8, curZoom * factor));
+    if (nextZoom === curZoom) return;
     api.updateScene({
       appState: {
-        scrollX: -(worldX - (w / zoom) / 2),
-        scrollY: -(worldY - (h / zoom) / 2),
+        zoom: { value: nextZoom },
+        scrollX: -(worldX - (w / nextZoom) / 2),
+        scrollY: -(worldY - (h / nextZoom) / 2),
       },
     });
   };
@@ -927,6 +963,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
           open={miniOpen}
           onToggle={() => setMiniOpen((v) => !v)}
           onNavigate={onMiniNav}
+          onZoom={onMiniZoom}
           onFitAll={() => {
             const api = excalRef.current;
             if (!api) return;
@@ -1624,13 +1661,14 @@ function ExcalDropdownItem({ icon, label, hint, onClick }: { icon: React.ReactNo
 }
 
 export function Minimap({
-  elements, appState, open, onToggle, onNavigate, onFitAll, size = "sm", defaultCorner = "br",
+  elements, appState, open, onToggle, onNavigate, onZoom, onFitAll, size = "sm", defaultCorner = "br",
 }: {
   elements: readonly unknown[];
   appState: Record<string, unknown>;
   open: boolean;
   onToggle: () => void;
   onNavigate: (worldX: number, worldY: number) => void;
+  onZoom?: (worldX: number, worldY: number, deltaY: number) => void;
   onFitAll?: () => void;
   size?: "sm" | "lg";
   defaultCorner?: "tl" | "tr" | "bl" | "br";
@@ -1690,22 +1728,59 @@ export function Minimap({
       worldY: bbox.minY + (py - offY) / scale,
     };
   };
-  // Drag-pan: pointerdown inside the svg starts a drag; every move
-  // forwards a new world coord to onNavigate so the main canvas pans
-  // continuously while the finger/mouse is held.
-  const svgDrag = useRef(false);
+  // Drag-pan modes:
+  //  - "jump": pointerdown OUTSIDE the viewport rect → snap viewport
+  //    center to the click point, then continue panning under finger.
+  //  - "grab": pointerdown INSIDE the viewport rect → preserve the
+  //    pointer-to-viewport offset, so the rect moves with the cursor
+  //    instead of snapping under it. Matches every Figma/Photoshop
+  //    minimap and was the single biggest source of "clunky" feel.
+  const svgDrag = useRef<{ mode: "jump" | "grab"; offsetX: number; offsetY: number } | null>(null);
+  const isInsideViewport = (wx: number, wy: number) =>
+    wx >= viewport.x && wx <= viewport.x + viewport.w &&
+    wy >= viewport.y && wy <= viewport.y + viewport.h;
   const onSvgDown = (e: React.PointerEvent<SVGSVGElement>) => {
-    svgDrag.current = true;
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
     const { worldX, worldY } = toWorld(e);
-    onNavigate(worldX, worldY);
+    if (isInsideViewport(worldX, worldY)) {
+      // Offset = pointer position - viewport center, in world coords.
+      svgDrag.current = {
+        mode: "grab",
+        offsetX: worldX - (viewport.x + viewport.w / 2),
+        offsetY: worldY - (viewport.y + viewport.h / 2),
+      };
+    } else {
+      svgDrag.current = { mode: "jump", offsetX: 0, offsetY: 0 };
+      onNavigate(worldX, worldY);
+    }
   };
   const onSvgMove = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (!svgDrag.current) return;
+    const d = svgDrag.current;
+    if (!d) return;
     const { worldX, worldY } = toWorld(e);
-    onNavigate(worldX, worldY);
+    onNavigate(worldX - d.offsetX, worldY - d.offsetY);
   };
-  const onSvgUp = () => { svgDrag.current = false; };
+  const onSvgUp = () => { svgDrag.current = null; };
+  const onSvgWheel = (e: React.WheelEvent<SVGSVGElement>) => {
+    if (!onZoom) return;
+    // No preventDefault — React onWheel is passive on the listener
+    // attached by React in modern versions, but the inner browser
+    // listener is what controls scroll. We attach a non-passive native
+    // listener via ref below to actually stop the page from scrolling.
+    const { worldX, worldY } = toWorld(e);
+    onZoom(worldX, worldY, e.deltaY);
+  };
+  // Attach a non-passive wheel listener so we can preventDefault and
+  // stop the page from scrolling when zooming the minimap. Without
+  // this, the wheel zooms the minimap AND scrolls the page — clunky.
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el || !onZoom) return;
+    const handler = (e: WheelEvent) => { e.preventDefault(); };
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, [onZoom]);
 
   // Draggable: default-parked at bottom-right via `right`/`bottom`; first drag
   // switches to absolute `left`/`top` and stays where the user drops it.
@@ -1770,13 +1845,18 @@ export function Minimap({
         </div>
         {open && (
           <svg
+            ref={svgRef}
             width={W} height={H}
             onPointerDown={onSvgDown}
             onPointerMove={onSvgMove}
             onPointerUp={onSvgUp}
             onPointerCancel={onSvgUp}
+            onWheel={onSvgWheel}
             className="excal-minimap-svg"
-            style={{ touchAction: "none" }}
+            style={{
+              touchAction: "none",
+              cursor: svgDrag.current?.mode === "grab" ? "grabbing" : "crosshair",
+            }}
           >
             {items.map((it, i) => {
               const x = toX(it.x);
