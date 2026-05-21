@@ -1933,24 +1933,38 @@ function PageListPopover({
       className="Island"
       style={{
         position: "absolute",
-        bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)",
-        padding: 4,
+        bottom: "calc(100% + 10px)", left: "50%", transform: "translateX(-50%)",
+        padding: 6,
         borderRadius: "var(--border-radius-lg, 10px)",
         background: "var(--island-bg-color, #232329)",
         color: "var(--text-primary-color, var(--foreground))",
         boxShadow:
-          "0 0 0 1px var(--default-border-color, rgba(255,255,255,0.08)), 0 8px 24px rgba(0,0,0,0.25)",
+          "0 0 0 1px var(--default-border-color, rgba(255,255,255,0.08)), 0 10px 28px rgba(0,0,0,0.3)",
         display: "flex",
         flexDirection: "column",
-        gap: 2,
-        width: 300,
-        maxHeight: 280,
+        gap: 1,
+        width: 320,
+        maxHeight: 320,
         overflowY: "auto",
         fontSize: 12,
         fontFamily: "var(--ui-font, inherit)",
       }}
       onClick={(e) => e.stopPropagation()}
     >
+      <div
+        style={{
+          display: "flex", alignItems: "center", gap: 6,
+          padding: "4px 8px 6px 8px",
+          fontSize: 10, fontWeight: 500,
+          color: "color-mix(in oklab, var(--foreground) 55%, transparent)",
+          textTransform: "uppercase", letterSpacing: 0.5,
+        }}
+      >
+        Pages
+        <span style={{ marginLeft: "auto", fontVariantNumeric: "tabular-nums", opacity: 0.7 }}>
+          {pages.length}
+        </span>
+      </div>
       {pages.map((p, i) => {
         const eff = !p.paper || p.paper === "inherit" ? globalPaper : p.paper;
         const inheriting = !p.paper || p.paper === "inherit";
@@ -1991,74 +2005,94 @@ function PageListPopover({
             }}
           >
             <span
+              aria-hidden
               style={{
-                fontSize: 11, lineHeight: 1,
-                color: "color-mix(in oklab, var(--foreground) 40%, transparent)",
-                cursor: "grab",
-                width: 10, textAlign: "center", userSelect: "none",
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                width: 14, height: 18,
+                color: "color-mix(in oklab, var(--foreground) 35%, transparent)",
+                userSelect: "none", cursor: "grab",
+                lineHeight: 1,
               }}
-            >⋮⋮</span>
+            >
+              <svg width="8" height="14" viewBox="0 0 6 10" fill="currentColor">
+                <circle cx="1.5" cy="2" r="1" /><circle cx="4.5" cy="2" r="1" />
+                <circle cx="1.5" cy="5" r="1" /><circle cx="4.5" cy="5" r="1" />
+                <circle cx="1.5" cy="8" r="1" /><circle cx="4.5" cy="8" r="1" />
+              </svg>
+            </span>
             <button
               onClick={() => onJump(i)}
               style={{
                 flex: 1, textAlign: "left",
                 border: "none", background: "transparent",
-                color: "inherit", cursor: "pointer",
-                padding: "3px 0", fontSize: 12,
-                fontWeight: active ? 500 : 400,
+                color: active ? "var(--color-primary, #6965db)" : "inherit",
+                cursor: "pointer",
+                padding: "4px 2px", fontSize: 12,
+                fontWeight: active ? 600 : 400,
                 fontVariantNumeric: "tabular-nums",
+                fontFamily: "inherit",
               }}
             >Page {i + 1}</button>
             <div style={{ position: "relative" }}>
               <button
                 onClick={(e) => { e.stopPropagation(); setPaperMenu((v) => v === i ? null : i); }}
-                title="Paper for this page"
+                title={inheriting ? `Inherits global (${eff})` : `Paper: ${eff}`}
                 style={{
                   display: "inline-flex", alignItems: "center", gap: 4,
-                  padding: "2px 6px", height: 22,
+                  padding: "0 6px", height: 22,
                   borderRadius: 4,
-                  border: "1px solid var(--default-border-color, color-mix(in oklab, var(--foreground) 10%, transparent))",
-                  background: "var(--island-bg-color, transparent)",
-                  color: "var(--text-primary-color, inherit)",
+                  border: "1px solid var(--default-border-color, rgba(255,255,255,0.1))",
+                  background: paperMenu === i
+                    ? "var(--button-hover-bg, color-mix(in oklab, var(--foreground) 8%, transparent))"
+                    : "transparent",
+                  color: "inherit",
                   cursor: "pointer", fontSize: 10,
                   fontFamily: "inherit",
+                  lineHeight: 1,
                 }}
               >
                 <PaperModeIcon mode={eff} />
-                <span style={{ opacity: inheriting ? 0.6 : 1 }}>
-                  {inheriting ? `${eff}` : eff}
-                </span>
-                <ChevronDown className="h-2.5 w-2.5" />
+                <span
+                  style={{
+                    opacity: inheriting ? 0.55 : 1,
+                    textTransform: "capitalize",
+                  }}
+                >{eff}</span>
+                <ChevronDown style={{ width: 10, height: 10, opacity: 0.6 }} />
               </button>
               {paperMenu === i && (
                 <div
                   style={{
                     position: "absolute", top: "calc(100% + 4px)", right: 0,
-                    minWidth: 100,
-                    padding: 2,
+                    minWidth: 130,
+                    padding: 3,
                     background: "var(--island-bg-color, #232329)",
                     borderRadius: 6,
                     boxShadow: "0 0 0 1px var(--default-border-color, rgba(255,255,255,0.08)), 0 6px 18px rgba(0,0,0,0.3)",
-                    zIndex: 1,
+                    zIndex: 2,
+                    display: "flex", flexDirection: "column", gap: 1,
                   }}
                   onClick={(e) => e.stopPropagation()}
                 >
                   {(["inherit", "plain", "grid", "dots", "lines"] as const).map((m) => {
                     const sel = (p.paper ?? "inherit") === m;
+                    const showIcon = m === "inherit" ? null : <PaperModeIcon mode={m} />;
                     return (
                       <button
                         key={m}
                         onClick={() => { onSetPaper(i, m); setPaperMenu(null); }}
                         style={{
-                          display: "flex", alignItems: "center", gap: 6,
+                          display: "flex", alignItems: "center", gap: 8,
                           width: "100%", textAlign: "left",
-                          padding: "5px 8px", borderRadius: 4,
+                          padding: "6px 8px", borderRadius: 4,
                           border: "none",
                           background: sel
                             ? "var(--color-primary-light, color-mix(in oklab, var(--color-primary, #6965db) 18%, transparent))"
                             : "transparent",
                           color: sel ? "var(--color-primary, #6965db)" : "inherit",
                           cursor: "pointer", fontSize: 11,
+                          textTransform: "capitalize",
+                          fontFamily: "inherit",
                         }}
                         onMouseEnter={(e) => {
                           if (sel) return;
@@ -2070,9 +2104,9 @@ function PageListPopover({
                           (e.currentTarget as HTMLButtonElement).style.background = "transparent";
                         }}
                       >
-                        {m === "inherit"
-                          ? <span style={{ width: 14, display: "inline-block", textAlign: "center", opacity: 0.6 }}>↺</span>
-                          : <PaperModeIcon mode={m} />}
+                        <span style={{ width: 14, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+                          {showIcon ?? <span style={{ opacity: 0.55 }}>↺</span>}
+                        </span>
                         <span style={{ flex: 1 }}>{m}</span>
                       </button>
                     );
@@ -2242,23 +2276,33 @@ function BookOutlinePanel({
     >
       <div
         style={{
-          display: "flex", alignItems: "center",
-          padding: "8px 10px",
-          fontSize: 11,
-          fontWeight: 500,
-          color: "var(--text-primary-color, var(--foreground))",
+          display: "flex", alignItems: "center", gap: 6,
+          padding: "8px 8px 8px 12px",
+          fontSize: 10, fontWeight: 600,
+          color: "color-mix(in oklab, var(--foreground) 65%, transparent)",
+          textTransform: "uppercase", letterSpacing: 0.6,
           borderBottom: "1px solid var(--default-border-color, rgba(255,255,255,0.06))",
         }}
       >
-        <BookOpen className="h-3 w-3" style={{ opacity: 0.6, marginRight: 6 }} />
+        <BookOpen style={{ width: 12, height: 12, opacity: 0.7 }} />
         <span>Outline</span>
-        <span style={{ marginLeft: "auto", opacity: 0.45, fontSize: 10 }}>{pages.length}</span>
+        <span
+          style={{
+            marginLeft: "auto",
+            opacity: 0.55,
+            fontVariantNumeric: "tabular-nums",
+            textTransform: "none",
+            letterSpacing: 0,
+            fontWeight: 400,
+            fontSize: 11,
+          }}
+        >{pages.length} page{pages.length === 1 ? "" : "s"}</span>
         <button
           onClick={onClose}
           title="Close"
           className="excal-present-btn"
-          style={{ marginLeft: 4, padding: 2, width: 22, height: 22 }}
-        ><X className="h-3 w-3" /></button>
+          style={{ padding: 2, width: 22, height: 22 }}
+        ><X style={{ width: 12, height: 12 }} /></button>
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: "4px 4px" }}>
         {byPage.map((items, i) => {
