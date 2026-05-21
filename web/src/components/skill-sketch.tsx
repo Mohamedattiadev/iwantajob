@@ -484,29 +484,22 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     // Without this, Excalidraw's mount-time empty onChange would PUT empty
     // elements to the backend and wipe the drawing on every reload.
     if (!doc) return;
-    // Also block until we've actually applied the server scene into
-    // Excalidraw — otherwise the empty onChange that fires right before
+    // Block until the server's scene has been applied to Excalidraw,
+    // otherwise the empty onChange that fires right before
     // `appliedFor` flips can race the apply and overwrite the doc.
     if (appliedFor.current !== slug) return;
-    // Excalidraw's collab gate: only broadcast when the scene version
-    // has actually advanced past what we last sent or received.
-    // Echo from `updateScene({...captureUpdate: NEVER})` lands here
-    // but with the same version we set on apply → return immediately.
-    // Local mutation increments element.version → scene version
-    // grows → we broadcast. Same counter for both directions = no
-    // timing windows, no fingerprint heuristics.
+    // Bump the shared scene-version counter so SWR refreshes from a
+    // peer know we're caught up. Counter is no longer a save gate —
+    // it only stops the SWR-poll reapply from re-emitting the same
+    // scene back through our reconciler.
     const mod = excalModRef.current;
     if (mod) {
-      const sceneVersion = mod.getSceneVersion(elements as never);
-      if (sceneVersion <= lastBroadcastedOrReceivedSceneVersion.current) {
-        const now0 = Date.now();
-        if (now0 - miniThrottle.current > 33) {
-          miniThrottle.current = now0;
-          setMiniData({ els: elements, app: appState as Record<string, unknown> });
+      try {
+        const sceneVersion = mod.getSceneVersion(elements as never);
+        if (sceneVersion > lastBroadcastedOrReceivedSceneVersion.current) {
+          lastBroadcastedOrReceivedSceneVersion.current = sceneVersion;
         }
-        return;
-      }
-      lastBroadcastedOrReceivedSceneVersion.current = sceneVersion;
+      } catch {}
     }
     lastEditAt.current = Date.now();
     if (t.current) clearTimeout(t.current);

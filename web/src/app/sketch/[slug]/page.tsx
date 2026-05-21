@@ -359,18 +359,19 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     // fires it on mount) would PUT empty elements and wipe the drawing on
     // every reload.
     if (appliedFor.current !== slug) return;
-    // Excalidraw's collab gate (see Collab.tsx in the official repo):
-    // single counter shared between sends and receives. Scene version
-    // sums every element.version, so any genuine local edit advances
-    // it. Echo from `updateScene({...captureUpdate: NEVER})` lands
-    // with the version we set on apply → returns here, no broadcast.
+    // Track our own scene version so the SWR-poll re-apply doesn't
+    // round-trip the same elements back through our reconciler. The
+    // version is NOT a save gate anymore — every local change debounce-
+    // saves unconditionally, otherwise autosave silently lost edits
+    // whenever Excalidraw fired onChange without advancing the counter.
     const mod = excalModRef.current;
     if (mod) {
-      const sceneVersion = mod.getSceneVersion(elements as never);
-      if (sceneVersion <= lastBroadcastedOrReceivedSceneVersion.current) {
-        return;
-      }
-      lastBroadcastedOrReceivedSceneVersion.current = sceneVersion;
+      try {
+        const sceneVersion = mod.getSceneVersion(elements as never);
+        if (sceneVersion > lastBroadcastedOrReceivedSceneVersion.current) {
+          lastBroadcastedOrReceivedSceneVersion.current = sceneVersion;
+        }
+      } catch {}
     }
     lastEditAt.current = Date.now();
     const tnow = Date.now();
