@@ -1449,6 +1449,18 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
                     // Clip elements to this page's bbox + offset so the
                     // export's natural bounds match a single sheet.
                     const offset = -top;
+                    // Re-map stored stroke colors that were chosen
+                    // for dark-mode display (white-ish) onto darker
+                    // print-friendly colors. Black + colored strokes
+                    // stay as-is.
+                    const remapForPrint = (c: unknown): unknown => {
+                      if (typeof c !== "string") return c;
+                      const lower = c.toLowerCase();
+                      if (lower === "#ffffff" || lower === "white" || lower === "#fff" || lower === "rgb(255,255,255)") return "#1b1b1f";
+                      // Excalidraw dark-mode default text color "#ced4da" → near-black.
+                      if (lower === "#ced4da") return "#1b1b1f";
+                      return c;
+                    };
                     const pageElsRaw = elsRaw
                       .filter((el) => {
                         if (el.isDeleted) return false;
@@ -1458,14 +1470,29 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
                         const h = (el.height as number) ?? 0;
                         return x + w >= 0 && x <= BOOK_PAGE_W && y + h >= top && y <= top + BOOK_PAGE_H;
                       })
-                      .map((el) => ({ ...el, y: ((el.y as number) ?? 0) + offset }));
+                      .map((el) => ({
+                        ...el,
+                        y: ((el.y as number) ?? 0) + offset,
+                        strokeColor: remapForPrint((el as Record<string, unknown>).strokeColor),
+                        backgroundColor: (el as Record<string, unknown>).backgroundColor === "transparent"
+                          ? "transparent"
+                          : remapForPrint((el as Record<string, unknown>).backgroundColor),
+                      }));
                     const canvas = await (exportToCanvas as unknown as (opts: unknown) => Promise<HTMLCanvasElement>)({
                       elements: pageElsRaw,
                       appState: {
                         ...api.getAppState(),
+                        // Force light theme on export so strokes are
+                        // rendered with their stored colors (no
+                        // dark-mode invert). Both keys matter —
+                        // Excalidraw checks `theme` AND `exportWithDarkMode`.
+                        theme: "light",
                         exportWithDarkMode: false,
-                        exportBackground: true,
-                        viewBackgroundColor: "#ffffff",
+                        // `exportBackground: false` → canvas is
+                        // transparent so the paper pattern we painted
+                        // first stays visible under the strokes.
+                        exportBackground: false,
+                        viewBackgroundColor: "transparent",
                         exportScale: 3,
                         exportEmbedScene: false,
                       },
@@ -2106,83 +2133,116 @@ function BookOutlinePanel({
   }, [pages, elements]);
   return (
     <div
+      className="Island"
       style={{
         position: "absolute",
-        top: 12, right: 12, bottom: 12,
-        width: 300,
+        top: 56, right: 12, bottom: 12,
+        width: 260,
         display: "flex", flexDirection: "column",
-        borderRadius: 12,
-        background: "var(--island-bg-color, var(--background))",
+        borderRadius: "var(--border-radius-lg, 10px)",
+        background: "var(--island-bg-color, #232329)",
         boxShadow:
-          "0 12px 32px rgba(0,0,0,0.35), 0 0 0 1px color-mix(in oklab, var(--foreground) 12%, transparent)",
+          "0 0 0 1px var(--default-border-color, rgba(255,255,255,0.08)), 0 8px 24px rgba(0,0,0,0.25)",
         zIndex: 5,
-        color: "var(--foreground)",
+        color: "var(--text-primary-color, var(--foreground))",
         overflow: "hidden",
+        fontFamily: "var(--ui-font, inherit)",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", padding: "10px 12px", borderBottom: "1px solid color-mix(in oklab, var(--foreground) 8%, transparent)" }}>
-        <BookOpen className="h-3.5 w-3.5" style={{ opacity: 0.7, marginRight: 6 }} />
-        <span style={{ fontSize: 12, fontWeight: 600 }}>Outline</span>
-        <span style={{ marginLeft: "auto", fontSize: 10, opacity: 0.5 }}>{pages.length} page{pages.length === 1 ? "" : "s"}</span>
+      <div
+        style={{
+          display: "flex", alignItems: "center",
+          padding: "8px 10px",
+          fontSize: 11,
+          fontWeight: 500,
+          color: "var(--text-primary-color, var(--foreground))",
+          borderBottom: "1px solid var(--default-border-color, rgba(255,255,255,0.06))",
+        }}
+      >
+        <BookOpen className="h-3 w-3" style={{ opacity: 0.6, marginRight: 6 }} />
+        <span>Outline</span>
+        <span style={{ marginLeft: "auto", opacity: 0.45, fontSize: 10 }}>{pages.length}</span>
         <button
           onClick={onClose}
-          title="Close outline"
-          style={{ marginLeft: 8, background: "transparent", border: "none", color: "inherit", cursor: "pointer", padding: 2, borderRadius: 4 }}
-        ><X className="h-3.5 w-3.5" /></button>
+          title="Close"
+          className="excal-present-btn"
+          style={{ marginLeft: 4, padding: 2, width: 22, height: 22 }}
+        ><X className="h-3 w-3" /></button>
       </div>
-      <div style={{ flex: 1, overflowY: "auto", padding: "6px 0" }}>
+      <div style={{ flex: 1, overflowY: "auto", padding: "4px 4px" }}>
         {byPage.map((items, i) => {
           const head = items[0];
-          const rest = items.slice(1, 6);
+          const rest = items.slice(1, 4);
           const active = i === currentPage;
           return (
-            <button
+            <div
               key={i}
+              role="button"
+              tabIndex={0}
               onClick={() => onJump(i)}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onJump(i); }}
               style={{
                 position: "relative",
-                width: "100%", textAlign: "left",
-                padding: "8px 14px 8px 22px",
-                border: "none", background: "transparent",
-                color: "inherit", cursor: "pointer",
-                borderLeft: active ? "2px solid var(--color-primary, #6965db)" : "2px solid transparent",
+                padding: "6px 8px 6px 12px",
+                margin: "1px 0",
+                borderRadius: 6,
+                cursor: "pointer",
+                background: active
+                  ? "var(--color-primary-light, color-mix(in oklab, var(--color-primary, #6965db) 18%, transparent))"
+                  : "transparent",
                 transition: "background 120ms ease",
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "color-mix(in oklab, var(--foreground) 5%, transparent)")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              onMouseEnter={(e) => {
+                if (active) return;
+                (e.currentTarget as HTMLDivElement).style.background =
+                  "var(--button-hover-bg, color-mix(in oklab, var(--foreground) 6%, transparent))";
+              }}
+              onMouseLeave={(e) => {
+                if (active) return;
+                (e.currentTarget as HTMLDivElement).style.background = "transparent";
+              }}
             >
-              <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                <span style={{ fontSize: 10, opacity: 0.45, fontVariantNumeric: "tabular-nums", minWidth: 18 }}>
-                  {String(i + 1).padStart(2, "0")}
-                </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span
                   style={{
-                    fontSize: head ? 13 : 12, fontWeight: head ? 600 : 400,
-                    opacity: head ? 1 : 0.5,
-                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    fontSize: 10, fontVariantNumeric: "tabular-nums",
+                    color: active ? "var(--color-primary, #6965db)" : "color-mix(in oklab, var(--foreground) 50%, transparent)",
+                    minWidth: 16,
+                  }}
+                >{i + 1}</span>
+                <span
+                  style={{
                     flex: 1, minWidth: 0,
+                    fontSize: 12,
+                    fontWeight: head ? 500 : 400,
+                    color: head
+                      ? "var(--text-primary-color, var(--foreground))"
+                      : "color-mix(in oklab, var(--foreground) 50%, transparent)",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                   }}
                 >
-                  {head ? head.text : "Untitled page"}
+                  {head ? head.text : `Page ${i + 1}`}
                 </span>
               </div>
               {rest.length > 0 && (
-                <div style={{ marginTop: 4, marginLeft: 24, display: "flex", flexDirection: "column", gap: 2 }}>
+                <div style={{ marginLeft: 22, marginTop: 2 }}>
                   {rest.map((it, j) => (
                     <div
                       key={j}
                       style={{
-                        fontSize: 11, opacity: 0.7,
+                        fontSize: 10.5,
+                        color: "color-mix(in oklab, var(--foreground) 55%, transparent)",
                         overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        lineHeight: 1.5,
                       }}
-                    >· {it.text}</div>
+                    >{it.text}</div>
                   ))}
-                  {items.length > 6 && (
-                    <div style={{ fontSize: 10, opacity: 0.4 }}>+{items.length - 6} more</div>
+                  {items.length > 4 && (
+                    <div style={{ fontSize: 10, opacity: 0.35, lineHeight: 1.5 }}>+{items.length - 4} more</div>
                   )}
                 </div>
               )}
-            </button>
+            </div>
           );
         })}
       </div>
