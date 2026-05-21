@@ -224,6 +224,51 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       setExcalReady(true);
     }
   }, []);
+  // Memoize the MainMenu subtree. Without this, every SkillSketch
+  // render builds a fresh React element tree for the menu items;
+  // their `useSyncExternalStore` subscriptions re-attach each time,
+  // and Excalidraw's emitter's `Set.forEach` over subscribers
+  // observed mid-mutation snapshots — the exact stack we kept
+  // seeing in the "Maximum update depth" crashes.
+  const mainMenuNode = useMemo(() => {
+    if (!excalMod) return null;
+    const MM = excalMod.MainMenu as unknown as React.ComponentType<{ children?: React.ReactNode }> & {
+      Item: React.ComponentType<{ onSelect?: () => void; icon?: React.ReactNode; shortcut?: string; children?: React.ReactNode }>;
+      ItemLink: React.ComponentType<{ href: string; icon?: React.ReactNode; children?: React.ReactNode }>;
+      Separator: React.ComponentType;
+      Group: React.ComponentType<{ title?: string; children?: React.ReactNode }>;
+      DefaultItems: {
+        ToggleTheme: React.ComponentType;
+        ChangeCanvasBackground: React.ComponentType;
+        SearchMenu: React.ComponentType;
+        Help: React.ComponentType;
+        LoadScene: React.ComponentType;
+        ClearCanvas: React.ComponentType;
+        SaveAsImage: React.ComponentType;
+      };
+    };
+    return (
+      <MM>
+        {homeHref && (
+          <>
+            <MM.ItemLink href={homeHref} icon={<ArrowLeft style={{ width: 14, height: 14 }} />}>
+              Home
+            </MM.ItemLink>
+            <MM.Separator />
+          </>
+        )}
+        <MM.DefaultItems.SearchMenu />
+        <MM.DefaultItems.LoadScene />
+        <MM.DefaultItems.SaveAsImage />
+        <MM.DefaultItems.Help />
+        <MM.Separator />
+        <MM.DefaultItems.ChangeCanvasBackground />
+        <MM.DefaultItems.ToggleTheme />
+        <MM.Separator />
+        <MM.DefaultItems.ClearCanvas />
+      </MM>
+    );
+  }, [excalMod, homeHref]);
   const appliedFor = useRef<string>("");
   // Apply server scene ONCE per slug on first read. Subsequent SWR
   // polls don't push into Excalidraw — the realtime path is the WS
@@ -240,18 +285,27 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     const firstApply = appliedFor.current !== slug;
     if (firstApply) {
       appliedFor.current = slug;
-      applyingRemoteRef.current = true;
-      try {
-        (api.updateScene as (d: { elements?: unknown[] }) => void)({ elements: remoteEls as unknown[] });
-      } catch {}
-      setTimeout(() => { applyingRemoteRef.current = false; }, 0);
-      const mod = excalModRef.current;
-      if (mod) {
+      // Defer the very first updateScene off the React commit phase
+      // too. Excalidraw's internal store fires its subscriber set
+      // synchronously inside updateScene; running that while React
+      // is still committing this same tree was the actual source of
+      // the `Set.forEach → <MM>` infinite-update loop.
+      const tid = setTimeout(() => {
+        const a = excalRef.current;
+        if (!a) return;
+        applyingRemoteRef.current = true;
         try {
-          lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(remoteEls as never);
+          (a.updateScene as (d: { elements?: unknown[] }) => void)({ elements: remoteEls as unknown[] });
         } catch {}
-      }
-      return;
+        setTimeout(() => { applyingRemoteRef.current = false; }, 0);
+        const mod = excalModRef.current;
+        if (mod) {
+          try {
+            lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(remoteEls as never);
+          } catch {}
+        }
+      }, 0);
+      return () => clearTimeout(tid);
     }
     // Subsequent SWR refreshes: reconcile remote against local off
     // the React commit phase so updateScene's internal store emit
@@ -1107,44 +1161,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
           aiEnabled={false}
           excalidrawAPI={excalApiCallback}
         >
-          {excalMod && (() => {
-            const MM = excalMod.MainMenu as unknown as React.ComponentType<{ children?: React.ReactNode }> & {
-              Item: React.ComponentType<{ onSelect?: () => void; icon?: React.ReactNode; shortcut?: string; children?: React.ReactNode }>;
-              ItemLink: React.ComponentType<{ href: string; icon?: React.ReactNode; children?: React.ReactNode }>;
-              Separator: React.ComponentType;
-              Group: React.ComponentType<{ title?: string; children?: React.ReactNode }>;
-              DefaultItems: {
-                ToggleTheme: React.ComponentType;
-                ChangeCanvasBackground: React.ComponentType;
-                SearchMenu: React.ComponentType;
-                Help: React.ComponentType;
-                LoadScene: React.ComponentType;
-                ClearCanvas: React.ComponentType;
-                SaveAsImage: React.ComponentType;
-              };
-            };
-            return (
-              <MM>
-                {homeHref && (
-                  <>
-                    <MM.ItemLink href={homeHref} icon={<ArrowLeft style={{ width: 14, height: 14 }} />}>
-                      Home
-                    </MM.ItemLink>
-                    <MM.Separator />
-                  </>
-                )}
-                <MM.DefaultItems.SearchMenu />
-                <MM.DefaultItems.LoadScene />
-                <MM.DefaultItems.SaveAsImage />
-                <MM.DefaultItems.Help />
-                <MM.Separator />
-                <MM.DefaultItems.ChangeCanvasBackground />
-                <MM.DefaultItems.ToggleTheme />
-                <MM.Separator />
-                <MM.DefaultItems.ClearCanvas />
-              </MM>
-            );
-          })()}
+          {mainMenuNode}
         </Excalidraw>
         <ShapeIslandTools
           onAi={() => setAiOpen(true)}
