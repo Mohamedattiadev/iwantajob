@@ -62,14 +62,14 @@ export function ChatWidget() {
     <>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="fixed bottom-5 right-5 z-50 h-12 w-12 rounded-full glass-strong grid place-items-center shadow-lg hover:scale-105 transition-transform"
+        className="chat-widget-launcher fixed bottom-5 right-5 z-50 h-12 w-12 rounded-full glass-strong grid place-items-center shadow-lg hover:scale-105 transition-transform"
         aria-label="Toggle chat"
       >
         {open ? <X className="h-5 w-5" /> : <MessageCircle className="h-5 w-5" />}
       </button>
 
       {open && (
-        <div className="fixed bottom-20 right-5 z-50 w-[92vw] max-w-md h-[60vh] glass-strong rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+        <div className="chat-widget-panel fixed bottom-20 right-5 z-50 w-[92vw] max-w-md h-[60vh] glass-strong rounded-2xl shadow-2xl flex flex-col overflow-hidden">
           <header className="px-4 py-3 border-b border-foreground/10 flex items-center justify-between">
             <div>
               <div className="text-sm font-semibold">Career coach</div>

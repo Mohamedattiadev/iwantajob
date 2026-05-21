@@ -110,6 +110,18 @@ class Application(Base):
     job = relationship("Job")
 
 
+class Drawing(Base):
+    __tablename__ = "drawing"
+
+    id = Column(Integer, primary_key=True)
+    slug = Column(String(120), nullable=False, unique=True, index=True)
+    title = Column(Text, nullable=False, default="")
+    category = Column(String(64), nullable=False, default="misc", index=True)  # e.g. "react", "javascript"
+    content_json = Column(Text, nullable=False, default="{}")  # full excalidraw scene JSON
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 _engine = create_engine(DB_URL, future=True)
 SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
 

@@ -46,18 +46,24 @@ export function ScrapeButton() {
 
   const running = data?.running ?? false;
 
-  const start = async () => {
+  const startWith = async (src: string) => {
     try {
-      const qs = source ? `?source=${encodeURIComponent(source)}` : "";
+      const qs = src ? `?source=${encodeURIComponent(src)}` : "";
       await post(`/api/scrape${qs}`);
       setPolling(true);
-      toast.info(`Scrape queued (${source || "all sources"})`);
+      toast.info(`Scrape queued (${src || "all sources"})`);
       refetch();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("409")) toast.warning("Scrape already running");
       else toast.error(`Failed to start: ${msg}`);
     }
+  };
+  const start = () => startWith(source);
+  const pickAndStart = (src: string) => {
+    setSource(src);
+    setOpenMenu(false);
+    if (!running) startWith(src);
   };
 
   return (
@@ -89,36 +95,44 @@ export function ScrapeButton() {
                 onClick={() => setOpenMenu(false)}
                 className="fixed inset-0 z-30 cursor-default"
               />
-              <ul className="absolute right-0 top-full mt-1 z-40 min-w-[200px] rounded-lg border bg-popover shadow-lg p-1 text-sm">
-                <li>
-                  <button
-                    onClick={() => { setSource(""); setOpenMenu(false); }}
-                    className={`w-full text-left px-2 py-1.5 rounded hover:bg-accent ${source === "" ? "font-semibold" : ""}`}
-                  >
-                    All sources
-                  </button>
-                </li>
-                <li className="my-1 border-t" />
-                {(sources ?? []).map((s) => (
-                  <li key={s.id}>
+              <div className="absolute right-0 top-full mt-1 z-40 w-[260px] rounded-lg border bg-popover shadow-xl overflow-hidden text-sm">
+                <div className="px-3 py-2 border-b border-border/60 text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                  Scrape source
+                </div>
+                <ul className="max-h-[320px] overflow-y-auto p-1">
+                  <li>
                     <button
-                      onClick={() => { setSource(s.id); setOpenMenu(false); }}
-                      disabled={!s.configured}
-                      className={`w-full text-left px-2 py-1.5 rounded hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-between gap-2 ${source === s.id ? "font-semibold" : ""}`}
-                      title={s.configured ? s.id : `Needs env: ${s.requires.join(", ")}`}
+                      onClick={() => pickAndStart("")}
+                      className={`w-full text-left px-2.5 py-1.5 rounded text-sm hover:bg-accent flex items-center justify-between gap-2 ${source === "" ? "bg-primary/10 text-foreground font-medium" : ""}`}
                     >
-                      <span>{s.id}</span>
-                      {!s.configured && (
-                        <span className="text-[9px] font-mono text-amber-500 uppercase">no key</span>
-                      )}
+                      <span>All sources <span className="text-[10px] text-muted-foreground">— starts scrape</span></span>
+                      <span className="text-[10px] font-mono text-muted-foreground">{(sources ?? []).filter((s) => s.configured).length}</span>
                     </button>
                   </li>
-                ))}
-                <li className="my-1 border-t" />
-                <li className="px-2 py-1.5 text-[10px] text-muted-foreground leading-relaxed">
-                  To add a new source, drop a <code className="font-mono">collect_*.py</code> in <code className="font-mono">scraper/.../collectors/</code> and register it in <code className="font-mono">COLLECTORS</code>.
-                </li>
-              </ul>
+                  <li className="my-1 mx-2 border-t border-border/40" />
+                  {(sources ?? []).length === 0 && (
+                    <li className="px-2.5 py-2 text-xs text-muted-foreground italic">Loading sources…</li>
+                  )}
+                  {(sources ?? []).map((s) => (
+                    <li key={s.id}>
+                      <button
+                        onClick={() => pickAndStart(s.id)}
+                        disabled={!s.configured || running}
+                        className={`w-full text-left px-2.5 py-1.5 rounded text-sm hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-between gap-2 ${source === s.id ? "bg-primary/10 text-foreground font-medium" : ""}`}
+                        title={s.configured ? s.id : `Needs env: ${s.requires.join(", ")}`}
+                      >
+                        <span className="lowercase">{s.id}</span>
+                        {!s.configured && (
+                          <span className="text-[9px] font-mono text-amber-500 uppercase">no key</span>
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                <div className="px-3 py-2 border-t border-border/60 text-[10px] text-muted-foreground leading-relaxed bg-muted/30">
+                  Add new: drop <code className="font-mono">collect_*.py</code> in <code className="font-mono">collectors/</code> and register in <code className="font-mono">COLLECTORS</code>.
+                </div>
+              </div>
             </>
           )}
         </div>

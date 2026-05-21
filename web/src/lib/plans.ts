@@ -4,6 +4,9 @@ import { useCallback, useEffect, useState } from "react";
 
 const STORE = "jobscraper:plans:v1";
 
+export type Priority = "low" | "med" | "high";
+export type Status = "todo" | "doing" | "done";
+
 export type PlanItem = {
   id: string;
   title: string;
@@ -12,6 +15,11 @@ export type PlanItem = {
   done: boolean;
   pinned: boolean;
   created_at: number;
+  priority?: Priority;
+  due?: string;            // ISO date "YYYY-MM-DD"
+  notes?: string;
+  completed_at?: number;
+  status?: Status;         // todo | doing | done (mirrors `done` when "done")
 };
 
 function load(): PlanItem[] {
@@ -38,7 +46,7 @@ export function useUserPlans() {
     setReady(true);
   }, []);
 
-  const add = useCallback((p: Pick<PlanItem, "title" | "skill" | "target">) => {
+  const add = useCallback((p: Pick<PlanItem, "title" | "skill" | "target"> & Partial<Pick<PlanItem, "priority" | "due" | "notes">>) => {
     setItems((prev) => {
       const next: PlanItem[] = [
         { id: crypto.randomUUID(), done: false, pinned: false, created_at: Date.now(), ...p },

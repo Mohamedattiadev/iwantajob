@@ -543,7 +543,7 @@ export default function InterviewPage() {
   };
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-[240px_1fr] gap-4 h-[calc(100vh-5rem)] max-w-7xl mx-auto px-4">
+    <div className="grid grid-cols-1 md:grid-cols-[240px_1fr] gap-4 flex-1 min-h-0 w-full">
       {/* Sessions sidebar */}
       <aside className="border-r border-border/60 pr-4 flex flex-col overflow-hidden">
         <Button onClick={() => { clear(); }} className="w-full mb-3 justify-start gap-2" disabled={state !== "idle"}>

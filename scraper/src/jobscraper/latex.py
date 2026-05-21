@@ -285,9 +285,8 @@ def render_tex(profile: dict[str, Any] | None = None, min_level: int = 3, templa
 
     # Pre-compute section blocks for left/right columns
     def _summary_block() -> list[str]:
-        if not pers.get("summary"):
-            return []
-        return [r"\section*{Summary}", e(pers["summary"]), ""]
+        # Summary omitted — keeps CV to one page. Skills + Experience carry the signal.
+        return []
 
     def _entries_block(title: str, items: list) -> list[str]:
         if not items:

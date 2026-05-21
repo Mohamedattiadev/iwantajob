@@ -219,10 +219,8 @@ def render_markdown(profile: dict[str, Any] | None = None, min_level: int = 3) -
         lines.append(" · ".join(contact))
     lines.append("")
 
-    if pers.get("summary"):
-        lines.append("## Summary")
-        lines.append(pers["summary"])
-        lines.append("")
+    # Summary intentionally omitted — saves vertical space, helps fit one page.
+    # Recruiters skim skills+experience; summary rarely earns its real estate.
 
     # Skills (ATS friendly: comma-separated, grouped)
     skills_map: dict[str, int] = p.get("skills") or {}

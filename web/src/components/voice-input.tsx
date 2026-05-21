@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Mic, MicOff, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 type RecognitionResultEvent = { results: ArrayLike<ArrayLike<{ transcript: string }>> };
@@ -46,12 +47,35 @@ export function VoiceInputButton({ onTranscript, className, size = "sm", lang = 
     r.onresult = (e) => {
       const first = e.results[0]?.[0]?.transcript;
       if (typeof first === "string" && first.trim()) onTranscript(first.trim());
+      else toast.info("No speech detected — try again.");
     };
-    r.onerror = () => { setListening(false); setTransitioning(false); };
+    r.onerror = (e) => {
+      setListening(false);
+      setTransitioning(false);
+      const code = e?.error || "unknown";
+      if (code === "not-allowed" || code === "service-not-allowed") {
+        toast.error("Microphone blocked. Allow mic access in browser settings.");
+      } else if (code === "network") {
+        const brave = (navigator as unknown as { brave?: { isBrave?: () => Promise<boolean> } }).brave;
+        if (brave?.isBrave) {
+          toast.error("Brave blocks Google's speech API. Disable Shields for this site, or use Chrome/Edge.");
+        } else {
+          toast.error("Speech recognition needs internet. Check connection.");
+        }
+      } else if (code === "no-speech") {
+        toast.info("Didn't hear anything.");
+      } else if (code !== "aborted") {
+        toast.error(`Voice error: ${code}`);
+      }
+    };
     r.onend = () => { setListening(false); setTransitioning(false); };
     recognitionRef.current = r;
     setTransitioning(true);
-    try { r.start(); setListening(true); } catch { setTransitioning(false); }
+    try { r.start(); setListening(true); }
+    catch (err) {
+      setTransitioning(false);
+      toast.error(err instanceof Error ? err.message : "Failed to start mic");
+    }
   }
 
   function stop() {

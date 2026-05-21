@@ -7,6 +7,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   ArrowLeft,
+  Download,
   ExternalLink,
   Eye,
   Pencil,
@@ -25,7 +26,7 @@ import {
   Trash2,
   ListChecks,
   Briefcase,
-  X as XIcon,
+  X,
 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
@@ -44,6 +45,7 @@ import { API, fetcher, type LearnResponse, type JobsResponse } from "@/lib/api";
 import { useProficiency } from "@/lib/proficiency";
 import { ProficiencyControl, ProficiencyLabel } from "@/components/proficiency";
 import { resourcesFor, type Resource } from "@/lib/resources";
+import { useUserResources } from "@/lib/user-resources";
 
 type NoteResp = { skill: string; category: string; content: string };
 
@@ -68,10 +70,18 @@ export default function SkillPage({
 
   const [draft, setDraft] = useState<string>("");
   const [mode, setMode] = useState<"preview" | "edit">("preview");
-  const [tab, setTab] = useState<"note" | "sketch" | "voice">("note");
+  type Tab = "note" | "sketch" | "voice" | "milestones" | "resources" | "jobs";
+  const [tab, setTab] = useState<Tab>(() => {
+    if (typeof window === "undefined") return "note";
+    const v = localStorage.getItem(`learn:tab:${skill}`) as Tab | null;
+    return v && ["note", "sketch", "voice", "milestones", "resources", "jobs"].includes(v) ? v : "note";
+  });
+  useEffect(() => {
+    try { localStorage.setItem(`learn:tab:${skill}`, tab); } catch {}
+  }, [tab, skill]);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [panel, setPanel] = useState<null | "milestones" | "resources" | "jobs">(null);
+  const userRes = useUserResources(skill);
 
   useEffect(() => {
     if (note?.content !== undefined) {
@@ -105,6 +115,19 @@ export default function SkillPage({
     }
   };
 
+  const download = () => {
+    const blob = new Blob([draft || ""], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const safe = skill.replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "");
+    a.href = url;
+    a.download = `${safe || "note"}.md`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
   const reset = async () => {
     if (!confirm(`Reset ${skill} note to starter template? Your edits will be lost.`)) return;
     const r = await fetch(`${API}${noteUrl}/reset`, { method: "POST" });
@@ -128,7 +151,7 @@ export default function SkillPage({
   }, [mode, draft]);
 
   return (
-    <div className="space-y-6 max-w-5xl mx-auto">
+    <div className="space-y-6">
       <Link
         href="/learn"
         className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
@@ -155,18 +178,34 @@ export default function SkillPage({
             <button
               type="button"
               onClick={() => {
-                if (onPlan) { toast.info(`${skill} is already in your plan.`); return; }
-                plans.add({ title: `Master ${skill}`, skill });
-                toast.success(`Added "${skill}" to your plan`);
+                if (onPlan) {
+                  const target = plans.items.find((p) => !p.done && p.skill?.toLowerCase() === skill.toLowerCase());
+                  if (target) {
+                    plans.remove(target.id);
+                    toast.info(`Removed "${skill}" from your plan`);
+                  }
+                } else {
+                  plans.add({ title: `Master ${skill}`, skill });
+                  toast.success(`Added "${skill}" to your plan`);
+                }
               }}
-              disabled={onPlan}
-              className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium transition-all ${
+              title={onPlan ? "Click to remove from plan" : "Add to plan"}
+              className={`group inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium transition-all ${
                 onPlan
-                  ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 ring-1 ring-emerald-500/30"
+                  ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 ring-1 ring-emerald-500/30 hover:bg-rose-500/15 hover:text-rose-600 dark:hover:text-rose-300 hover:ring-rose-500/30"
                   : "bg-primary text-primary-foreground hover:opacity-90"
               }`}
             >
-              {onPlan ? (<><Check className="h-3 w-3" /> On plan</>) : (<><Plus className="h-3 w-3" /> Add to plan</>)}
+              {onPlan ? (
+                <>
+                  <Check className="h-3 w-3 group-hover:hidden" />
+                  <X className="h-3 w-3 hidden group-hover:inline" />
+                  <span className="group-hover:hidden">On plan</span>
+                  <span className="hidden group-hover:inline">Remove</span>
+                </>
+              ) : (
+                <><Plus className="h-3 w-3" /> Add to plan</>
+              )}
             </button>
           </div>
         </div>
@@ -181,29 +220,53 @@ export default function SkillPage({
         </div>
       </div>
 
-      {/* Tabs — pill style */}
-      <div className="inline-flex items-center gap-1 p-1 rounded-lg bg-muted/60 border">
-        {([
-          { id: "note",   label: "Notes",  icon: <FileText className="h-3.5 w-3.5" /> },
-          { id: "sketch", label: "Sketch", icon: <PenTool className="h-3.5 w-3.5" /> },
-          { id: "voice",  label: "Voice",  icon: <Mic className="h-3.5 w-3.5" /> },
-        ] as const).map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={`px-3 h-8 text-xs rounded-md inline-flex items-center gap-1.5 transition-colors ${
-              tab === t.id ? "bg-background shadow-sm text-foreground font-medium" : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            {t.icon}
-            {t.label}
-          </button>
-        ))}
+      {/* Unified tab strip — workspace tabs on left, side-panel tabs on right */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-1">
+        <div className="inline-flex items-center gap-1 p-1 rounded-lg bg-muted/60 border">
+          {([
+            { id: "note",   label: "Notes",  icon: <FileText className="h-3.5 w-3.5" /> },
+            { id: "sketch", label: "Sketch", icon: <PenTool className="h-3.5 w-3.5" /> },
+            { id: "voice",  label: "Voice",  icon: <Mic className="h-3.5 w-3.5" /> },
+          ] as const).map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`px-3 h-8 text-xs rounded-md inline-flex items-center gap-1.5 transition-colors ${
+                tab === t.id ? "bg-background shadow-sm text-foreground font-medium" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {t.icon}
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div className="inline-flex items-center gap-1 p-1 rounded-lg bg-muted/60 border">
+          {([
+            { id: "milestones", label: "Milestones", icon: <ListChecks className="h-3.5 w-3.5" />, badge: undefined as number | undefined },
+            { id: "resources",  label: "Resources",  icon: <BookOpen   className="h-3.5 w-3.5" />, badge: resources.length + userRes.items.length },
+            { id: "jobs",       label: "Jobs",       icon: <Briefcase  className="h-3.5 w-3.5" />, badge: jobsQ.data?.items.length ?? 0 },
+          ] as const).map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`px-3 h-8 text-xs rounded-md inline-flex items-center gap-1.5 transition-colors ${
+                tab === t.id ? "bg-background shadow-sm text-foreground font-medium" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {t.icon}
+              {t.label}
+              {t.badge !== undefined && t.badge > 0 && (
+                <span className={`ml-0.5 px-1.5 rounded-full text-[9px] tabular-nums ${tab === t.id ? "bg-primary/15 text-primary" : "bg-foreground/10 text-muted-foreground"}`}>
+                  {t.badge}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Main content full width — icon sidebar floats right; panel slides in on click */}
-      <div className="relative">
-        <div className="space-y-5 pr-12">
+      {/* Main content */}
+      <div className="space-y-5">
 
       {tab === "note" && (
         <>
@@ -237,6 +300,9 @@ export default function SkillPage({
               />
               {dirty && <span className="text-xs text-amber-500">unsaved</span>}
               {!dirty && note && <span className="text-xs text-muted-foreground inline-flex items-center gap-1"><CheckCircle2 className="h-3 w-3 text-emerald-500" />saved</span>}
+              <Button variant="outline" size="sm" onClick={download} title="Download as .md" disabled={!draft}>
+                <Download className="h-3.5 w-3.5 mr-1.5" />Download
+              </Button>
               <Button variant="outline" size="sm" onClick={reset}>
                 <RotateCcw className="h-3.5 w-3.5 mr-1.5" />Reset
               </Button>
@@ -264,7 +330,7 @@ export default function SkillPage({
               </p>
             </div>
           ) : (
-            <article className="prose prose-invert max-w-none prose-headings:tracking-tight prose-h1:text-3xl prose-h2:text-xl prose-h2:mt-8 prose-h2:mb-3 prose-h3:text-base prose-pre:bg-muted prose-pre:border prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-sm prose-li:my-1 prose-a:text-primary">
+            <article className="prose dark:prose-invert max-w-none prose-headings:tracking-tight prose-h1:text-3xl prose-h2:text-xl prose-h2:mt-8 prose-h2:mb-3 prose-h3:text-base prose-pre:bg-muted prose-pre:border prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-sm prose-li:my-1 prose-a:text-primary">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft}</ReactMarkdown>
             </article>
           )}
@@ -277,88 +343,132 @@ export default function SkillPage({
       </div>
       {tab === "voice" && <VoiceRecorder skill={skill} />}
 
-        </div>
+      {tab === "milestones" && (
+        <Card><CardContent className="p-4">
+          <SkillMilestonesPanel skill={skill} />
+        </CardContent></Card>
+      )}
 
-        {/* Right icon column — always visible, like CV sidebar */}
-        <nav className="absolute right-0 top-0 w-10 flex flex-col items-center gap-1 py-1 sticky-supports:sticky">
-          {([
-            { id: "milestones", icon: <ListChecks className="h-4 w-4" />, label: "Milestones" },
-            { id: "resources",  icon: <BookOpen   className="h-4 w-4" />, label: `Resources (${resources.length})` },
-            { id: "jobs",       icon: <Briefcase  className="h-4 w-4" />, label: `Jobs (${jobsQ.data?.items.length ?? 0})` },
-          ] as const).map((it) => (
-            <button
-              key={it.id}
-              onClick={() => setPanel(panel === it.id ? null : it.id)}
-              title={it.label}
-              className={`h-9 w-9 grid place-items-center rounded-lg transition-colors ${
-                panel === it.id ? "bg-primary/15 text-primary ring-1 ring-primary/30" : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
-              }`}
-            >
-              {it.icon}
-            </button>
-          ))}
-        </nav>
+      {tab === "resources" && (
+        <ResourcesPane
+          skill={skill}
+          curated={resources}
+          user={userRes.items}
+          onAdd={userRes.add}
+          onRemove={userRes.remove}
+        />
+      )}
 
-        {/* Slide-in panel */}
-        {panel && (
-          <>
-            <div className="fixed inset-0 z-30 lg:hidden" onClick={() => setPanel(null)} />
-            <aside className="fixed lg:absolute right-12 lg:right-12 top-[5rem] lg:top-0 z-40 w-[320px] max-h-[calc(100vh-6rem)] lg:max-h-[80vh] overflow-y-auto rounded-xl border bg-card shadow-2xl p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="text-xs font-mono uppercase tracking-wider text-muted-foreground">
-                  {panel === "milestones" ? "Milestones"
-                   : panel === "resources" ? `Resources (${resources.length})`
-                   : `Jobs wanting ${skill}`}
-                </h3>
-                <button onClick={() => setPanel(null)} className="text-muted-foreground hover:text-foreground">
-                  <XIcon className="h-3.5 w-3.5" />
-                </button>
-              </div>
-
-              {panel === "milestones" && <SkillMilestonesPanel skill={skill} />}
-
-              {panel === "resources" && (
-                resources.length === 0 ? (
-                  <p className="text-xs text-muted-foreground italic">No curated resources for this skill yet.</p>
-                ) : (
-                  <ul className="space-y-1.5">
-                    {resources.map((r) => <ResourceCard key={r.url} r={r} />)}
-                  </ul>
-                )
-              )}
-
-              {panel === "jobs" && (
-                jobsQ.isLoading ? (
-                  <div className="space-y-1.5">
-                    {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-14 rounded-lg" />)}
+      {tab === "jobs" && (
+        jobsQ.isLoading ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-20 rounded-lg" />)}
+          </div>
+        ) : (jobsQ.data?.items.length ?? 0) === 0 ? (
+          <p className="text-sm text-muted-foreground italic py-8 text-center">No matching jobs yet. Try scraping.</p>
+        ) : (
+          <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {(jobsQ.data?.items ?? []).map((j) => (
+              <li key={j.id}>
+                <a href={j.source_url} target="_blank" rel="noopener noreferrer"
+                   className="block px-4 py-3 rounded-lg border bg-card hover:bg-accent/40 transition-colors h-full">
+                  <div className="flex items-start gap-3">
+                    <div className={`text-base font-semibold tabular-nums shrink-0 ${
+                      j.score >= 80 ? "text-emerald-500" : j.score >= 60 ? "text-amber-500" : "text-muted-foreground"
+                    }`}>{j.score}</div>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium line-clamp-1 text-sm">{j.title}</div>
+                      <div className="text-xs text-muted-foreground mt-0.5 truncate">
+                        {j.company ?? "?"} · {j.source}
+                      </div>
+                    </div>
+                    <ExternalLink className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
                   </div>
-                ) : (jobsQ.data?.items.length ?? 0) === 0 ? (
-                  <p className="text-xs text-muted-foreground italic">No matching jobs yet.</p>
-                ) : (
-                  <ul className="space-y-1.5">
-                    {(jobsQ.data?.items ?? []).slice(0, 8).map((j) => (
-                      <li key={j.id}>
-                        <a href={j.source_url} target="_blank" rel="noopener noreferrer"
-                           className="block px-3 py-2 rounded-lg border bg-card hover:bg-accent/40 transition-colors">
-                          <div className="flex items-start gap-2">
-                            <div className={`text-xs font-semibold tabular-nums shrink-0 mt-0.5 ${
-                              j.score >= 80 ? "text-emerald-500" : j.score >= 60 ? "text-amber-500" : "text-muted-foreground"
-                            }`}>{j.score}</div>
-                            <div className="min-w-0">
-                              <div className="font-medium line-clamp-1 text-xs">{j.title}</div>
-                              <div className="text-[10px] text-muted-foreground mt-0.5 truncate">
-                                {j.company ?? "?"} · {j.source}
-                              </div>
-                            </div>
-                          </div>
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                )
-              )}
-            </aside>
-          </>
+                </a>
+              </li>
+            ))}
+          </ul>
+        )
+      )}
+
+      </div>
+    </div>
+  );
+}
+
+function ResourcesPane({
+  skill, curated, user, onAdd, onRemove,
+}: {
+  skill: string;
+  curated: Resource[];
+  user: Resource[];
+  onAdd: (r: Resource) => void;
+  onRemove: (url: string) => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [url, setUrl] = useState("");
+  const [kind, setKind] = useState<Resource["kind"]>("docs");
+
+  const submit = () => {
+    if (!title.trim() || !url.trim()) {
+      toast.error("Title + URL required");
+      return;
+    }
+    try { new URL(url); } catch { toast.error("Invalid URL"); return; }
+    if (user.some((r) => r.url === url) || curated.some((r) => r.url === url)) {
+      toast.warning("Already in list");
+      return;
+    }
+    onAdd({ title: title.trim(), url: url.trim(), kind });
+    setTitle(""); setUrl(""); setKind("docs");
+    toast.success("Resource added");
+  };
+
+  const KINDS: Resource["kind"][] = ["docs", "course", "video", "book", "project"];
+
+  return (
+    <div className="space-y-4">
+      {/* Add form */}
+      <Card><CardContent className="p-3 sm:p-4 space-y-2">
+        <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground">
+          Add resource for {skill}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto_auto] gap-2">
+          <Input placeholder="Title (e.g. 'Beta CSS series')" value={title} onChange={(e) => setTitle(e.target.value)} />
+          <Input placeholder="https://…" value={url} onChange={(e) => setUrl(e.target.value)}
+                 onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
+          <select
+            value={kind}
+            onChange={(e) => setKind(e.target.value as Resource["kind"])}
+            className="h-9 px-2 rounded-md border bg-background text-sm"
+          >
+            {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
+          </select>
+          <Button onClick={submit} disabled={!title.trim() || !url.trim()}>
+            <Plus className="h-4 w-4 mr-1" />Add
+          </Button>
+        </div>
+      </CardContent></Card>
+
+      {/* Your additions */}
+      {user.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground">Your additions</div>
+          <ul className="space-y-1.5">
+            {user.map((r) => <ResourceCard key={r.url} r={r} onRemove={() => onRemove(r.url)} />)}
+          </ul>
+        </div>
+      )}
+
+      {/* Curated */}
+      <div className="space-y-1.5">
+        <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground">Curated</div>
+        {curated.length === 0 ? (
+          <p className="text-xs text-muted-foreground italic">No curated resources for {skill} yet — add your own above.</p>
+        ) : (
+          <ul className="space-y-1.5">
+            {curated.map((r) => <ResourceCard key={r.url} r={r} />)}
+          </ul>
         )}
       </div>
     </div>
@@ -454,24 +564,30 @@ function SkillMilestonesPanel({ skill }: { skill: string }) {
   );
 }
 
-function ResourceCard({ r }: { r: Resource }) {
+function ResourceCard({ r, onRemove }: { r: Resource; onRemove?: () => void }) {
   const Icon = r.kind === "video" ? Video
     : r.kind === "course" ? GraduationCap
     : r.kind === "project" ? Hammer
     : BookOpen;
   return (
-    <li>
-      <a
-        href={r.url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="flex items-center gap-3 px-3 py-2.5 rounded-lg border bg-card hover:bg-accent/40 transition-colors text-sm"
-      >
+    <li className="group">
+      <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg border bg-card hover:bg-accent/40 transition-colors text-sm">
         <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
-        <span className="flex-1 truncate">{r.title}</span>
+        <a href={r.url} target="_blank" rel="noopener noreferrer" className="flex-1 truncate hover:underline">
+          {r.title}
+        </a>
         <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{r.kind}</span>
         <ExternalLink className="h-3 w-3 text-muted-foreground" />
-      </a>
+        {onRemove && (
+          <button
+            onClick={onRemove}
+            className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-rose-500 ml-1"
+            title="Remove"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
     </li>
   );
 }

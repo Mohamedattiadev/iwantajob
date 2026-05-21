@@ -4,7 +4,7 @@ import { Suspense, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowRight, Filter, Search, X } from "lucide-react";
+import { ArrowRight, Filter, X } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ import { ScrapeButton } from "@/components/scrape-button";
 import { PageHeader } from "@/components/page-header";
 import { PageTabs, JOBS_TABS } from "@/components/page-tabs";
 import { Pagination } from "@/components/pagination";
+import { AiSearchInput } from "@/components/ai-search-input";
 import { fetcher, API, type JobsResponse } from "@/lib/api";
 import { Send } from "lucide-react";
 import { useApplications } from "@/lib/applications";
@@ -115,36 +116,36 @@ function JobsPageInner() {
 
       <PageTabs tabs={JOBS_TABS} />
 
-      {/* Search bar */}
+      {/* Search bar — full-width AI input, filters tucked beside */}
       <div className="space-y-3">
-        <div className="relative">
-          <Search className="absolute left-3.5 top-3.5 h-4 w-4 text-muted-foreground" />
-          <Input
+        <div className="flex flex-col sm:flex-row gap-2">
+          <AiSearchInput
             value={q}
-            onChange={(e) => setQ_(e.target.value)}
-            placeholder="Search title, company, description..."
-            className="pl-10 h-12 text-base"
+            onChange={setQ_}
+            placeholder="Search title, company, description… (✨ AI sharpens keywords)"
+            context="jobs"
+            className="flex-1"
           />
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
           <Button
             variant="outline"
-            size="sm"
             onClick={() => setShowFilters((v) => !v)}
+            className="h-12 sm:w-auto"
           >
-            <Filter className="h-3.5 w-3.5 mr-2" />
-            Filters
+            <Filter className="h-4 w-4 mr-2" />
+            Filters{activeFilters.length > 0 ? ` · ${activeFilters.length}` : ""}
           </Button>
-          {activeFilters.map((f) => (
-            <Badge key={f.label} variant="secondary" className="gap-1 cursor-pointer" onClick={f.clear}>
-              {f.label}
-              <X className="h-3 w-3" />
-            </Badge>
-          ))}
-          {activeFilters.length > 0 && (
-            <Button variant="ghost" size="sm" onClick={reset}>Reset all</Button>
-          )}
         </div>
+        {activeFilters.length > 0 && (
+          <div className="flex items-center gap-2 flex-wrap">
+            {activeFilters.map((f) => (
+              <Badge key={f.label} variant="secondary" className="gap-1 cursor-pointer" onClick={f.clear}>
+                {f.label}
+                <X className="h-3 w-3" />
+              </Badge>
+            ))}
+            <Button variant="ghost" size="sm" onClick={reset}>Reset all</Button>
+          </div>
+        )}
 
         <Collapsible open={showFilters} onOpenChange={setShowFilters}>
           <CollapsibleContent>

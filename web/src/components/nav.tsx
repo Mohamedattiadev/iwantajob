@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { PageWidthToggle } from "@/components/page-width";
 
 // Top-level surfaces only. Apply lives inside Jobs, Interview lives inside Assistant.
 const links = [
@@ -94,8 +95,9 @@ export function Nav() {
           })}
         </ul>
 
-        {/* Right: command palette + theme */}
+        {/* Right: width toggle + command palette + theme */}
         <div className="flex items-center justify-end gap-1.5">
+          <PageWidthToggle />
           <button
             onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }))}
             className="hidden md:inline-flex items-center gap-2 h-7 px-2.5 rounded-md border border-border/60 bg-foreground/[0.03] text-[11px] text-muted-foreground hover:text-foreground hover:bg-foreground/[0.06] transition-colors"

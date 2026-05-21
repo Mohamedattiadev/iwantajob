@@ -583,3 +583,560 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
 }
+/* Skill page width modes — break out of layout's max-w-6xl when wider needed. */
+.skill-bleed {
+  width: 100vw;
+  margin-left: calc(50% - 50vw);
+  padding-left: 1.5rem;
+  padding-right: 1.5rem;
+}
+.skill-bleed--wide {
+  max-width: 1400px;
+  margin-left: auto;
+  margin-right: auto;
+  width: auto;
+}
+@media (min-width: 1500px) {
+  .skill-bleed--wide {
+    width: 1400px;
+    margin-left: calc(50% - 700px);
+  }
+}
+.skill-bleed--full {
+  max-width: none;
+}
+
+/* Global app-main width modes driven by [data-width] on <html>. */
+.app-main {
+  padding: 1rem 1.25rem 2rem;
+  max-width: 72rem; /* default ~ max-w-6xl */
+  transition: max-width 220ms cubic-bezier(0.4, 0, 0.2, 1),
+              padding 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+@media (min-width: 640px) {
+  .app-main { padding: 1.5rem 2rem 3rem; }
+}
+:root[data-width="wide"] .app-main {
+  max-width: 86rem; /* ~ 1376px */
+}
+:root[data-width="full"] .app-main {
+  max-width: none;
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+@media (min-width: 640px) {
+  :root[data-width="full"] .app-main {
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+  }
+}
+
+/* Pages that opt into edge-to-edge layouts (assistant, interview) bleed by class. */
+.app-main--bleed { padding: 0 !important; max-width: none !important; }
+
+/* =========================================================
+   Excalidraw integration — match native island/button look
+   ========================================================= */
+
+/* Hide the floating "?" help button — we expose the menu via MainMenu. */
+.excalidraw .help-icon { display: none !important; }
+
+/* Top-right injected toolbar (renderTopRightUI) inherits Excalidraw colors. */
+.excal-tools { font-family: inherit; }
+.excal-tools .excal-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; padding: 0 10px;
+  border-radius: 8px;
+  font-size: 12px; font-weight: 500;
+  color: var(--color-on-surface, var(--text-primary-color, #1b1b1f));
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color 100ms ease, border-color 100ms ease;
+}
+.excal-tools .excal-btn:hover { background: var(--button-hover-bg, rgba(0,0,0,0.05)); }
+.excal-tools .excal-btn-active { background: var(--button-hover-bg, rgba(0,0,0,0.08)); }
+.excal-tools .excal-btn-primary {
+  background: linear-gradient(135deg, #6965db, #5b57d4);
+  color: #fff;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.05), 0 2px 6px rgba(105,101,219,0.35);
+  font-weight: 600;
+}
+.excal-tools .excal-btn-primary:hover { filter: brightness(1.06); }
+
+.excal-popover {
+  background: var(--island-bg-color, #232329);
+  color: var(--text-primary-color, #e3e3e8);
+  border: 1px solid var(--default-border-color, rgba(255,255,255,0.08));
+  border-radius: 12px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.25), 0 0 0 1px rgba(0,0,0,0.04);
+  z-index: 10;
+  padding: 4px;
+  min-width: 200px;
+}
+:root[data-theme="light"] .excal-popover,
+.excalidraw.theme--light ~ * .excal-popover {
+  background: #ffffff;
+  color: #1b1b1f;
+  border-color: rgba(0,0,0,0.08);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.10);
+}
+.excal-popover-item {
+  width: 100%;
+  text-align: left;
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px;
+  font-size: 13px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: inherit;
+  border-radius: 8px;
+  line-height: 1.2;
+}
+.excal-popover-item:hover { background: var(--button-hover-bg, rgba(127,127,127,0.12)); }
+.excal-popover-item-icon { display: grid; place-items: center; width: 18px; opacity: 0.85; flex-shrink: 0; }
+.excal-popover-item-label { flex: 1; }
+.excal-popover-item-hint {
+  font-size: 10px;
+  opacity: 0.5;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Minimap island — copies Excalidraw's `.Island` look. */
+.excal-island {
+  background: var(--island-bg-color, #232329);
+  color: var(--text-primary-color, #e3e3e8);
+  border: 1px solid var(--default-border-color, rgba(255,255,255,0.08));
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.04), 0 6px 20px rgba(0,0,0,0.25);
+  overflow: hidden;
+}
+:root[data-theme="light"] .excal-island,
+.excalidraw.theme--light .excal-island {
+  background: #ffffff;
+  color: #1b1b1f;
+  border-color: rgba(0,0,0,0.08);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.04), 0 6px 20px rgba(0,0,0,0.08);
+}
+.excal-island-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--default-border-color, rgba(255,255,255,0.06));
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  opacity: 0.7;
+}
+.excal-island-title {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+}
+.excal-island-btn {
+  width: 20px; height: 20px;
+  display: grid; place-items: center;
+  border-radius: 4px; border: 0;
+  background: transparent;
+  color: inherit; opacity: 0.7; cursor: pointer;
+}
+.excal-island-btn:hover { background: rgba(127,127,127,0.15); opacity: 1; }
+.excal-minimap-svg {
+  display: block;
+  background: rgba(127,127,127,0.04);
+  cursor: crosshair;
+}
+.excal-minimap-drag { cursor: grab; touch-action: none; }
+.excal-minimap-drag:active { cursor: grabbing; }
+
+/* Present-mode bottom bar — mirrors Excalidraw's `.Island` look (surface bg,
+   soft border, subtle shadow), button styling matches its ToolIcon hover. */
+.excal-present-bar {
+  background: var(--island-bg-color, #232329);
+  color: var(--text-primary-color, #e3e3e8);
+  border: 1px solid var(--default-border-color, rgba(255,255,255,0.08));
+  border-radius: var(--border-radius-lg, 10px);
+  padding: 4px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.04), 0 6px 20px rgba(0,0,0,0.25);
+}
+:root[data-theme="light"] .excal-present-bar,
+.excalidraw.theme--light ~ * .excal-present-bar {
+  background: #ffffff;
+  color: #1b1b1f;
+  border-color: rgba(0,0,0,0.08);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.04), 0 6px 20px rgba(0,0,0,0.10);
+}
+.excal-present-btn {
+  height: 28px;
+  width: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--border-radius-md, 8px);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+}
+.excal-present-btn:hover { background: var(--button-hover-bg, rgba(127,127,127,0.12)); }
+.excal-present-btn.is-active {
+  background: var(--color-primary-light, rgba(105,101,219,0.15));
+  color: var(--color-primary, #6965db);
+}
+.excal-present-btn--danger { color: var(--color-danger, #db5555); }
+.excal-present-btn--danger:hover { background: rgba(219,85,85,0.12); }
+.excal-present-counter {
+  padding: 0 10px;
+  font-size: 11px;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+.excal-present-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--default-border-color, rgba(127,127,127,0.18));
+}
+/* On narrow viewports the bottom-right is crowded by Excalidraw's footer
+   (zoom, help). Park the minimap bottom-left and shrink it. */
+@media (max-width: 640px) {
+  .excal-minimap .excal-minimap-svg { width: 160px !important; height: 110px !important; }
+  .excal-minimap .excal-island-head { font-size: 9px; padding: 3px 6px; }
+}
+
+/* AI sketch side panel matches Excalidraw island styling. */
+.excal-ai-panel {
+  background: var(--island-bg-color, #232329);
+  color: var(--text-primary-color, #e3e3e8);
+  border-left: 1px solid var(--default-border-color, rgba(255,255,255,0.08));
+  box-shadow: -8px 0 24px rgba(0,0,0,0.25);
+}
+:root[data-theme="light"] .excal-ai-panel,
+.excalidraw.theme--light + .excal-ai-panel,
+.excal-ai-panel.theme--light {
+  background: #ffffff;
+  color: #1b1b1f;
+  border-left-color: rgba(0,0,0,0.08);
+  box-shadow: -8px 0 24px rgba(0,0,0,0.10);
+}
+
+/* Sketch fullscreen: hide floating widgets that would land on the canvas. */
+html.sketch-fullscreen .chat-widget-launcher,
+html.sketch-fullscreen .chat-widget-panel,
+html.sketch-fullscreen .tasks-launcher,
+html.sketch-fullscreen .ambient-bg { display: none !important; }
+
+/* Tighten Excalidraw's top-right slot so our custom tools sit flush with the
+   shape island instead of floating in a separate cluster. */
+.excalidraw .App-toolbar .Stack__horizontal { gap: 4px; }
+
+/* Inline tools injected into the shape-island via portal. Render as a sibling
+   cluster after the shape buttons so the bar feels seamless. Don't override
+   `.App-toolbar` width — Excalidraw's dropdown positioning relies on it. */
+.excalidraw .App-toolbar-content,
+.excalidraw .App-toolbar .Stack_horizontal {
+  flex-wrap: nowrap !important;
+  gap: 4px;
+}
+.excalidraw .App-toolbar-content .excal-tools-inline,
+.excalidraw .App-toolbar .Stack_horizontal .excal-tools-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 8px;
+  margin-left: 6px;
+  border-left: 1px solid var(--default-border-color, rgba(127,127,127,0.18));
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+/* When the viewport is narrow, collapse labels to icons only so the bar still
+   fits on one row instead of wrapping under the shape tools. */
+@media (max-width: 900px) {
+  .excalidraw .excal-tools-inline .excal-btn span,
+  .excalidraw .excal-tools-inline .excal-btn svg.lucide-chevron-down {
+    display: none;
+  }
+  .excalidraw .excal-tools-inline .excal-btn {
+    padding: 0 6px;
+  }
+}
+.excalidraw .excal-tools-inline .excal-btn {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 11px;
+  border-radius: 6px;
+}
+.excalidraw .excal-tools-inline .excal-btn-primary {
+  height: 28px;
+}
+/* Dropdown popovers anchored from buttons inside the island. */
+.excalidraw .excal-tools-inline .excal-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+}
+
+/* Section header inside a popover (mirrors native Excalidraw group titles). */
+.excal-popover-section {
+  list-style: none;
+  padding: 8px 10px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.5;
+}
+.excal-popover-section:first-child { padding-top: 4px; }
+
+/* Popover heading shown above items, mimics native section headers. */
+.excal-popover-title {
+  padding: 6px 10px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.55;
+}
+
+/* Right-edge vertical rail (icon-only, mirrors Excalidraw's Lock column). */
+.excal-right-rail {
+  position: absolute;
+  top: 60px;
+  right: 12px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.excal-rail-btn {
+  width: 36px; height: 36px;
+  display: grid; place-items: center;
+  border-radius: 10px;
+  background: var(--island-bg-color, #232329);
+  color: var(--text-primary-color, #e3e3e8);
+  border: 1px solid var(--default-border-color, rgba(255,255,255,0.08));
+  box-shadow: 0 1px 0 rgba(0,0,0,0.05), 0 4px 12px rgba(0,0,0,0.15);
+  cursor: pointer;
+  transition: transform 100ms ease, background-color 100ms ease;
+}
+.excal-rail-btn:hover {
+  background: var(--button-hover-bg, rgba(255,255,255,0.06));
+  transform: translateY(-1px);
+}
+:root[data-theme="light"] .excal-rail-btn,
+.excalidraw.theme--light ~ .excal-right-rail .excal-rail-btn {
+  background: #ffffff;
+  color: #1b1b1f;
+  border-color: rgba(0,0,0,0.08);
+}
+
+/* Narrow viewport: keep everything on a single horizontal bar — just tighten
+   spacing so the shape tools + our tools all fit in the same row. Also clamp
+   dropdown popovers so they don't run off the right edge of the canvas. */
+@media (max-width: 900px) {
+  .excalidraw .App-toolbar { padding: 4px 6px !important; }
+  .excalidraw .App-toolbar .Stack_horizontal { gap: 2px; }
+  .excalidraw .excal-tools-inline {
+    margin-left: 4px;
+    padding-left: 6px;
+    gap: 2px;
+  }
+  .excalidraw .excal-tools-inline .excal-btn { padding: 0 6px; }
+  /* Dropdown anchors to its button. On small screens keep it visible by
+     pushing it back into the viewport. */
+  .excalidraw .excal-tools-inline .excal-popover {
+    right: auto;
+    left: auto;
+    transform: translateX(calc(-100% + 32px));
+    max-width: calc(100vw - 24px);
+  }
+}
+
+/* "More tools" popover renders via a portal — class on root, not nested under
+   `.excalidraw` — so flat selectors. Strip embed + mermaid + Generate header. */
+.App-toolbar__extra-tools-dropdown [data-testid="toolbar-magicframe"],
+.App-toolbar__extra-tools-dropdown [data-testid="toolbar-embeddable"],
+.App-toolbar__extra-tools-dropdown [aria-label*="Mermaid" i],
+.App-toolbar__extra-tools-dropdown .dropdown-menu-group:has([aria-label*="Mermaid" i]),
+.App-toolbar__extra-tools-dropdown .dropdown-menu-group-title,
+.App-toolbar__extra-tools-dropdown > .dropdown-menu-group:empty,
+.App-toolbar__extra-tools-dropdown > .dropdown-menu-group:nth-of-type(2) { display: none !important; }
+
+
+/* Present-frames launcher — matches Excalidraw's left-rail island button
+   (Lock/Hand). Square icon button, anchored top-left of canvas below the
+   MainMenu hamburger so its purpose (presenting frames) reads as a primary
+   editor action. Tiny count badge sits at top-right of the icon. */
+.excal-present-launcher {
+  position: absolute;
+  left: 12px;
+  top: 60px;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 36px; height: 36px;
+  border-radius: 10px;
+  background: var(--island-bg-color, #232329);
+  color: var(--icon-fill-color, var(--text-primary-color, #e3e3e8));
+  border: 1px solid var(--default-border-color, rgba(255,255,255,0.08));
+  box-shadow: 0 1px 0 rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.18);
+  cursor: pointer;
+  transition: background-color 100ms ease, transform 100ms ease;
+}
+.excal-present-launcher:hover {
+  background: var(--button-hover-bg, rgba(127,127,127,0.12));
+  transform: translateY(-1px);
+}
+.excal-present-launcher--active {
+  background: #6965db;
+  color: #fff;
+  border-color: #5b57d4;
+}
+.excal-present-launcher .excal-present-count {
+  position: absolute;
+  top: -4px; right: -4px;
+  min-width: 16px; height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #6965db;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  display: grid; place-items: center;
+  border: 2px solid var(--island-bg-color, #232329);
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  letter-spacing: 0;
+}
+.excal-present-launcher--active .excal-present-count {
+  background: #fff; color: #6965db; border-color: #5b57d4;
+}
+:root[data-theme="light"] .excal-present-launcher,
+.excalidraw.theme--light ~ .excal-present-launcher {
+  background: #fff;
+  color: #1b1b1f;
+  border-color: rgba(0,0,0,0.08);
+}
+
+/* Restyle the native "More tools" popover (Frame / Laser) to match our
+   Share/Export dropdowns — same island bg, radius, item spacing, hover. */
+.App-toolbar__extra-tools-dropdown {
+  background: #232329 !important;
+  color: var(--text-primary-color, #e3e3e8);
+  border: 1px solid rgba(255,255,255,0.08) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.45), 0 0 0 1px rgba(0,0,0,0.04) !important;
+  padding: 4px !important;
+  min-width: 220px;
+  backdrop-filter: none !important;
+}
+:root[data-theme="light"] .App-toolbar__extra-tools-dropdown,
+.excalidraw.theme--light ~ * .App-toolbar__extra-tools-dropdown {
+  background: #ffffff !important;
+  border-color: rgba(0,0,0,0.08) !important;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.10) !important;
+}
+.App-toolbar__extra-tools-dropdown .dropdown-menu-item,
+.App-toolbar__extra-tools-dropdown .dropdown-menu-item-base {
+  padding: 7px 10px !important;
+  border-radius: 8px !important;
+  font-size: 13px !important;
+  gap: 10px !important;
+  background: transparent !important;
+}
+.App-toolbar__extra-tools-dropdown .dropdown-menu-item:hover,
+.App-toolbar__extra-tools-dropdown .dropdown-menu-item--hovered,
+.App-toolbar__extra-tools-dropdown .dropdown-menu-item-base:hover {
+  background: var(--button-hover-bg, rgba(127,127,127,0.12)) !important;
+}
+.App-toolbar__extra-tools-dropdown .dropdown-menu-item__icon {
+  width: 18px;
+  opacity: 0.85;
+}
+.App-toolbar__extra-tools-dropdown .dropdown-menu-item__shortcut {
+  font-size: 10px;
+  opacity: 0.55;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-left: auto;
+}
+/* Mimic our AI dropdown: section header + per-item hint badge so Frame/Laser
+   feel like the templates popover. */
+.App-toolbar__extra-tools-dropdown::before {
+  content: "Tools";
+  display: block;
+  padding: 6px 10px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.55;
+}
+.App-toolbar__extra-tools-dropdown [data-testid="toolbar-frame"]::after,
+.App-toolbar__extra-tools-dropdown [data-testid="toolbar-laser"]::after {
+  margin-left: auto;
+  font-size: 10px;
+  opacity: 0.5;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.App-toolbar__extra-tools-dropdown [data-testid="toolbar-frame"]::after { content: "region"; }
+.App-toolbar__extra-tools-dropdown [data-testid="toolbar-laser"]::after { content: "pointer"; }
+
+/* Share sits inline in Excalidraw's outer sidebar-triggers cluster, so it
+   forms a single bar with the Library trigger (top-right on wide viewports,
+   right-rail vertical on narrow). */
+.excalidraw .layer-ui__wrapper__top-right .sidebar-triggers {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.excal-share-inline { display: inline-flex; align-items: center; }
+.excal-share-cluster {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.excal-share-cluster .excal-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 200px;
+  z-index: 20;
+}
+/* Library button: icon-only, drop the visible "Library" / "Bibliothek" / etc
+   text label that Excalidraw renders next to the icon on wide screens. */
+.excalidraw .layer-ui__wrapper__top-right .sidebar-triggers button > span:not([class*="icon"]):not([class*="Icon"]),
+.excalidraw .layer-ui__wrapper__top-right .sidebar-triggers .ToolIcon__label,
+.excalidraw .layer-ui__wrapper__top-right .sidebar-triggers .ToolIcon__keybinding {
+  display: none !important;
+}
+/* Narrow viewport: Excalidraw stacks the trigger cluster vertically along the
+   right rail. Match the stacked orientation so our share button slots in. */
+@media (max-width: 640px) {
+  .excalidraw .layer-ui__wrapper__top-right .sidebar-triggers {
+    flex-direction: column;
+    gap: 4px;
+  }
+  .excal-share-cluster .excal-popover { right: calc(100% + 6px); top: 0; }
+}
+.excal-share-btn {
+  width: 36px; height: 36px;
+  display: grid; place-items: center;
+  border-radius: 10px;
+  background: #6965db;
+  color: #fff;
+  border: 1px solid #5b57d4;
+  box-shadow: 0 2px 8px rgba(105,101,219,0.35), 0 1px 0 rgba(0,0,0,0.04);
+  cursor: pointer;
+  transition: transform 100ms ease, background-color 100ms ease;
+}
+.excal-share-btn:hover { background: #5b57d4; transform: translateY(-1px); }
+.excal-share-btn.excal-btn-active { background: #4f4bc4; }
+.excal-share-cluster .excal-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 200px;
+}

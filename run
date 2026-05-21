@@ -3,6 +3,7 @@
 #   ./run              # start backend + frontend in FOREGROUND, stream logs (Ctrl-C stops both)
 #   ./run up           # alias
 #   ./run up --bg      # start in background (old behavior)
+#   ./run lan          # like `up` but binds 0.0.0.0 so iPad/other devices on same Wi-Fi can use it
 #   ./run down         # stop both
 #   ./run restart      # down + up --bg
 #   ./run logs         # tail backgrounded logs
@@ -116,6 +117,84 @@ status() {
   done
 }
 
+_lan_ip() {
+  # First non-loopback IPv4 we can find.
+  if command -v ip >/dev/null 2>&1; then
+    ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1
+  elif command -v hostname >/dev/null 2>&1; then
+    hostname -I 2>/dev/null | awk '{print $1}'
+  fi
+}
+
+# LAN mode: bind 0.0.0.0 so the iPad / other devices on the same Wi-Fi can
+# hit the dev servers directly. Prints the URL + a QR if `qrencode` is on PATH.
+run_lan() {
+  stop_all >/dev/null 2>&1 || true
+  _check_venv
+  if [ ! -d "$ROOT/web/node_modules" ]; then
+    info "installing web deps (first run)…"
+    ( cd "$ROOT/web" && npm install --silent )
+  fi
+  local ip; ip=$(_lan_ip)
+  if [ -z "$ip" ]; then
+    err "could not detect LAN IP. Plug into Wi-Fi/Ethernet and retry."
+    exit 1
+  fi
+  info "starting backend + frontend on 0.0.0.0 (Ctrl-C to stop)"
+  : > "$BACK_LOG"; : > "$FRONT_LOG"
+
+  ( cd "$ROOT/scraper" && exec .venv/bin/jobscraper serve --host 0.0.0.0 --port 8000 ) \
+      > >(tee -a "$BACK_LOG"  | sed -u "s/^/$(printf '\033[35m[back] \033[0m')/") 2>&1 &
+  BACK_PID=$!
+  echo $BACK_PID > "$BACK_PIDFILE"
+
+  ( cd "$ROOT/web" && exec npm run dev ) \
+      > >(tee -a "$FRONT_LOG" | sed -u "s/^/$(printf '\033[36m[front]\033[0m')/") 2>&1 &
+  FRONT_PID=$!
+  echo $FRONT_PID > "$FRONT_PIDFILE"
+
+  cleanup() {
+    echo
+    info "stopping..."
+    kill -TERM "$BACK_PID"  2>/dev/null || true
+    kill -TERM "$FRONT_PID" 2>/dev/null || true
+    sleep 1
+    kill -KILL "$BACK_PID"  2>/dev/null || true
+    kill -KILL "$FRONT_PID" 2>/dev/null || true
+    pkill -f "jobscraper serve" 2>/dev/null || true
+    pkill -f "next dev"         2>/dev/null || true
+    rm -f "$BACK_PIDFILE" "$FRONT_PIDFILE"
+    ok "stopped"
+    exit 0
+  }
+  trap cleanup INT TERM
+
+  ( for i in $(seq 1 25); do
+      if curl -sf "http://127.0.0.1:8000/api/health" > /dev/null; then break; fi
+      sleep 1
+    done
+    for i in $(seq 1 60); do
+      if curl -sf "http://127.0.0.1:3000" > /dev/null; then break; fi
+      sleep 1
+    done
+    echo
+    color "32" "═══════════════════════════════════════════"; echo
+    color "32" "  LAN ready — open on iPad / other device:"; echo
+    color "36" "  http://$ip:3000"; echo
+    color "33" "  (same Wi-Fi as this laptop. Excalidraw supports Apple Pencil & touch.)"; echo
+    if command -v qrencode >/dev/null 2>&1; then
+      qrencode -t ANSIUTF8 "http://$ip:3000"
+    else
+      info "tip: install qrencode for a scannable QR (pacman -S qrencode)"
+    fi
+    color "33" "  if iPad can't connect: open ports 3000 + 8000 in your firewall."; echo
+    color "32" "═══════════════════════════════════════════"; echo
+  ) &
+
+  wait $BACK_PID $FRONT_PID
+  cleanup
+}
+
 # Foreground: run both, stream prefixed logs, Ctrl-C kills both cleanly.
 # Uses temp FIFOs so we can sed-prefix each stream and interleave to stdout.
 run_foreground() {
@@ -184,6 +263,7 @@ case "$cmd" in
       run_foreground
     fi
     ;;
+  lan)         run_lan ;;
   down|stop)   stop_all ;;
   restart)     stop_all; start_backend_bg; start_frontend_bg; status ;;
   status)      status ;;
@@ -191,5 +271,5 @@ case "$cmd" in
   logs:back)   tail -n 100 -f "$BACK_LOG" ;;
   logs:front)  tail -n 100 -f "$FRONT_LOG" ;;
   open)        xdg-open http://127.0.0.1:3000 >/dev/null 2>&1 || open http://127.0.0.1:3000 ;;
-  *)           echo "Usage: ./run [up [--bg]|down|restart|status|logs|logs:back|logs:front|open]"; exit 1 ;;
+  *)           echo "Usage: ./run [up [--bg]|lan|down|restart|status|logs|logs:back|logs:front|open]"; exit 1 ;;
 esac

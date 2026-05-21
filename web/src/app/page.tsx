@@ -7,7 +7,7 @@ import { ArrowRight, FileText, GraduationCap, Briefcase, Send, Sparkles, BadgeCh
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrapeButton } from "@/components/scrape-button";
-import { Aurora, GridBg, MagicCard, Gradient, AnimatedNumber, Bento } from "@/components/eye-candy";
+import { MagicCard, Gradient, AnimatedNumber, Bento } from "@/components/eye-candy";
 import { ShaderBackground } from "@/components/shader-background";
 import { PageHeader, SectionTitle } from "@/components/page-header";
 import { fetcher, type Stats, type JobsResponse, type Profile, type Application } from "@/lib/api";
@@ -42,10 +42,9 @@ export default function Home() {
 
   return (
     <div className="relative space-y-16">
-      <div className="pointer-events-none fixed inset-0 -z-10 opacity-70">
+      <div className="pointer-events-none fixed inset-0 -z-10 opacity-35 mix-blend-screen">
         <ShaderBackground />
       </div>
-      <GridBg className="opacity-40" />
 
       <PageHeader
         eyebrow="launchpad"

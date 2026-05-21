@@ -1,4 +1,13 @@
-export const API = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+// Backend host follows whatever host the browser is on so LAN access (iPad,
+// other laptop) hits the same machine running the API. Explicit env var
+// wins. SSR falls back to 127.0.0.1.
+function resolveApi(): string {
+  const env = process.env.NEXT_PUBLIC_API_URL;
+  if (env) return env;
+  if (typeof window === "undefined") return "http://127.0.0.1:8000";
+  return `${window.location.protocol}//${window.location.hostname}:8000`;
+}
+export const API = resolveApi();
 
 export const fetcher = async <T = unknown>(url: string): Promise<T> => {
   const r = await fetch(`${API}${url}`);

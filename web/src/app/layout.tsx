@@ -7,6 +7,9 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { ChatWidget } from "@/components/chat-widget";
 import { OnboardingGate } from "@/components/onboarding-gate";
 import { CommandPalette } from "@/components/command-palette";
+import { AmbientBackground } from "@/components/ambient-bg";
+import { PageWidthProvider } from "@/components/page-width";
+import { TodoDrawer } from "@/components/todo-drawer";
 
 const sansFont = Inter({
   variable: "--font-sans",
@@ -48,13 +51,17 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
-          <OnboardingGate>
-            <Nav />
-            <main className="flex-1 max-w-6xl w-full mx-auto px-6 sm:px-8 py-12 sm:py-16">{children}</main>
-            <ChatWidget />
-            <CommandPalette />
-          </OnboardingGate>
-          <Toaster richColors closeButton position="bottom-right" />
+          <PageWidthProvider>
+            <AmbientBackground />
+            <OnboardingGate>
+              <Nav />
+              <main className="app-main flex-1 w-full mx-auto flex flex-col min-h-0">{children}</main>
+              <ChatWidget />
+              <TodoDrawer />
+              <CommandPalette />
+            </OnboardingGate>
+            <Toaster richColors closeButton position="bottom-right" />
+          </PageWidthProvider>
         </ThemeProvider>
       </body>
     </html>

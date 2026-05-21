@@ -63,6 +63,36 @@ class RewriteIn(BaseModel):
     field: str
     raw: str = ""
     instruction: str = ""
+
+
+class SearchImproveIn(BaseModel):
+    query: str
+    context: str = "jobs"  # "jobs" | "learn" | "skills" | generic
+    hint: str = ""         # optional user-supplied intent ("ML internships in Berlin")
+
+
+class SketchGenIn(BaseModel):
+    prompt: str
+    style: str | None = None  # "flowchart" | "mindmap" | "tree" | "freeform"
+    skill: str | None = None
+
+
+class SketchNode(BaseModel):
+    id: str
+    type: str
+    label: str = ""
+
+
+class SketchHistoryItem(BaseModel):
+    role: str
+    text: str
+
+
+class SketchAskIn(BaseModel):
+    question: str
+    skill: str | None = None
+    elements: list[SketchNode] = []
+    history: list[SketchHistoryItem] = []
 from sqlalchemy import func, select
 
 from .collectors import COLLECTORS, upsert_jobs
@@ -584,6 +614,425 @@ def create_app() -> FastAPI:
     @app.post("/api/ai/rewrite")
     def api_ai_rewrite(body: RewriteIn):
         return chat_mod.rewrite(body.field, body.raw, body.instruction)
+
+    @app.post("/api/ai/sketch-generate")
+    @app.post("/api/sketch/generate")  # alias used by skill-sketch.tsx
+    def api_sketch_generate(body: SketchGenIn):
+        from . import llm as llm_mod
+        import json as _json
+        import re as _re
+        import uuid as _uuid
+
+        if not llm_mod.have_provider():
+            raise HTTPException(503, detail="No LLM provider configured (set GEMINI_API_KEY).")
+        style = (body.style or "freeform").lower()
+        style_hints = {
+            "flowchart":  "Sequential pipeline of 5–9 steps. Edges form a chain or DAG (top-down).",
+            "mindmap":    "One central concept + 4–8 first-level branches. Optionally 2–3 leaves per branch.",
+            "tree":       "Strict hierarchy. One root. Edges go parent→child. 2–4 children per parent.",
+            "sequence":   "Strict left-to-right sequence of events. Each node connects to the next.",
+            "comparison": "Two opposing groups (A vs B). Assign `group:'a'` or `group:'b'` to each node. No edges needed unless contrasting pairs.",
+            "matrix":     "Four-quadrant matrix. Use group tags `q1`/`q2`/`q3`/`q4` for top-left, top-right, bottom-left, bottom-right.",
+            "swimlane":   "Lanes grouped by actor/category. Assign each node a `group` tag = lane name. Edges show flow across lanes.",
+            "venn":       "Two or three overlapping concepts. Use `group:'a'`, `group:'b'`, `group:'ab'` (overlap), etc.",
+            "freeform":   "Whatever shape best fits the topic (sequence, grouping, comparison, hierarchy).",
+        }
+        hint = style_hints.get(style, style_hints["freeform"])
+        # The LLM only picks IDs, labels, edges, and a per-node group tag.
+        # All coordinates are computed server-side so the result is always
+        # clean and non-overlapping regardless of the model's spatial skill.
+        system = (
+            "You design clean whiteboard diagrams. Output a JSON object with `nodes` and `edges`. "
+            "Node: {id: int, label: string, group?: string}. Edge: {from: int, to: int}. "
+            "DO NOT include positions or sizes — layout is handled downstream. "
+            "Hard constraints: (1) labels ≤ 22 chars and unambiguous, (2) 4–12 nodes total, "
+            "(3) every node except roots has at least one incoming edge, "
+            "(4) `group` is a short tag (≤ 10 chars) shared by related nodes — used for coloring. "
+            "Return ONLY JSON — no prose, no markdown fences.\n\n"
+            f"Shape: {hint}"
+        )
+        topic = body.prompt.strip()
+        if body.skill:
+            topic = f"{topic} (context skill: {body.skill.strip()})"
+        try:
+            raw = llm_mod.generate(f"Topic: {topic}", system=system, max_tokens=900).strip()
+        except llm_mod.LLMError as e:
+            raise HTTPException(502, detail=str(e))
+        raw = _re.sub(r"^```(?:json)?\s*|\s*```$", "", raw).strip()
+        try:
+            spec = _json.loads(raw)
+        except _json.JSONDecodeError as e:
+            raise HTTPException(502, detail=f"AI returned non-JSON: {e}\n{raw[:200]}")
+
+        raw_nodes = spec.get("nodes") or []
+        raw_edges = spec.get("edges") or []
+
+        # Normalize nodes.
+        node_label: dict[int, str] = {}
+        node_group: dict[int, str] = {}
+        order: list[int] = []
+        for n in raw_nodes:
+            try:
+                nid = int(n.get("id"))
+                label = str(n.get("label", "")).strip()[:40]
+                if not label:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            if nid in node_label:
+                continue
+            node_label[nid] = label
+            node_group[nid] = str(n.get("group") or "")[:12]
+            order.append(nid)
+
+        # Normalize edges.
+        edges: list[tuple[int, int]] = []
+        for ed in raw_edges:
+            try:
+                a = int(ed.get("from"))
+                b = int(ed.get("to"))
+            except (TypeError, ValueError):
+                continue
+            if a in node_label and b in node_label and a != b:
+                edges.append((a, b))
+
+        if not order:
+            raise HTTPException(502, detail="AI produced no usable nodes.")
+
+        # Box sizing keyed off label length. fontSize 18 ≈ 11px/char in Cascadia/
+        # Virgil; pad generously so text never clips when rendered with the
+        # excalidraw rough wobble.
+        def size_for(label: str) -> tuple[int, int]:
+            w = max(180, 12 * len(label) + 56)
+            h = 84
+            return w, h
+
+        positions: dict[int, tuple[int, int, int, int]] = {}  # id -> (x, y, w, h)
+
+        # ---- Layout algorithms (pure, deterministic) ----
+        def layered_layout() -> None:
+            # Topological layering: nodes with no incoming edge → layer 0; then BFS.
+            indeg: dict[int, int] = {n: 0 for n in order}
+            children: dict[int, list[int]] = {n: [] for n in order}
+            for a, b in edges:
+                indeg[b] = indeg.get(b, 0) + 1
+                children[a].append(b)
+            layer: dict[int, int] = {}
+            frontier = [n for n in order if indeg[n] == 0] or [order[0]]
+            for n in frontier:
+                layer[n] = 0
+            visited = set(frontier)
+            while frontier:
+                nxt: list[int] = []
+                for u in frontier:
+                    for v in children[u]:
+                        if v in visited:
+                            continue
+                        layer[v] = max(layer.get(v, 0), layer[u] + 1)
+                        visited.add(v)
+                        nxt.append(v)
+                frontier = nxt
+            for n in order:
+                layer.setdefault(n, 0)
+            # Group by layer, distribute horizontally.
+            by_layer: dict[int, list[int]] = {}
+            for n, l in layer.items():
+                by_layer.setdefault(l, []).append(n)
+            COL_GAP = 80
+            ROW_GAP = 60
+            y_cursor = 40
+            for l in sorted(by_layer):
+                row = by_layer[l]
+                sizes = [size_for(node_label[n]) for n in row]
+                row_w = sum(w for w, _ in sizes) + COL_GAP * (len(row) - 1)
+                row_h = max(h for _, h in sizes)
+                x_cursor = -row_w // 2
+                for n, (w, h) in zip(row, sizes):
+                    positions[n] = (x_cursor, y_cursor, w, h)
+                    x_cursor += w + COL_GAP
+                y_cursor += row_h + ROW_GAP
+
+        def radial_layout() -> None:
+            # First node = center; rest on a ring sized to fit them.
+            import math as _math
+            center = order[0]
+            others = order[1:]
+            cw, ch = size_for(node_label[center])
+            positions[center] = (-cw // 2, -ch // 2, cw, ch)
+            if not others:
+                return
+            # Ring radius keyed off widest peripheral node so they don't collide.
+            sizes = [size_for(node_label[n]) for n in others]
+            max_w = max(w for w, _ in sizes)
+            radius = max(260, int(max_w * len(others) / (2 * _math.pi)) + 40)
+            for i, n in enumerate(others):
+                w, h = sizes[i]
+                theta = -_math.pi / 2 + 2 * _math.pi * i / len(others)
+                cx = int(radius * _math.cos(theta))
+                cy = int(radius * _math.sin(theta))
+                positions[n] = (cx - w // 2, cy - h // 2, w, h)
+
+        def grid_layout() -> None:
+            import math as _math
+            cols = max(1, int(_math.ceil(_math.sqrt(len(order)))))
+            COL_GAP, ROW_GAP = 80, 60
+            sizes = {n: size_for(node_label[n]) for n in order}
+            col_w = max(w for w, _ in sizes.values())
+            row_h = max(h for _, h in sizes.values())
+            for i, n in enumerate(order):
+                r, c = divmod(i, cols)
+                w, h = sizes[n]
+                x = c * (col_w + COL_GAP) - (cols * (col_w + COL_GAP)) // 2
+                y = r * (row_h + ROW_GAP)
+                positions[n] = (x + (col_w - w) // 2, y + (row_h - h) // 2, w, h)
+
+        def sequence_layout() -> None:
+            # Strict left-to-right row.
+            COL_GAP = 60
+            sizes = [size_for(node_label[n]) for n in order]
+            row_h = max(h for _, h in sizes)
+            x_cursor = 0
+            for n, (w, h) in zip(order, sizes):
+                positions[n] = (x_cursor, (row_h - h) // 2, w, h)
+                x_cursor += w + COL_GAP
+
+        def comparison_layout() -> None:
+            # Two columns by group tag (or even/odd fallback).
+            COL_GAP, ROW_GAP = 120, 40
+            left, right = [], []
+            for n in order:
+                g = node_group[n].lower()
+                if g in ("a", "left", "pro", "yes", "before") or (not g and len(left) <= len(right)):
+                    left.append(n)
+                else:
+                    right.append(n)
+            sizes = {n: size_for(node_label[n]) for n in order}
+            col_w = max(w for w, _ in sizes.values())
+            row_h = max(h for _, h in sizes.values())
+            for i, n in enumerate(left):
+                positions[n] = (-(col_w + COL_GAP // 2), i * (row_h + ROW_GAP), sizes[n][0], sizes[n][1])
+            for i, n in enumerate(right):
+                positions[n] = (COL_GAP // 2, i * (row_h + ROW_GAP), sizes[n][0], sizes[n][1])
+
+        def matrix_layout() -> None:
+            # Four quadrants. q1=TL, q2=TR, q3=BL, q4=BR.
+            COL_GAP, ROW_GAP = 80, 60
+            buckets: dict[str, list[int]] = {"q1": [], "q2": [], "q3": [], "q4": []}
+            for n in order:
+                g = node_group[n].lower()
+                if g not in buckets:
+                    g = ["q1", "q2", "q3", "q4"][len([k for k in buckets if buckets[k]]) % 4]
+                buckets[g].append(n)
+            sizes = {n: size_for(node_label[n]) for n in order}
+            col_w = max(w for w, _ in sizes.values()) + COL_GAP
+            row_h = max(h for _, h in sizes.values()) + ROW_GAP
+            anchors = {"q1": (-col_w, -row_h), "q2": (0, -row_h), "q3": (-col_w, 0), "q4": (0, 0)}
+            for q, nodes in buckets.items():
+                ax, ay = anchors[q]
+                for i, n in enumerate(nodes):
+                    w, h = sizes[n]
+                    positions[n] = (ax + (i % 2) * (col_w // 2), ay + (i // 2) * (row_h // 2), w, h)
+
+        def swimlane_layout() -> None:
+            # Rows = lanes by group tag.
+            COL_GAP, ROW_GAP = 60, 80
+            lanes: dict[str, list[int]] = {}
+            for n in order:
+                lanes.setdefault(node_group[n] or "default", []).append(n)
+            sizes = {n: size_for(node_label[n]) for n in order}
+            row_h = max(h for _, h in sizes.values())
+            y = 0
+            for _lane, nodes in lanes.items():
+                x_cursor = 0
+                for n in nodes:
+                    w, h = sizes[n]
+                    positions[n] = (x_cursor, y, w, h)
+                    x_cursor += w + COL_GAP
+                y += row_h + ROW_GAP
+
+        if style == "mindmap":
+            radial_layout()
+        elif style in ("flowchart", "tree"):
+            layered_layout()
+        elif style == "sequence":
+            sequence_layout()
+        elif style == "comparison":
+            comparison_layout()
+        elif style == "matrix":
+            matrix_layout()
+        elif style in ("swimlane", "venn"):
+            swimlane_layout()
+        else:
+            if len(edges) >= len(order) - 1:
+                layered_layout()
+            else:
+                grid_layout()
+
+        # Color by group (stable hash) → consistent palette.
+        palette = ["#7c3aed", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#06b6d4", "#ec4899", "#8b5cf6"]
+        group_color: dict[str, str] = {}
+        for n in order:
+            g = node_group[n] or "default"
+            if g not in group_color:
+                group_color[g] = palette[len(group_color) % len(palette)]
+
+        elements: list[dict[str, Any]] = []
+        node_centers: dict[int, tuple[int, int, int, int]] = {}
+        now_ms = int(time.time() * 1000)
+        for n in order:
+            x, y, w, h = positions[n]
+            label = node_label[n]
+            color = group_color[node_group[n] or "default"]
+            rect_id = str(_uuid.uuid4())
+            elements.append({
+                "id": rect_id, "type": "rectangle", "x": x, "y": y, "width": w, "height": h,
+                "angle": 0, "strokeColor": color, "backgroundColor": "transparent",
+                "fillStyle": "hachure", "strokeWidth": 2, "strokeStyle": "solid",
+                "roughness": 1, "opacity": 100, "groupIds": [], "roundness": {"type": 3},
+                "seed": now_ms + n, "version": 1, "versionNonce": 1,
+                "isDeleted": False, "boundElements": [], "updated": now_ms, "link": None, "locked": False,
+            })
+            elements.append({
+                "id": str(_uuid.uuid4()), "type": "text",
+                "x": x + 14, "y": y + h // 2 - 12, "width": max(60, w - 28), "height": 24,
+                "text": label, "fontSize": 18, "fontFamily": 1,
+                "textAlign": "center", "verticalAlign": "middle",
+                "strokeColor": color, "backgroundColor": "transparent",
+                "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "solid",
+                "roughness": 1, "opacity": 100, "groupIds": [], "roundness": None,
+                "seed": now_ms + n * 31 + 1, "version": 1, "versionNonce": 1,
+                "isDeleted": False, "boundElements": [], "updated": now_ms, "link": None, "locked": False,
+                "containerId": rect_id,
+            })
+            node_centers[n] = (x + w // 2, y + h // 2, w, h)
+
+        for a_id, b_id in edges:
+            ax, ay, aw, ah = node_centers[a_id]
+            bx, by, bw, bh = node_centers[b_id]
+            # Clip arrow endpoints to box edges so they don't bury inside.
+            dx, dy = bx - ax, by - ay
+            if dx == 0 and dy == 0:
+                continue
+            def _clip(cx: int, cy: int, w: int, h: int, vx: float, vy: float) -> tuple[float, float]:
+                # Scale (vx,vy) to land on the box edge from center.
+                if vx == 0 and vy == 0:
+                    return cx, cy
+                tx = abs((w / 2) / vx) if vx != 0 else float("inf")
+                ty = abs((h / 2) / vy) if vy != 0 else float("inf")
+                t = min(tx, ty)
+                return cx + vx * t, cy + vy * t
+            sx, sy = _clip(ax, ay, aw, ah, dx, dy)
+            ex, ey = _clip(bx, by, bw, bh, -dx, -dy)
+            elements.append({
+                "id": str(_uuid.uuid4()), "type": "arrow",
+                "x": sx, "y": sy, "width": ex - sx, "height": ey - sy,
+                "angle": 0, "strokeColor": "#94a3b8", "backgroundColor": "transparent",
+                "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
+                "roughness": 1, "opacity": 100, "groupIds": [], "roundness": {"type": 2},
+                "seed": now_ms + a_id * 17 + b_id, "version": 1, "versionNonce": 1,
+                "isDeleted": False, "boundElements": [], "updated": now_ms, "link": None, "locked": False,
+                "points": [[0, 0], [ex - sx, ey - sy]],
+                "startBinding": None, "endBinding": None,
+                "lastCommittedPoint": None, "startArrowhead": None, "endArrowhead": "arrow",
+            })
+
+        if not elements:
+            raise HTTPException(502, detail="AI produced no usable elements.")
+        return {"elements": elements}
+
+    @app.post("/api/ai/sketch-ask")
+    @app.post("/api/sketch/ask")
+    def api_sketch_ask(body: SketchAskIn):
+        """Conversational Q&A about the current Excalidraw scene. Returns an
+        `answer` plus optional `refs` (element id + label) the user can click to
+        jump to that node on the canvas."""
+        from . import llm as llm_mod
+        import json as _json
+        import re as _re
+
+        if not llm_mod.have_provider():
+            raise HTTPException(503, detail="No LLM provider configured (set GEMINI_API_KEY).")
+
+        # Compact scene representation: id + type + label only.
+        scene = [
+            {"id": n.id[:8], "fullid": n.id, "type": n.type, "label": (n.label or "")[:40]}
+            for n in body.elements
+            if n.id and n.type and n.type not in ("arrow", "line")
+        ][:80]
+        id_lookup = {n["id"]: n["fullid"] for n in scene}
+        for n in scene:
+            n.pop("fullid", None)
+
+        # Conversation context (last few turns).
+        history_str = ""
+        for h in body.history[-6:]:
+            tag = "USER" if h.role == "user" else "AI"
+            history_str += f"{tag}: {h.text.strip()[:300]}\n"
+
+        system = (
+            "You are an assistant embedded in an Excalidraw whiteboard. The user "
+            "is studying a topic and has built (or is building) a diagram. You "
+            "have access to a compact list of the nodes currently on the canvas. "
+            "Answer concisely (≤ 4 short sentences). When referencing specific "
+            "nodes by id, return them in a JSON object alongside your answer. "
+            "Output STRICT JSON only — no prose, no markdown — with this shape:\n"
+            '  {"answer": "<your reply>", "refs": [{"id": "<node id>", "label": "<node label>"}]}\n'
+            "Include `refs` only when a node is genuinely relevant; otherwise leave the array empty. "
+            "Use short ids exactly as given."
+        )
+        user_prompt = (
+            f"Topic context: {body.skill or 'general'}\n\n"
+            f"Canvas nodes ({len(scene)}):\n{_json.dumps(scene, ensure_ascii=False)}\n\n"
+            f"Recent conversation:\n{history_str}\n"
+            f"USER: {body.question.strip()}\n"
+        )
+        try:
+            raw = llm_mod.generate(user_prompt, system=system, max_tokens=500).strip()
+        except llm_mod.LLMError as e:
+            raise HTTPException(502, detail=str(e))
+        raw = _re.sub(r"^```(?:json)?\s*|\s*```$", "", raw).strip()
+        try:
+            data = _json.loads(raw)
+        except _json.JSONDecodeError:
+            # Fall back to treating the whole response as a plain answer.
+            return {"answer": raw[:800], "refs": []}
+
+        answer = str(data.get("answer") or "").strip() or "—"
+        refs_out: list[dict[str, str]] = []
+        for r in (data.get("refs") or [])[:6]:
+            sid = str(r.get("id") or "")[:16]
+            full = id_lookup.get(sid)
+            if not full:
+                continue
+            refs_out.append({"id": full, "label": str(r.get("label") or "")[:40]})
+        return {"answer": answer, "refs": refs_out}
+
+    @app.post("/api/ai/search-improve")
+    def api_ai_search_improve(body: SearchImproveIn):
+        from . import llm as llm_mod
+        if not llm_mod.have_provider():
+            raise HTTPException(503, detail="No LLM provider configured (set GEMINI_API_KEY).")
+        ctx_hint = {
+            "jobs":   "job postings (titles, companies, technologies, seniority)",
+            "learn":  "skill names from the curriculum",
+            "skills": "skill names",
+        }.get(body.context, "general full-text search")
+        system = (
+            "You rewrite messy search queries into concise, high-signal keywords that match a "
+            f"full-text search over {ctx_hint}. Output ONLY the improved query — no quotes, no "
+            "explanation, no leading 'Query:'. Keep it under 8 words. Prefer canonical technology "
+            "names. Strip filler words. If the input is already clean, return it unchanged."
+        )
+        prompt_parts = [f"User input: {body.query.strip() or '(empty)'}"]
+        if body.hint:
+            prompt_parts.append(f"User intent hint: {body.hint.strip()}")
+        try:
+            improved = llm_mod.generate("\n".join(prompt_parts), system=system, max_tokens=60).strip()
+        except llm_mod.LLMError as e:
+            raise HTTPException(502, detail=str(e))
+        # Strip surrounding quotes / trailing punctuation the model sometimes adds.
+        improved = improved.strip().strip('"\'`').rstrip(".!?,")
+        return {"query": improved or body.query}
 
     # -------- Conversations (assistant + interview history) --------
 

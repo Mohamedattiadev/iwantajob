@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { ArrowRight, Search, Plus, Trash2, Check, ChevronDown, Target, Sparkles, X } from "lucide-react";
+import { ArrowRight, Plus, ChevronDown, Target, Sparkles, X } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,8 @@ import { useProficiency, LEVELS } from "@/lib/proficiency";
 import { useUserPlans } from "@/lib/plans";
 import { fetcher, API, type LearnResponse, type LearnRow } from "@/lib/api";
 import { toast } from "sonner";
+import { AiSearchInput } from "@/components/ai-search-input";
+import { SkillHoverCard } from "@/components/skill-hover-card";
 
 const PAGE_SIZE = 12;
 const TOP_N = 5;
@@ -28,7 +30,6 @@ export default function LearnPage() {
   const plans = useUserPlans();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
-  const [focus, setFocus] = useState("");
   const [goal, setGoal] = useState<string>("");
   const [goalDraft, setGoalDraft] = useState("");
   const [aiRanked, setAiRanked] = useState<{ skill: string; why: string }[] | null>(null);
@@ -143,19 +144,11 @@ export default function LearnPage() {
       100
     : 0;
 
-  const activePlans = plans.items.filter((p) => !p.done);
-  const completed = plans.items.filter((p) => p.done);
-
-  const addFocus = () => {
-    if (!focus.trim()) return;
-    plans.add({ title: focus.trim() });
-    setFocus("");
-  };
 
   const onSearch = (v: string) => { setSearch(v); setPage(1); };
 
   return (
-    <div className="space-y-10 max-w-4xl mx-auto">
+    <div className="space-y-10">
       <PageHeader
         eyebrow="learn"
         title={<>What to learn <em className="font-serif text-muted-foreground not-italic">next.</em></>}
@@ -170,57 +163,6 @@ export default function LearnPage() {
           <span className="text-sm tabular-nums">{overallPct.toFixed(0)}%</span>
         </div>
         <Progress value={overallPct} className="h-1.5" />
-      </section>
-
-      {/* This week's focus — composer card */}
-      <section className="space-y-3">
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-lg font-semibold">This week I will&hellip;</h2>
-          {plans.ready && activePlans.length > 0 && (
-            <span className="text-xs text-muted-foreground tabular-nums">
-              {activePlans.length} active · {completed.length} done
-            </span>
-          )}
-        </div>
-        <div className="group relative rounded-xl border border-border/60 bg-card focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/15 transition">
-          <input
-            placeholder="e.g. finish FastAPI auth tutorial"
-            value={focus}
-            onChange={(e) => setFocus(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") addFocus(); }}
-            className="w-full bg-transparent h-12 pl-4 pr-28 text-sm outline-none placeholder:text-muted-foreground/70"
-          />
-          <Button
-            onClick={addFocus}
-            disabled={!focus.trim()}
-            size="sm"
-            className="absolute right-2 top-1/2 -translate-y-1/2 h-8 gap-1"
-          >
-            <Plus className="h-3.5 w-3.5" /> Add
-          </Button>
-        </div>
-        {plans.ready && activePlans.length > 0 && (
-          <ul className="space-y-1.5">
-            {activePlans.map((p) => (
-              <li key={p.id} className="flex items-center gap-3 px-3 py-2 rounded-lg border bg-card hover:bg-accent/30 transition-colors">
-                <button
-                  onClick={() => plans.update(p.id, { done: true })}
-                  className="h-5 w-5 rounded-md border-2 border-foreground/30 hover:border-emerald-500 grid place-items-center shrink-0"
-                  aria-label="Done"
-                />
-                <span className="flex-1 text-sm">{p.title}</span>
-                {p.skill && (
-                  <Link href={`/learn/${encodeURIComponent(p.skill)}`} className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground hover:text-primary">
-                    {p.skill}
-                  </Link>
-                )}
-                <button onClick={() => plans.remove(p.id)} className="text-muted-foreground hover:text-rose-500">
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
       </section>
 
       {/* Goal-driven rerank input */}
@@ -277,7 +219,9 @@ export default function LearnPage() {
               const lvl = prof[row.skill] ?? 0;
               const why = whyOf(row.skill);
               return (
-                <li key={row.skill} className="px-4 py-3 rounded-xl border bg-card hover:bg-accent/30 transition-colors">
+                <li key={row.skill}>
+                <SkillHoverCard skill={row.skill} why={why}>
+                <div className="px-4 py-3 rounded-xl border bg-card hover:bg-accent/30 transition-colors">
                   <div className="flex items-start gap-3">
                     <div className="text-2xl font-mono text-muted-foreground tabular-nums w-8 shrink-0">{i + 1}</div>
                     <div className="flex-1 min-w-0 space-y-2">
@@ -308,31 +252,14 @@ export default function LearnPage() {
                       </div>
                     </div>
                   </div>
+                </div>
+                </SkillHoverCard>
                 </li>
               );
             })}
           </ol>
         )}
       </section>
-
-      {/* Completed plans (collapsed) */}
-      {completed.length > 0 && (
-        <details className="group">
-          <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
-            <Check className="h-3.5 w-3.5" /> {completed.length} completed
-          </summary>
-          <ul className="mt-3 space-y-1.5">
-            {completed.map((p) => (
-              <li key={p.id} className="flex items-center gap-2 text-sm text-muted-foreground px-3 py-2 rounded-md bg-muted/30">
-                <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
-                <span className="line-through flex-1 truncate">{p.title}</span>
-                <button onClick={() => plans.update(p.id, { done: false })} className="text-[10px] hover:text-foreground">restore</button>
-                <button onClick={() => plans.remove(p.id)} className="text-muted-foreground hover:text-rose-500"><Trash2 className="h-3.5 w-3.5" /></button>
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
 
       {/* Advanced: full gap list + level reference */}
       <details className="group">
@@ -345,9 +272,13 @@ export default function LearnPage() {
           {/* All gaps */}
           <section>
             <h3 className="text-base font-semibold mb-3">All gaps ({filtered.length})</h3>
-            <div className="relative max-w-md mb-4">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input placeholder="Search skill" value={search} onChange={(e) => onSearch(e.target.value)} className="pl-8" />
+            <div className="max-w-md mb-4">
+              <AiSearchInput
+                value={search}
+                onChange={onSearch}
+                placeholder="Search skill… (✨ AI normalizes name)"
+                context="skills"
+              />
             </div>
             {filtered.length === 0 ? (
               <div className="py-6 text-center text-sm text-muted-foreground">No skills match.</div>
@@ -415,3 +346,4 @@ const LEVEL_DESC: Record<number, string> = {
   4: "Ship production work",
   5: "Teach others, deep grasp",
 };
+
