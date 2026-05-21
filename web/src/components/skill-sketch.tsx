@@ -23,7 +23,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { API, fetcher, primeEtag } from "@/lib/api";
 import useSWR from "swr";
 import { TEMPLATES, TEMPLATE_META, type TemplateKey } from "@/lib/sketch-templates";
-import { pickMinimapCornerStyle, shouldApplyIncomingScene, computeFitAllAppState } from "@/lib/sketch";
+import { pickMinimapCornerStyle, shouldApplyIncomingScene, computeFitAllAppState, fitElementsToBbox } from "@/lib/sketch";
 import { authHeaders, readSketchToken, appendTokenToUrl } from "@/lib/auth";
 import "@excalidraw/excalidraw/index.css";
 
@@ -1169,28 +1169,43 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
                        : (skeleton as Array<Record<string, unknown>>);
     if (fresh.length === 0) return 0;
 
-    // Translate so top-left of new batch lands in an empty area.
+    // Layout target: in book mode → current page bounds (so AI gen
+    // can't spill outside the sheet). Otherwise → next to existing
+    // content / center of viewport.
     const freshBBox = sceneBBox(fresh);
     if (freshBBox) {
-      const current = api.getSceneElements();
-      const sceneBB = sceneBBox(current);
-      const appState = api.getAppState() as { scrollX?: number; scrollY?: number; width?: number; height?: number; zoom?: { value?: number } };
-      let targetX: number, targetY: number;
-      if (sceneBB) {
-        targetX = sceneBB.maxX + 80; // park to right of existing
-        targetY = sceneBB.minY;
-      } else if (typeof appState.scrollX === "number" && typeof appState.width === "number") {
-        const zoom = appState.zoom?.value ?? 1;
-        targetX = -appState.scrollX + (appState.width / zoom) / 2 - (freshBBox.maxX - freshBBox.minX) / 2;
-        targetY = -(appState.scrollY ?? 0) + ((appState.height ?? 0) / zoom) / 2 - (freshBBox.maxY - freshBBox.minY) / 2;
+      if (layoutMode === "book") {
+        const top = bookPageTop(bookPageRef.current);
+        const fitted = fitElementsToBbox(
+          fresh as unknown as Array<{ x?: number; y?: number; width?: number; height?: number; fontSize?: number; points?: ReadonlyArray<readonly [number, number]> }>,
+          { x: 0, y: top, width: BOOK_PAGE_W, height: BOOK_PAGE_H },
+          40,
+        );
+        for (let i = 0; i < fresh.length; i++) {
+          const f = fitted[i] as Record<string, unknown>;
+          Object.assign(fresh[i], f);
+        }
       } else {
-        targetX = 100; targetY = 100;
-      }
-      const dx = targetX - freshBBox.minX;
-      const dy = targetY - freshBBox.minY;
-      for (const el of fresh) {
-        if (typeof el.x === "number") el.x = (el.x as number) + dx;
-        if (typeof el.y === "number") el.y = (el.y as number) + dy;
+        const current = api.getSceneElements();
+        const sceneBB = sceneBBox(current);
+        const appState = api.getAppState() as { scrollX?: number; scrollY?: number; width?: number; height?: number; zoom?: { value?: number } };
+        let targetX: number, targetY: number;
+        if (sceneBB) {
+          targetX = sceneBB.maxX + 80;
+          targetY = sceneBB.minY;
+        } else if (typeof appState.scrollX === "number" && typeof appState.width === "number") {
+          const zoom = appState.zoom?.value ?? 1;
+          targetX = -appState.scrollX + (appState.width / zoom) / 2 - (freshBBox.maxX - freshBBox.minX) / 2;
+          targetY = -(appState.scrollY ?? 0) + ((appState.height ?? 0) / zoom) / 2 - (freshBBox.maxY - freshBBox.minY) / 2;
+        } else {
+          targetX = 100; targetY = 100;
+        }
+        const dx = targetX - freshBBox.minX;
+        const dy = targetY - freshBBox.minY;
+        for (const el of fresh) {
+          if (typeof el.x === "number") el.x = (el.x as number) + dx;
+          if (typeof el.y === "number") el.y = (el.y as number) + dy;
+        }
       }
     }
 

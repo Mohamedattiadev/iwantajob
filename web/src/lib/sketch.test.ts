@@ -6,6 +6,8 @@ import {
   shouldApplyIncomingScene,
   pickMinimapCornerStyle,
   computeFitAllAppState,
+  elementsBbox,
+  fitElementsToBbox,
   PEN_PROFILES,
   PEN_KEYS,
   type PenKey,
@@ -234,6 +236,86 @@ describe("parseSketchMode", () => {
   it("flags compose independently", () => {
     const m = parseSketchMode(new URLSearchParams("mode=edit&pen=1"));
     expect(m).toEqual({ editMode: true, penMode: true });
+  });
+});
+
+describe("elementsBbox", () => {
+  it("returns null for empty input", () => {
+    expect(elementsBbox([])).toBeNull();
+  });
+  it("returns null when no element has geometry", () => {
+    expect(elementsBbox([{}, null, undefined])).toBeNull();
+  });
+  it("ignores entries with missing x/y", () => {
+    expect(elementsBbox([{ x: 10, y: 10, width: 10, height: 10 }, {}])).toEqual({
+      minX: 10, minY: 10, maxX: 20, maxY: 20,
+    });
+  });
+  it("computes union of multiple elements", () => {
+    const out = elementsBbox([
+      { x: 0, y: 0, width: 100, height: 50 },
+      { x: 200, y: 300, width: 50, height: 50 },
+    ]);
+    expect(out).toEqual({ minX: 0, minY: 0, maxX: 250, maxY: 350 });
+  });
+});
+
+describe("fitElementsToBbox", () => {
+  it("scales-down a scene that exceeds the target, preserving aspect", () => {
+    const els = [
+      { x: 0, y: 0, width: 1000, height: 500 },
+    ];
+    const out = fitElementsToBbox(els, { x: 0, y: 0, width: 500, height: 500 }, 0);
+    // Source is 1000x500, target 500x500, scale = min(0.5, 1.0) = 0.5 → 500x250.
+    expect(out[0].width).toBe(500);
+    expect(out[0].height).toBe(250);
+  });
+  it("centers the scaled bbox inside the target rect", () => {
+    const els = [
+      { x: 0, y: 0, width: 200, height: 100 },
+    ];
+    // Target 800x400, no padding → scale 4× (W) and 4× (H) — scale=4 caps at 1 because
+    // we never enlarge. So scale = min(1, 800/200, 400/100) = 1 → centered in target.
+    const out = fitElementsToBbox(els, { x: 0, y: 0, width: 800, height: 400 }, 0);
+    expect(out[0].x).toBe((800 - 200) / 2);
+    expect(out[0].y).toBe((400 - 100) / 2);
+  });
+  it("respects padding (insets the target)", () => {
+    const els = [{ x: 0, y: 0, width: 100, height: 100 }];
+    const out = fitElementsToBbox(els, { x: 0, y: 0, width: 300, height: 300 }, 50);
+    // avail = 200x200, scale = min(1, 2, 2) = 1, centered in 200×200 inset.
+    expect(out[0].x).toBe(50 + (200 - 100) / 2);
+    expect(out[0].y).toBe(50 + (200 - 100) / 2);
+  });
+  it("scales fontSize alongside geometry", () => {
+    const els = [{ x: 0, y: 0, width: 1000, height: 500, fontSize: 32 }];
+    const out = fitElementsToBbox(els, { x: 0, y: 0, width: 500, height: 500 }, 0);
+    // scale = 0.5 → fontSize 32 → 16.
+    expect((out[0] as { fontSize?: number }).fontSize).toBe(16);
+  });
+  it("clamps fontSize to a minimum of 8", () => {
+    const els = [{ x: 0, y: 0, width: 10000, height: 5000, fontSize: 12 }];
+    const out = fitElementsToBbox(els, { x: 0, y: 0, width: 50, height: 50 }, 0);
+    expect((out[0] as { fontSize?: number }).fontSize).toBe(8);
+  });
+  it("scales arrow points along with width/height", () => {
+    const els = [{
+      x: 0, y: 0, width: 200, height: 0,
+      points: [[0, 0], [200, 0]] as Array<[number, number]>,
+    }];
+    const out = fitElementsToBbox(els, { x: 0, y: 0, width: 100, height: 100 }, 0);
+    // src bbox is 200x1 (height clamped); scale = min(1, 100/200, 100/1) = 0.5
+    const pts = (out[0] as { points?: Array<[number, number]> }).points!;
+    expect(pts[1][0]).toBe(100); // 200 * 0.5
+  });
+  it("returns input untouched when empty", () => {
+    expect(fitElementsToBbox([], { x: 0, y: 0, width: 100, height: 100 })).toEqual([]);
+  });
+  it("does not enlarge a scene smaller than the target", () => {
+    const els = [{ x: 0, y: 0, width: 50, height: 50 }];
+    const out = fitElementsToBbox(els, { x: 0, y: 0, width: 500, height: 500 }, 0);
+    expect(out[0].width).toBe(50); // scale capped at 1
+    expect(out[0].height).toBe(50);
   });
 });
 

@@ -122,6 +122,60 @@ export function pickMinimapCornerStyle(corner: MinimapCorner = "br"): {
   }
 }
 
+// Bbox helpers, used for fitting AI-generated diagrams into a fixed
+// rectangle (e.g. a Book-mode page) without text spilling outside.
+// Pure functions so they're unit-testable without React or Excalidraw.
+type ElLike = { x?: number; y?: number; width?: number; height?: number };
+export type Bbox = { minX: number; minY: number; maxX: number; maxY: number };
+export function elementsBbox(elements: ReadonlyArray<ElLike | null | undefined>): Bbox | null {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const e of elements) {
+    if (!e) continue;
+    if (typeof e.x !== "number" || typeof e.y !== "number") continue;
+    const w = typeof e.width === "number" ? e.width : 1;
+    const h = typeof e.height === "number" ? e.height : 1;
+    minX = Math.min(minX, e.x); minY = Math.min(minY, e.y);
+    maxX = Math.max(maxX, e.x + w); maxY = Math.max(maxY, e.y + h);
+  }
+  if (!isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY };
+}
+// Translate + uniform-scale every element so the source bbox fits
+// inside `target` with `padding` px of inner margin. Returns the new
+// element list (input untouched). Font sizes are scaled too so text
+// stays readable. Arrows keep their relative points + bindings.
+export function fitElementsToBbox<T extends ElLike & { fontSize?: number; points?: ReadonlyArray<readonly [number, number]> }>(
+  elements: ReadonlyArray<T>,
+  target: { x: number; y: number; width: number; height: number },
+  padding: number = 24,
+): T[] {
+  if (!elements.length) return [];
+  const bb = elementsBbox(elements as ReadonlyArray<ElLike>);
+  if (!bb) return elements.slice();
+  const srcW = Math.max(1, bb.maxX - bb.minX);
+  const srcH = Math.max(1, bb.maxY - bb.minY);
+  const availW = Math.max(1, target.width - padding * 2);
+  const availH = Math.max(1, target.height - padding * 2);
+  const scale = Math.min(1, availW / srcW, availH / srcH);
+  // Center the scaled bbox inside the target.
+  const offX = target.x + padding + (availW - srcW * scale) / 2 - bb.minX * scale;
+  const offY = target.y + padding + (availH - srcH * scale) / 2 - bb.minY * scale;
+  return elements.map((el) => {
+    const next = { ...el } as T;
+    if (typeof el.x === "number") next.x = el.x * scale + offX;
+    if (typeof el.y === "number") next.y = el.y * scale + offY;
+    if (typeof el.width === "number") next.width = el.width * scale;
+    if (typeof el.height === "number") next.height = el.height * scale;
+    if (typeof el.fontSize === "number") next.fontSize = Math.max(8, el.fontSize * scale);
+    if (Array.isArray(el.points)) {
+      next.points = el.points.map(
+        ([px, py]) => [px * scale, py * scale] as readonly [number, number],
+      ) as never;
+    }
+    return next;
+  });
+}
+
 // "Fit all" — compute the Excalidraw appState that centers the whole
 // scene in the current viewport with a uniform padding. Returns null if
 // the scene has no usable elements (empty / all deleted / no geometry).
