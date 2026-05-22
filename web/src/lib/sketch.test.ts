@@ -6,41 +6,40 @@ import {
   shouldApplyIncomingScene,
   pickMinimapCornerStyle,
   computeFitAllAppState,
+  elementsBbox,
+  fitElementsToBbox,
+  validateAiElements,
   PEN_PROFILES,
   PEN_KEYS,
   type PenKey,
 } from "./sketch";
 
 describe("sceneFingerprint", () => {
-  it("returns 0:'' for empty", () => {
-    expect(sceneFingerprint([])).toBe("0:");
+  it("returns 0:0 for empty", () => {
+    expect(sceneFingerprint([])).toBe("0:0");
   });
 
-  it("counts live elements and reports the last id", () => {
-    const els = [
-      { id: "a" },
-      { id: "b" },
-      { id: "c" },
-    ];
-    expect(sceneFingerprint(els)).toBe("3:c");
+  it("starts with the live count", () => {
+    const els = [{ id: "a" }, { id: "b" }, { id: "c" }];
+    expect(sceneFingerprint(els).startsWith("3:")).toBe(true);
   });
 
-  it("skips deleted elements in count and last-id", () => {
+  it("skips deleted elements from the count", () => {
     const els = [
       { id: "a" },
       { id: "b", isDeleted: true },
       { id: "c" },
     ];
-    expect(sceneFingerprint(els)).toBe("2:c");
+    expect(sceneFingerprint(els).startsWith("2:")).toBe(true);
   });
 
   it("treats null entries as deleted", () => {
-    expect(sceneFingerprint([null, { id: "x" }, null])).toBe("1:x");
+    expect(sceneFingerprint([null, { id: "x" }, null]).startsWith("1:")).toBe(true);
   });
 
-  it("element without id is counted but doesn't set lastId", () => {
-    const els = [{ id: "a" }, { /* no id */ }];
-    expect(sceneFingerprint(els)).toBe("2:a");
+  it("element without id contributes to count but not the hash", () => {
+    const withNoId = sceneFingerprint([{ id: "a" }, { /* no id */ }]);
+    expect(withNoId.startsWith("2:")).toBe(true);
   });
 
   it("changes when an element is added", () => {
@@ -49,9 +48,31 @@ describe("sceneFingerprint", () => {
     expect(before).not.toBe(after);
   });
 
-  it("changes when the last id changes", () => {
+  it("changes when any id changes (last or not)", () => {
     expect(sceneFingerprint([{ id: "a" }, { id: "b" }]))
       .not.toBe(sceneFingerprint([{ id: "a" }, { id: "c" }]));
+  });
+
+  // Critical for the laptop↔tablet sync: iOS Excalidraw reorders
+  // elements after `updateScene`, so a receiver-emitted onChange would
+  // produce a different fingerprint than the one the sender broadcast
+  // if the fingerprint depended on iteration order. Order-independent
+  // hash kills the echo-suppression false-positive that caused the
+  // one-way (laptop→tablet) sync bug.
+  it("is order-independent (reorder yields same fingerprint)", () => {
+    const a = sceneFingerprint([{ id: "x" }, { id: "y" }, { id: "z" }]);
+    const b = sceneFingerprint([{ id: "z" }, { id: "x" }, { id: "y" }]);
+    expect(a).toBe(b);
+  });
+
+  it("is order-independent with a mix of deleted entries", () => {
+    const a = sceneFingerprint([
+      { id: "a" }, { id: "b", isDeleted: true }, { id: "c" },
+    ]);
+    const b = sceneFingerprint([
+      { id: "c" }, { id: "a" }, { id: "b", isDeleted: true },
+    ]);
+    expect(a).toBe(b);
   });
 });
 
@@ -216,6 +237,149 @@ describe("parseSketchMode", () => {
   it("flags compose independently", () => {
     const m = parseSketchMode(new URLSearchParams("mode=edit&pen=1"));
     expect(m).toEqual({ editMode: true, penMode: true });
+  });
+});
+
+describe("elementsBbox", () => {
+  it("returns null for empty input", () => {
+    expect(elementsBbox([])).toBeNull();
+  });
+  it("returns null when no element has geometry", () => {
+    expect(elementsBbox([{}, null, undefined])).toBeNull();
+  });
+  it("ignores entries with missing x/y", () => {
+    expect(elementsBbox([{ x: 10, y: 10, width: 10, height: 10 }, {}])).toEqual({
+      minX: 10, minY: 10, maxX: 20, maxY: 20,
+    });
+  });
+  it("computes union of multiple elements", () => {
+    const out = elementsBbox([
+      { x: 0, y: 0, width: 100, height: 50 },
+      { x: 200, y: 300, width: 50, height: 50 },
+    ]);
+    expect(out).toEqual({ minX: 0, minY: 0, maxX: 250, maxY: 350 });
+  });
+});
+
+describe("fitElementsToBbox", () => {
+  it("scales-down a scene that exceeds the target, preserving aspect", () => {
+    const els = [
+      { x: 0, y: 0, width: 1000, height: 500 },
+    ];
+    const out = fitElementsToBbox(els, { x: 0, y: 0, width: 500, height: 500 }, 0);
+    // Source is 1000x500, target 500x500, scale = min(0.5, 1.0) = 0.5 → 500x250.
+    expect(out[0].width).toBe(500);
+    expect(out[0].height).toBe(250);
+  });
+  it("centers the scaled bbox inside the target rect", () => {
+    const els = [
+      { x: 0, y: 0, width: 200, height: 100 },
+    ];
+    // Target 800x400, no padding → scale 4× (W) and 4× (H) — scale=4 caps at 1 because
+    // we never enlarge. So scale = min(1, 800/200, 400/100) = 1 → centered in target.
+    const out = fitElementsToBbox(els, { x: 0, y: 0, width: 800, height: 400 }, 0);
+    expect(out[0].x).toBe((800 - 200) / 2);
+    expect(out[0].y).toBe((400 - 100) / 2);
+  });
+  it("respects padding (insets the target)", () => {
+    const els = [{ x: 0, y: 0, width: 100, height: 100 }];
+    const out = fitElementsToBbox(els, { x: 0, y: 0, width: 300, height: 300 }, 50);
+    // avail = 200x200, scale = min(1, 2, 2) = 1, centered in 200×200 inset.
+    expect(out[0].x).toBe(50 + (200 - 100) / 2);
+    expect(out[0].y).toBe(50 + (200 - 100) / 2);
+  });
+  it("scales fontSize alongside geometry", () => {
+    const els = [{ x: 0, y: 0, width: 1000, height: 500, fontSize: 32 }];
+    const out = fitElementsToBbox(els, { x: 0, y: 0, width: 500, height: 500 }, 0);
+    // scale = 0.5 → fontSize 32 → 16.
+    expect((out[0] as { fontSize?: number }).fontSize).toBe(16);
+  });
+  it("clamps fontSize to a minimum of 8", () => {
+    const els = [{ x: 0, y: 0, width: 10000, height: 5000, fontSize: 12 }];
+    const out = fitElementsToBbox(els, { x: 0, y: 0, width: 50, height: 50 }, 0);
+    expect((out[0] as { fontSize?: number }).fontSize).toBe(8);
+  });
+  it("scales arrow points along with width/height", () => {
+    const els = [{
+      x: 0, y: 0, width: 200, height: 0,
+      points: [[0, 0], [200, 0]] as Array<[number, number]>,
+    }];
+    const out = fitElementsToBbox(els, { x: 0, y: 0, width: 100, height: 100 }, 0);
+    // src bbox is 200x1 (height clamped); scale = min(1, 100/200, 100/1) = 0.5
+    const pts = (out[0] as { points?: Array<[number, number]> }).points!;
+    expect(pts[1][0]).toBe(100); // 200 * 0.5
+  });
+  it("returns input untouched when empty", () => {
+    expect(fitElementsToBbox([], { x: 0, y: 0, width: 100, height: 100 })).toEqual([]);
+  });
+  it("does not enlarge a scene smaller than the target", () => {
+    const els = [{ x: 0, y: 0, width: 50, height: 50 }];
+    const out = fitElementsToBbox(els, { x: 0, y: 0, width: 500, height: 500 }, 0);
+    expect(out[0].width).toBe(50); // scale capped at 1
+    expect(out[0].height).toBe(50);
+  });
+});
+
+describe("validateAiElements", () => {
+  it("flags empty input", () => {
+    const r = validateAiElements([]);
+    expect(r.ok).toBe(false);
+    expect(r.issues[0].kind).toBe("no-elements");
+  });
+  it("accepts a well-formed rect+text+arrow batch", () => {
+    const els = [
+      { id: "r1", type: "rectangle", width: 200, height: 80 },
+      { id: "t1", type: "text", text: "OK", fontSize: 18, containerId: "r1" },
+      { id: "r2", type: "rectangle", width: 200, height: 80 },
+      { id: "t2", type: "text", text: "OK", fontSize: 18, containerId: "r2" },
+      { id: "a1", type: "arrow", startBinding: { elementId: "r1" }, endBinding: { elementId: "r2" } },
+    ];
+    const r = validateAiElements(els);
+    expect(r.ok).toBe(true);
+    expect(r.counts).toEqual({ rect: 2, text: 2, arrow: 1, other: 0 });
+  });
+  it("flags text without a containerId", () => {
+    const r = validateAiElements([
+      { id: "t1", type: "text", text: "Hi" },
+    ]);
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.kind === "text-no-container")).toBe(true);
+  });
+  it("flags text whose container does not exist", () => {
+    const r = validateAiElements([
+      { id: "t1", type: "text", text: "Hi", containerId: "ghost" },
+    ]);
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.kind === "text-dangling-container")).toBe(true);
+  });
+  it("flags arrows with neither start nor end binding", () => {
+    const r = validateAiElements([
+      { id: "a1", type: "arrow" },
+    ]);
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.kind === "arrow-unbound")).toBe(true);
+  });
+  it("flags arrows pointing to non-existent elements", () => {
+    const r = validateAiElements([
+      { id: "r1", type: "rectangle", width: 100, height: 50 },
+      { id: "a1", type: "arrow", startBinding: { elementId: "r1" }, endBinding: { elementId: "ghost" } },
+    ]);
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.kind === "arrow-dangling-binding")).toBe(true);
+  });
+  it("flags labels too long for their container", () => {
+    const r = validateAiElements([
+      { id: "r1", type: "rectangle", width: 100, height: 50 },
+      { id: "t1", type: "text", containerId: "r1", text: "averyverylongwordthatcannotfit", fontSize: 18 },
+    ]);
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.kind === "label-too-long")).toBe(true);
+  });
+  it("counts non-rect/text/arrow elements as `other`", () => {
+    const r = validateAiElements([
+      { id: "x", type: "ellipse" },
+    ] as never);
+    expect(r.counts.other).toBe(1);
   });
 });
 

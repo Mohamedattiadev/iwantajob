@@ -7,10 +7,17 @@ export function AmbientBackground() {
   return (
     <div
       aria-hidden
+      // Brave/Shields and similar privacy extensions rewrite
+      // backgroundImage on injected divs and trip React's
+      // hydration warning even though our markup is identical
+      // server-to-client. Suppressing the warning here (purely
+      // cosmetic, no interactivity) is the right escape hatch.
+      suppressHydrationWarning
       className="pointer-events-none fixed inset-0 -z-10 overflow-hidden"
     >
       {/* Dot grid */}
       <div
+        suppressHydrationWarning
         className="absolute inset-0 opacity-[0.18] dark:opacity-[0.22]"
         style={{
           backgroundImage:

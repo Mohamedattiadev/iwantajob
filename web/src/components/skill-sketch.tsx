@@ -2,8 +2,9 @@
 
 import dynamic from "next/dynamic";
 import type * as React from "react";
+import { memo, Fragment, Component as ReactComponent } from "react";
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   Maximize2, Minimize2, CheckCircle2,
   Sparkles, Link as LinkIcon, X,
@@ -12,16 +13,23 @@ import {
   Eye, Pencil, Image as ImageIcon, FileCode, Copy,
   Network, ArrowDown, Columns3, Grid2x2, Play, Square,
   PanelRightOpen, ZoomIn, ZoomOut,
-  Tablet, ExternalLink, Save, Users, ArrowLeft,
+  Tablet, ExternalLink, Save, Users, ArrowLeft, RefreshCw, Plus, BookOpen,
+  Layers, Boxes, Component, MessageSquare, RotateCw, Database, GitBranch,
+  Key, Shield,
+  Sigma, LineChart, Triangle, PieChart,
+  Container, Package, Cloud, Activity,
+  Layout, FormInput, LayoutGrid,
+  Hexagon, Workflow,
+  Calculator, Wrench, Code2, Globe, Building2, Star,
 } from "lucide-react";
 import NextLink from "next/link";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
-import { API, fetcher } from "@/lib/api";
+import { API, fetcher, primeEtag } from "@/lib/api";
 import useSWR from "swr";
 import { TEMPLATES, TEMPLATE_META, type TemplateKey } from "@/lib/sketch-templates";
-import { pickMinimapCornerStyle, shouldApplyIncomingScene, computeFitAllAppState } from "@/lib/sketch";
+import { pickMinimapCornerStyle, shouldApplyIncomingScene, computeFitAllAppState, fitElementsToBbox, validateAiElements } from "@/lib/sketch";
 import { authHeaders, readSketchToken, appendTokenToUrl } from "@/lib/auth";
 import "@excalidraw/excalidraw/index.css";
 
@@ -39,18 +47,242 @@ const Excalidraw = dynamic(
   { ssr: false, loading: () => <Skeleton className="h-full w-full" /> },
 );
 
+// Install Excalidraw render-crash suppression at MODULE scope (runs
+// before any component mount). Excalidraw still throws a transient
+// "Cannot read properties of undefined (reading 'type')" during
+// internal reconciliation; the next render fully recovers, but Next's
+// dev error overlay latches onto the first occurrence and blocks the
+// app behind a full-screen modal. Swallowing this one specific
+// message keeps the canvas usable while letting every other error
+// surface as normal.
+if (typeof window !== "undefined" && !(window as { __excalCrashGuard?: boolean }).__excalCrashGuard) {
+  (window as { __excalCrashGuard?: boolean }).__excalCrashGuard = true;
+  const SIG = "Cannot read properties of undefined (reading 'type')";
+  // ── Root-cause patch ────────────────────────────────────────────
+  // Excalidraw's render pipeline calls Array.prototype.filter on
+  // arrays that sometimes contain a hole / undefined entry during
+  // reconciliation. The callback then dereferences `.type` on
+  // undefined and the whole render trips. We can't pinpoint the one
+  // bad array from outside, so we patch filter itself: if the
+  // callback would crash on a nullish entry, transparently skip it.
+  // This is scoped to nullish entries only — every other filter
+  // behaves identically.
+  const origFilter = Array.prototype.filter;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any, no-extend-native
+  Array.prototype.filter = function (this: any[], cb: any, thisArg?: any) {
+    try {
+      return origFilter.call(this, cb, thisArg);
+    } catch (e) {
+      const msg = (e as Error)?.message || "";
+      if (!msg.includes("Cannot read properties of undefined") &&
+          !msg.includes("Cannot read properties of null")) {
+        throw e;
+      }
+      // Retry with a wrapped callback that yields `false` for any
+      // nullish element so render can complete with the good data.
+      const safeCb = function (this: unknown, el: unknown, i: number, arr: unknown[]) {
+        if (el == null) return false;
+        try { return cb.call(thisArg ?? this, el, i, arr); }
+        catch (inner) {
+          const im = (inner as Error)?.message || "";
+          if (im.includes("Cannot read properties of undefined") ||
+              im.includes("Cannot read properties of null")) return false;
+          throw inner;
+        }
+      };
+      return origFilter.call(this, safeCb as never, thisArg);
+    }
+  } as typeof Array.prototype.filter;
+  // Belt + suspenders for any error that still escapes.
+  window.addEventListener("error", (ev) => {
+    if (ev.message && ev.message.includes(SIG)) {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      try {
+        const root = document.querySelector("nextjs-portal");
+        root?.shadowRoot?.querySelectorAll("[data-nextjs-dialog-overlay]").forEach((n) => (n as HTMLElement).remove());
+        root?.shadowRoot?.querySelectorAll("[data-nextjs-dialog]").forEach((n) => (n as HTMLElement).remove());
+      } catch {}
+    }
+  }, true);
+  window.addEventListener("unhandledrejection", (ev) => {
+    const m = ev.reason && (ev.reason.message || String(ev.reason));
+    if (typeof m === "string" && m.includes(SIG)) ev.preventDefault();
+  });
+}
+
+// Error boundary that catches Excalidraw render crashes (e.g. stale
+// boundElements references producing `undefined.type` in its internal
+// `.filter(...)` calls) and force-remounts the canvas with a bumped
+// key. Without this, a single bad element in the persisted doc bricks
+// the entire sketch page until the user manually clears storage.
+// After a crash, strip ALL relational fields and keep only standalone
+// geometry — the most common crash cause is dangling boundElements /
+// containerId / frameId references. Better to lose arrow bindings
+// than lose the whole canvas.
+function nukedInitialData(initial: unknown): unknown {
+  if (!initial || typeof initial !== "object") return initial;
+  const src = initial as { elements?: unknown[]; appState?: Record<string, unknown>; files?: Record<string, unknown> };
+  const els = Array.isArray(src.elements) ? src.elements : [];
+  const safe = (els as Array<Record<string, unknown> | null | undefined>)
+    .filter((el): el is Record<string, unknown> =>
+      !!el && typeof el === "object" && typeof (el as { type?: unknown }).type === "string"
+    )
+    .map((el) => ({
+      ...el,
+      boundElements: [],
+      containerId: null,
+      frameId: null,
+      groupIds: [],
+    }));
+  return { ...src, elements: safe };
+}
+
+class ExcalCrashBoundary extends ReactComponent<
+  { children: React.ReactNode; onCrash: (err: Error) => void; resetKey: number; onRetry: () => void },
+  { errored: boolean; lastErr: string | null }
+> {
+  constructor(props: { children: React.ReactNode; onCrash: (err: Error) => void; resetKey: number; onRetry: () => void }) {
+    super(props);
+    this.state = { errored: false, lastErr: null };
+  }
+  static getDerivedStateFromError(err: Error) {
+    return { errored: true, lastErr: err?.message || String(err) };
+  }
+  componentDidCatch(err: Error) {
+    try { this.props.onCrash(err); } catch {}
+  }
+  componentDidUpdate(prev: { resetKey: number }) {
+    // Parent bumped resetKey explicitly via the Retry button — clear
+    // errored so children render again (with the now-nuked
+    // initialData). Do NOT auto-clear on every prop change or we
+    // re-enter the same crash loop.
+    if (prev.resetKey !== this.props.resetKey && this.state.errored) {
+      this.setState({ errored: false, lastErr: null });
+    }
+  }
+  render() {
+    if (this.state.errored) {
+      return (
+        <div style={{
+          position: "absolute", inset: 0, display: "flex",
+          flexDirection: "column", alignItems: "center", justifyContent: "center",
+          gap: 12, padding: 24, background: "rgba(0,0,0,0.4)", color: "#eee",
+          fontFamily: "system-ui", textAlign: "center",
+        }}>
+          <div style={{ fontSize: 14, opacity: 0.85, maxWidth: 480 }}>
+            Canvas crashed (likely a stale element reference in the saved scene).
+            <br />
+            <span style={{ opacity: 0.6, fontSize: 12 }}>{this.state.lastErr}</span>
+          </div>
+          <button
+            onClick={this.props.onRetry}
+            style={{
+              padding: "8px 16px", borderRadius: 8,
+              background: "#685bc7", color: "#fff", border: "none", cursor: "pointer",
+              fontSize: 13,
+            }}
+          >
+            Recover canvas (drops arrow bindings)
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 type DrawingDoc = {
   elements?: unknown[];
+  paperMode?: "plain" | "grid" | "dots" | "lines";
+  layoutMode?: "board" | "book";
+  bookPageCount?: number;
+  bookPages?: { paper?: "plain" | "grid" | "dots" | "lines" | "inherit"; bgColor?: string | null }[];
   appState?: Record<string, unknown>;
   files?: Record<string, unknown>;
   title?: string;
+  canvasBg?: string | null;
 };
 
 function skillSlug(skill: string) {
   return skill.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, "");
 }
 
-const DEBOUNCE_MS = 2500;
+// Aggressive autosave so the peer's poll picks up changes fast.
+// Live drawing fires onChange ~60×/s but only the trailing event in
+// each 150 ms window actually PUTs. Combined with 500 ms SWR poll
+// → ≤700 ms end-to-end without WS.
+const DEBOUNCE_MS = 150;
+
+// Categories used by the LibraryFilterBar. Order MUST match the
+// updateLibrary seed loop so CSS nth-child ranges land on the right
+// library-units in the rendered grid.
+const LIB_CATS: Array<{ id: string; label: string; Icon: React.ComponentType<{ className?: string }>; file: string }> = [
+  { id: "math",   label: "Math",   Icon: Calculator, file: "math" },
+  { id: "devops", label: "DevOps", Icon: Wrench,     file: "devops" },
+  { id: "dev",    label: "Dev",    Icon: Code2,      file: "dev-icons" },
+  { id: "webui",  label: "Web UI", Icon: Globe,      file: "web-kit" },
+  { id: "cloud",  label: "Cloud",  Icon: Cloud,      file: "cloud" },
+  { id: "arch",   label: "Arch",   Icon: Building2,  file: "software-arch" },
+];
+
+// Preset canvas-background swatches surfaced in the Canvas sidebar
+// row. Mirrors Excalidraw's own `DEFAULT_CANVAS_BACKGROUND_PICKS`
+// (radix slate2 / blue2 / yellow2 / bronze2) plus a clear-to-theme
+// option and pure white. Trailing `+` opens a native color picker
+// for arbitrary hex.
+// Tiny module-scoped store for the Canvas swatch row. Lives outside
+// the React tree so the SwatchGrid can subscribe via
+// useSyncExternalStore and re-render in isolation — keeping the
+// memoised MainMenu element tree stable (touching it would re-attach
+// MM's own subscribers and trigger an infinite-update loop, as the
+// memo's note warns).
+const customBgStore = (() => {
+  let value: string | null = null;
+  const listeners = new Set<() => void>();
+  return {
+    subscribe(fn: () => void) { listeners.add(fn); return () => { listeners.delete(fn); }; },
+    getSnapshot() { return value; },
+    getServerSnapshot() { return null as string | null; },
+    set(next: string | null) {
+      if (value === next) return;
+      value = next;
+      listeners.forEach((l) => l());
+    },
+  };
+})();
+
+const CANVAS_BG_SWATCHES: ReadonlyArray<{ title: string; value: string | null }> = [
+  // Row 1 — clear + lights (kept so paper modes still read on light)
+  { title: "Clear (theme)", value: null },
+  { title: "Paper",      value: "#f5efe1" },
+  { title: "Cream",      value: "#e8dfc4" },
+  { title: "Sand",       value: "#c9b48a" },
+  // Row 2 — saturated mids (deeper than pastels)
+  { title: "Moss",       value: "#3f5b3a" },
+  { title: "Steel",      value: "#1e3a5f" },
+  { title: "Plum",       value: "#4a2c52" },
+  { title: "Slate",      value: "#27303e" },
+  // Row 3 — true darks (last slot is the picker)
+  { title: "Forest",     value: "#0d2018" },
+  { title: "Wine",       value: "#2a0e10" },
+  { title: "Onyx",       value: "#0b0d12" },
+];
+
+function sceneBBox(els: readonly unknown[]) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const raw of els) {
+    const e = raw as { x?: number; y?: number; width?: number; height?: number; isDeleted?: boolean } | null;
+    if (!e || e.isDeleted) continue;
+    if (typeof e.x !== "number" || typeof e.y !== "number") continue;
+    const w = typeof e.width === "number" ? e.width : 0;
+    const h = typeof e.height === "number" ? e.height : 0;
+    minX = Math.min(minX, e.x); minY = Math.min(minY, e.y);
+    maxX = Math.max(maxX, e.x + w); maxY = Math.max(maxY, e.y + h);
+  }
+  if (!isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY };
+}
 
 type ExcalApi = {
   getSceneElements: () => readonly unknown[];
@@ -59,13 +291,233 @@ type ExcalApi = {
   updateScene: (data: { elements?: unknown[]; appState?: Record<string, unknown> }) => void;
   scrollToContent: (target?: unknown) => void;
   setActiveTool?: (tool: { type: string; locked?: boolean }) => void;
+  updateLibrary?: (opts: {
+    libraryItems: unknown[] | ((curr: Array<Record<string, unknown>>) => unknown[] | Promise<unknown[]>);
+    merge?: boolean;
+    openLibraryMenu?: boolean;
+    defaultStatus?: "published" | "unpublished";
+  }) => void;
 };
 
-export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: string; homeHref?: string; defaultFull?: boolean }) {
+export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscreenButton = false }: { skill: string; homeHref?: string; defaultFull?: boolean; hideFullscreenButton?: boolean }) {
   const slug = `skill-${skillSlug(skill)}`;
-  const { data: doc, mutate } = useSWR<DrawingDoc>(`/api/drawings/${slug}`, fetcher);
+  // Adaptive poll: 500 ms while a peer is connected (need fast sync),
+  // 3 s otherwise, paused when the tab is hidden. Even with 304s the
+  // request frequency itself eats wakeups + dev-server logs. SWR's
+  // `refreshInterval` accepts a function — return 0 to disable.
+  const [livePeers, setLivePeers] = useState(0);
+  const livePeersRef = useRef(0);
+  useEffect(() => { livePeersRef.current = livePeers; }, [livePeers]);
+  const { data: doc, mutate } = useSWR<DrawingDoc>(
+    `/api/drawings/${slug}`,
+    fetcher,
+    {
+      refreshInterval: () => {
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") return 0;
+        return livePeersRef.current > 0 ? 500 : 3000;
+      },
+      dedupingInterval: 0,
+      revalidateOnFocus: true,
+    },
+  );
   const { resolvedTheme } = useTheme();
   const [full, setFull] = useState(defaultFull);
+  // GoodNotes-style paper templates. Rendered as a CSS background on
+  // the canvas wrapper; Excalidraw paints over it with a transparent
+  // viewBackgroundColor when a non-plain mode is active so the pattern
+  // shows through. Persisted in the saved doc under `paperMode`.
+  const [paperMode, setPaperMode] = useState<PaperMode>("plain");
+  // User-chosen canvas color. `null` = wrapper falls back to its
+  // `bg-card` token. When a paper / book overlay is active we paint
+  // this on the wrapper div; in plain board mode we also push it
+  // into Excalidraw's viewBackgroundColor so the native canvas paints
+  // it. Owned entirely by our custom Canvas swatch row — Excalidraw's
+  // native swatch is left untouched so there's no race over who
+  // "wins" the picked color.
+  const [customBg, setCustomBg] = useState<string | null>(null);
+  const customBgRef = useRef<string | null>(null);
+  useEffect(() => {
+    customBgRef.current = customBg;
+    // Keep the module-scoped store in sync so SidebarSwatchGrid (which
+    // subscribes via useSyncExternalStore to avoid invalidating the
+    // memoised MainMenu tree) reflects the latest pick.
+    customBgStore.set(customBg);
+  }, [customBg]);
+  // Layout mode — `board` is the default infinite canvas; `book`
+  // is GoodNotes-style paged. In book mode entry, we snap the
+  // viewport to fit page 0 and bind ←/→ to flip pages.
+  type LayoutMode = "board" | "book";
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>("board");
+  const [bookPage, setBookPage] = useState(0);
+  const [bookOutlineOpen, setBookOutlineOpen] = useState(false);
+  // Laser-lock — presentation mode where laser-red strokes persist
+  // until the user toggles off. Implementation: we flip the active
+  // tool to freedraw with a red/low-roughness preset while locked, so
+  // the user gets a "laser" feel but the strokes are real elements.
+  // Every new element added while locked is tracked, and toggling
+  // off wipes those elements + restores the previous appState +
+  // tool. The fading laser tool itself can't persist (Excalidraw
+  // clears it after ~700 ms regardless of caller intent), so we
+  // simulate the look with freedraw instead.
+  // View-only mode — toggles Excalidraw's `viewModeEnabled` so the
+  // canvas becomes read-only (useful when presenting frames so a
+  // stray click doesn't move shapes).
+  const [viewOnly, setViewOnly] = useState(false);
+  useEffect(() => {
+    const a = excalRef.current;
+    if (!a) return;
+    try { a.updateScene({ appState: { viewModeEnabled: viewOnly } }); } catch {}
+  }, [viewOnly]);
+  const bookPageRef = useRef(0);
+  useEffect(() => { bookPageRef.current = bookPage; }, [bookPage]);
+  // Per-page paper mode array. Length === page count. Each entry is
+  // either inherits-global (undefined / "inherit") or one of the
+  // PaperMode variants. Default: one page that inherits global mode.
+  type BookPage = { paper?: PaperMode | "inherit"; bgColor?: string | null };
+  const [bookPages, setBookPages] = useState<BookPage[]>([{ paper: "inherit" }]);
+  const bookPagesRef = useRef<BookPage[]>([{ paper: "inherit" }]);
+  useEffect(() => { bookPagesRef.current = bookPages; }, [bookPages]);
+  const bookPageCount = bookPages.length;
+  // Fit viewport to a given page index — centers the page in view
+  // with 32 px padding. Matches the "tap-to-zoom-to-page" feel.
+  const goToBookPage = useCallback((idx: number) => {
+    const clamped = Math.max(0, Math.min(bookPagesRef.current.length - 1, idx));
+    setBookPage(clamped);
+    const api = excalRef.current;
+    if (!api) return;
+    const app = api.getAppState() as { width?: number; height?: number };
+    const vw = app.width ?? window.innerWidth;
+    const vh = app.height ?? window.innerHeight;
+    const padding = 32;
+    const top = bookPageTop(clamped);
+    const zoom = Math.max(0.05, Math.min(2,
+      (vw - padding * 2) / BOOK_PAGE_W,
+      (vh - padding * 2) / BOOK_PAGE_H,
+    ));
+    // Center page in viewport: world coords of page center,
+    // map back to scrollX/Y given the new zoom.
+    const cx = BOOK_PAGE_W / 2;
+    const cy = top + BOOK_PAGE_H / 2;
+    api.updateScene({
+      appState: {
+        zoom: { value: zoom },
+        scrollX: vw / (2 * zoom) - cx,
+        scrollY: vh / (2 * zoom) - cy,
+      },
+    });
+    // Mirror new appState into miniData so BookPagesOverlay
+    // (which reads scrollX/Y + zoom from miniData.app) positions
+    // pages correctly on the FIRST render after reload — otherwise
+    // it waits for the next onChange to fire, which may not happen
+    // until the user interacts and the pages stay invisible.
+    setMiniData((prev) => ({
+      els: prev.els,
+      app: api.getAppState() as Record<string, unknown>,
+    }));
+  }, []);
+  // Snap to page 0 on entering book mode. On reload `layoutMode`
+  // flips to "book" before Excalidraw's dynamic import resolves —
+  // running goToBookPage immediately would early-return because
+  // excalRef.current is null. Poll on RAF until the API is alive,
+  // then snap once. Bounded by maxTries so it never loops forever.
+  useEffect(() => {
+    if (layoutMode !== "book") return;
+    let cancelled = false;
+    let tries = 0;
+    const maxTries = 120; // ~2s at 60 fps
+    const tick = () => {
+      if (cancelled) return;
+      if (excalRef.current) {
+        goToBookPage(0);
+        return;
+      }
+      if (++tries > maxTries) return;
+      requestAnimationFrame(tick);
+    };
+    const t = setTimeout(() => requestAnimationFrame(tick), 50);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [layoutMode, goToBookPage]);
+  // Two-finger horizontal swipe on the canvas flips pages while in
+  // book mode (tablet/touchpad). Single finger is reserved for
+  // Excalidraw drawing/panning.
+  useEffect(() => {
+    if (layoutMode !== "book") return;
+    const el = canvasWrapRef.current;
+    if (!el) return;
+    let startX: number | null = null;
+    let startY: number | null = null;
+    let active = false;
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 2) { active = false; return; }
+      active = true;
+      const t0 = e.touches[0], t1 = e.touches[1];
+      startX = (t0.clientX + t1.clientX) / 2;
+      startY = (t0.clientY + t1.clientY) / 2;
+    };
+    const onTouchEnd = (e: TouchEvent) => {
+      if (!active || startX == null || startY == null) return;
+      active = false;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - startX;
+      const dy = t.clientY - startY;
+      startX = null; startY = null;
+      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      if (dx < 0) goToBookPage(bookPageRef.current + 1);
+      else goToBookPage(bookPageRef.current - 1);
+    };
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchend", onTouchEnd, { passive: true });
+    return () => {
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchend", onTouchEnd);
+    };
+  }, [layoutMode, goToBookPage]);
+
+  // ←/→ + PageUp/Down keys flip pages while in book mode. Don't
+  // hijack when focus is in an input/textarea or when the user is
+  // typing in an Excalidraw text element.
+  useEffect(() => {
+    if (layoutMode !== "book") return;
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || (e.target as HTMLElement)?.isContentEditable) return;
+      if (e.key === "ArrowRight" || e.key === "PageDown") {
+        e.preventDefault();
+        goToBookPage(bookPageRef.current + 1);
+      } else if (e.key === "ArrowLeft" || e.key === "PageUp") {
+        e.preventDefault();
+        goToBookPage(bookPageRef.current - 1);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [layoutMode, goToBookPage]);
+  // Whenever paperMode changes, force Excalidraw's viewBackgroundColor
+  // to transparent (so the wrapper pattern shows) or back to white.
+  useEffect(() => {
+    const api = excalRef.current;
+    if (!api) return;
+    try {
+      api.updateScene({
+        appState: {
+          // Always paint canvas bg via the wrapper div (set below in
+          // the JSX style prop) instead of via Excalidraw's
+          // viewBackgroundColor. Excalidraw's own paint subtly
+          // lightens custom dark colors (looks like a tint pass), so
+          // plain-mode dark backgrounds came out paler than the same
+          // color in grid/dots/lines modes. Routing everything
+          // through the wrapper keeps the visual identical across
+          // paper modes.
+          viewBackgroundColor: "transparent",
+        },
+      });
+      // Force Excalidraw to re-render the static canvas now. Without
+      // this, the appState change can sit unrendered until the next
+      // user input — leaving the canvas opaque-painted from its
+      // previous viewBackgroundColor and hiding BookPagesOverlay.
+      (api as { refresh?: () => void }).refresh?.();
+    } catch {}
+  }, [paperMode, layoutMode]);
   const [saved, setSaved] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
@@ -136,16 +588,88 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [presenting, presentIdx, showFrame]);
+  // Swallow the recurring Excalidraw "Cannot read properties of
+  // undefined (reading 'type')" render error. Despite multiple layers
+  // of scrubbing, certain internal Excalidraw render paths still hit
+  // a transient undefined element during reconciliation. The error
+  // doesn't break further drawing — only Next.js's dev overlay makes
+  // it look catastrophic. Suppress only this specific message so
+  // genuine bugs still surface.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const isExcalCrash = (msg: string) =>
+      msg.includes("Cannot read properties of undefined (reading 'type')");
+    const onErr = (ev: ErrorEvent) => {
+      if (isExcalCrash(ev.message || "")) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+    };
+    const onRej = (ev: PromiseRejectionEvent) => {
+      const m = ev.reason && (ev.reason.message || String(ev.reason));
+      if (typeof m === "string" && isExcalCrash(m)) {
+        ev.preventDefault();
+      }
+    };
+    window.addEventListener("error", onErr, true);
+    window.addEventListener("unhandledrejection", onRej);
+    return () => {
+      window.removeEventListener("error", onErr, true);
+      window.removeEventListener("unhandledrejection", onRej);
+    };
+  }, []);
   const [miniData, setMiniData] = useState<{ els: readonly unknown[]; app: Record<string, unknown> }>({ els: [], app: {} });
-  // Seed the minimap from the loaded doc so it shows real geometry before
-  // the user touches the canvas — otherwise the minimap reads 0 elements
-  // on every fresh page load until the first onChange.
+  // Seed the minimap from the loaded doc so it shows real geometry
+  // before the user touches the canvas. SWR refetches every 500 ms
+  // and returns a new `doc` reference each time, so we gate on
+  // element count to avoid a setState-on-every-poll re-render storm
+  // that compounded with Excalidraw's MainMenu rerender and tripped
+  // React's update-depth limit.
+  const seededLen = useRef(-1);
   useEffect(() => {
     if (!doc) return;
     const els = Array.isArray(doc.elements) ? doc.elements : [];
+    if (els.length === seededLen.current) return;
+    seededLen.current = els.length;
     setMiniData({ els: els as readonly unknown[], app: (doc.appState ?? {}) as Record<string, unknown> });
   }, [doc]);
   const [miniOpen, setMiniOpen] = useState(true);
+  // Cursor indicator dot in the laptop minimap — mirrors the tablet
+  // behaviour the user liked. Throttled via rAF so a 60Hz mousemove
+  // doesn't trigger 60Hz React renders.
+  const canvasWrapRef = useRef<HTMLDivElement | null>(null);
+  const [cursorWorld, setCursorWorld] = useState<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    const el = canvasWrapRef.current;
+    if (!el) return;
+    let raf = 0;
+    let lastClient: { x: number; y: number } | null = null;
+    const tick = () => {
+      raf = 0;
+      const c = lastClient;
+      if (!c) return;
+      const api = excalRef.current;
+      if (!api) return;
+      const s = api.getAppState() as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
+      const zoom = s.zoom?.value ?? 1;
+      const rect = el.getBoundingClientRect();
+      const x = (c.x - rect.left) / zoom - (s.scrollX ?? 0);
+      const y = (c.y - rect.top) / zoom - (s.scrollY ?? 0);
+      setCursorWorld({ x, y });
+    };
+    const onMove = (e: PointerEvent) => {
+      lastClient = { x: e.clientX, y: e.clientY };
+      if (raf === 0) raf = requestAnimationFrame(tick);
+    };
+    const onLeave = () => { lastClient = null; setCursorWorld(null); };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerleave", onLeave);
+    return () => {
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerleave", onLeave);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
   const last = useRef("");
   const t = useRef<ReturnType<typeof setTimeout> | null>(null);
   const excalRef = useRef<ExcalApi | null>(null);
@@ -155,25 +679,500 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   // empty while the minimap, fed straight off `doc`, shows the full scene.
   // This effect pushes elements into Excalidraw exactly once per slug.
   const [excalReady, setExcalReady] = useState(false);
-  const appliedFor = useRef<string>("");
+  // Bumped by the error boundary when Excalidraw crashes mid-render.
+  // The bump is appended to the canvas `key` so React unmounts the
+  // broken instance and remounts with fresh (filtered) initialData.
+  const [recoveryNonce, setRecoveryNonce] = useState(0);
+  const recoveredAtRef = useRef(0);
+  const onCanvasCrash = useCallback((err: Error) => {
+    console.error("[sketch] Excalidraw crashed", err);
+  }, []);
+  const onCanvasRetry = useCallback(() => {
+    setRecoveryNonce((n) => n + 1);
+  }, []);
+  // Stable callback so Excalidraw doesn't see a new prop reference
+  // every SkillSketch render. Calling `setExcalReady(true)` on every
+  // call is fine — React bails on identical state — but the inline
+  // arrow form was a new function each render, which could (and did,
+  // in some Excalidraw paths) trigger an internal re-subscribe that
+  // emitted during render and starved React's update budget. Going
+  // through a ref guarantees we only flip once.
+  const readyOnce = useRef(false);
+  const excalApiCallback = useCallback((api: unknown) => {
+    const a = api as ExcalApi & { updateScene: (d: { elements?: unknown[]; appState?: Record<string, unknown> }) => void };
+    // Monkey-patch updateScene to scrub malformed elements at the
+    // boundary. Multiple call sites (SWR mirror, websocket reconcile,
+    // AI transform, library import) all funnel here — patching once
+    // guarantees Excalidraw never sees an undefined/typeless element
+    // (which crashes its internal `.filter(...).type` loop).
+    const orig = a.updateScene.bind(a);
+    a.updateScene = (d: { elements?: unknown[]; appState?: Record<string, unknown> }) => {
+      if (Array.isArray(d?.elements)) {
+        // 1. Drop malformed elements (no type or null/undefined slots).
+        const valid = (d.elements as Array<Record<string, unknown> | null | undefined>)
+          .filter((el): el is Record<string, unknown> =>
+            !!el && typeof el === "object" && typeof (el as { type?: unknown }).type === "string"
+          );
+        // 2. Build id set so we can strip dangling boundElement refs
+        // and containerId/frameId pointing at deleted elements.
+        // Excalidraw's render maps these ids to actual elements; if a
+        // referenced id is missing the mapped result is `undefined`
+        // and the next `.filter(el => el.type === ...)` crashes.
+        const liveIds = new Set<string>();
+        for (const el of valid) {
+          const id = (el as { id?: unknown }).id;
+          if (typeof id === "string") liveIds.add(id);
+        }
+        const safe = valid.map((el) => {
+          const beRaw = (el as { boundElements?: unknown }).boundElements;
+          const gi = (el as { groupIds?: unknown }).groupIds;
+          const cid = (el as { containerId?: unknown }).containerId;
+          const fid = (el as { frameId?: unknown }).frameId;
+          const beClean = Array.isArray(beRaw)
+            ? (beRaw as unknown[]).filter((b) =>
+                !!b && typeof b === "object"
+                && typeof (b as { type?: unknown }).type === "string"
+                && typeof (b as { id?: unknown }).id === "string"
+                && liveIds.has((b as { id: string }).id)
+              )
+            : [];
+          const giClean = Array.isArray(gi) ? gi : [];
+          const cidClean = typeof cid === "string" && liveIds.has(cid) ? cid : null;
+          const fidClean = typeof fid === "string" && liveIds.has(fid) ? fid : null;
+          // Only re-spread if something needed cleaning, to avoid
+          // touching element identity unnecessarily.
+          const beChanged = !Array.isArray(beRaw) || (beRaw as unknown[]).length !== beClean.length;
+          const giChanged = !Array.isArray(gi);
+          const cidChanged = (cid ?? null) !== cidClean;
+          const fidChanged = (fid ?? null) !== fidClean;
+          if (!beChanged && !giChanged && !cidChanged && !fidChanged) return el;
+          return {
+            ...el,
+            boundElements: beClean,
+            groupIds: giClean,
+            containerId: cidClean,
+            frameId: fidClean,
+          };
+        });
+        d = { ...d, elements: safe };
+      }
+      return orig(d);
+    };
+    excalRef.current = a;
+    if (!readyOnce.current) {
+      readyOnce.current = true;
+      setExcalReady(true);
+    }
+  }, []);
+  // One-shot scrub: a previous AI-transform bug may have written
+  // elements lacking `type` into the scene. Excalidraw crashes its
+  // render loop on those (`Cannot read properties of undefined`).
+  // Strip them once the API is alive.
   useEffect(() => {
-    if (!doc || !excalReady) return;
-    if (appliedFor.current === slug) return;
-    appliedFor.current = slug;
+    if (!excalReady) return;
     const api = excalRef.current;
     if (!api) return;
-    const els = Array.isArray(doc.elements) ? doc.elements : [];
-    try {
-      (api.updateScene as (d: { elements?: unknown[] }) => void)({ elements: els as unknown[] });
-    } catch {}
+    const els = api.getSceneElements() as Array<Record<string, unknown> | null | undefined>;
+    const safe = els.filter((el): el is Record<string, unknown> =>
+      !!el && typeof el === "object" && typeof (el as { type?: unknown }).type === "string"
+    );
+    if (safe.length !== els.length) {
+      api.updateScene({ elements: safe });
+    }
+  }, [excalReady]);
+  // Refs the MainMenu can read without triggering re-memo on every
+  // SkillSketch render. Updated in a layout effect below.
+  const paperModeRef = useRef<PaperMode>("plain");
+  const layoutModeRef = useRef<LayoutMode>("board");
+  const lastMetaEditAtRef = useRef(0);
+  const exportRef = useRef<{
+    png?: () => void;
+    svg?: () => void;
+    json?: () => void;
+    excali?: () => void;
+    setPaper?: (m: PaperMode) => void;
+    setLayout?: (m: "board" | "book") => void;
+    setCanvasBg?: (c: string | null) => void;
+  }>({});
+
+  // Memoize the MainMenu subtree. Without this, every SkillSketch
+  // render builds a fresh React element tree for the menu items;
+  // their `useSyncExternalStore` subscriptions re-attach each time,
+  // and Excalidraw's emitter's `Set.forEach` over subscribers
+  // observed mid-mutation snapshots — the exact stack we kept
+  // seeing in the "Maximum update depth" crashes.
+  const mainMenuNode = useMemo(() => {
+    if (!excalMod) return null;
+    const MM = excalMod.MainMenu as unknown as React.ComponentType<{ children?: React.ReactNode }> & {
+      Item: React.ComponentType<{ onSelect?: () => void; icon?: React.ReactNode; shortcut?: string; children?: React.ReactNode }>;
+      ItemLink: React.ComponentType<{ href: string; icon?: React.ReactNode; children?: React.ReactNode }>;
+      Separator: React.ComponentType;
+      Group: React.ComponentType<{ title?: string; children?: React.ReactNode }>;
+      DefaultItems: {
+        ToggleTheme: React.ComponentType;
+        ChangeCanvasBackground: React.ComponentType;
+        SearchMenu: React.ComponentType;
+        Help: React.ComponentType;
+        LoadScene: React.ComponentType;
+        ClearCanvas: React.ComponentType;
+        SaveAsImage: React.ComponentType;
+      };
+    };
+    return (
+      <MM>
+        {homeHref && (
+          <>
+            <MM.ItemLink href={homeHref} icon={<ArrowLeft style={{ width: 14, height: 14 }} />}>
+              Home
+            </MM.ItemLink>
+            <MM.Separator />
+          </>
+        )}
+        <MM.DefaultItems.SearchMenu />
+        <MM.DefaultItems.LoadScene />
+        <MM.DefaultItems.Help />
+        <MM.Separator />
+        <SidebarRow label="Paper">
+          <SidebarIconBtn title="Plain" active={paperMode === "plain"} onClick={() => exportRef.current.setPaper?.("plain")}><PaperModeIcon mode="plain" /></SidebarIconBtn>
+          <SidebarIconBtn title="Grid" active={paperMode === "grid"} onClick={() => exportRef.current.setPaper?.("grid")}><PaperModeIcon mode="grid" /></SidebarIconBtn>
+          <SidebarIconBtn title="Dots" active={paperMode === "dots"} onClick={() => exportRef.current.setPaper?.("dots")}><PaperModeIcon mode="dots" /></SidebarIconBtn>
+          <SidebarIconBtn title="Lined" active={paperMode === "lines"} onClick={() => exportRef.current.setPaper?.("lines")}><PaperModeIcon mode="lines" /></SidebarIconBtn>
+        </SidebarRow>
+        <SidebarRow label="Layout">
+          <SidebarIconBtn title="Board (infinite canvas)" active={layoutMode === "board"} onClick={() => exportRef.current.setLayout?.("board")}>
+            <LayoutIcon mode="board" />
+          </SidebarIconBtn>
+          <SidebarIconBtn title="Book (paged)" active={layoutMode === "book"} onClick={() => exportRef.current.setLayout?.("book")}>
+            <LayoutIcon mode="book" />
+          </SidebarIconBtn>
+        </SidebarRow>
+        <MM.Separator />
+        <SidebarSwatchGrid
+          label="Canvas"
+          swatches={CANVAS_BG_SWATCHES}
+          onPick={(c) => exportRef.current.setCanvasBg?.(c)}
+        />
+        <MM.Separator />
+        <SidebarRow label="Export">
+          <SidebarIconBtn title="Export PNG" onClick={() => exportRef.current.png?.()}><ImageIcon style={{ width: 14, height: 14 }} /></SidebarIconBtn>
+          <SidebarIconBtn title="Export SVG" onClick={() => exportRef.current.svg?.()}><FileCode style={{ width: 14, height: 14 }} /></SidebarIconBtn>
+          <SidebarIconBtn title="Export .excalidraw" onClick={() => exportRef.current.excali?.()}><Download style={{ width: 14, height: 14 }} /></SidebarIconBtn>
+          <SidebarIconBtn title="Copy scene JSON" onClick={() => exportRef.current.json?.()}><Copy style={{ width: 14, height: 14 }} /></SidebarIconBtn>
+        </SidebarRow>
+        <MM.Separator />
+        <MM.DefaultItems.ClearCanvas />
+      </MM>
+    );
+    // NOTE: customBg intentionally NOT in deps — including it rebuilds
+    // the whole MainMenu element tree on every pick, which forces MM's
+    // useSyncExternalStore subscribers to re-attach mid-mutation and
+    // trips the "Maximum update depth" loop (same trap the comment on
+    // this memo warns about). SwatchGrid subscribes via the
+    // module-scoped customBgStore for its own live value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [excalMod, homeHref, paperMode, layoutMode]);
+
+  const appliedFor = useRef<string>("");
+  // Apply server scene ONCE per slug on first read. Subsequent SWR
+  // polls don't push into Excalidraw — the realtime path is the WS
+  // receive handler (which already calls reconcile + updateScene
+  // out-of-band). Polling for re-apply was triggering Excalidraw's
+  // internal store to emit while React was committing this same
+  // tree, hence the recurring "Maximum update depth" stack ending
+  // inside MainMenu's `Set.forEach` over its subscribers.
+useEffect(() => {
+    if (!doc || !excalReady) return;
+    const api = excalRef.current;
+    if (!api) return;
+    const remoteElsRaw = Array.isArray(doc.elements) ? doc.elements : [];
+    // Defensive: a past AI-transform bug could have persisted elements
+    // without `type` on the server. Strip them before any updateScene.
+    // ALSO nuke every relational field (boundElements/containerId/
+    // frameId/groupIds) at this layer because Excalidraw's render
+    // resolves these to live elements on EVERY tick; a stale ref ends
+    // up as `undefined` in an internal .filter chain and crashes.
+    const remoteEls = (remoteElsRaw as Array<Record<string, unknown> | null | undefined>)
+      .filter((el): el is Record<string, unknown> =>
+        !!el && typeof el === "object" && typeof (el as { type?: unknown }).type === "string"
+      )
+      .map((el) => ({
+        ...el,
+        groupIds: [],
+        boundElements: [],
+        containerId: null,
+        frameId: null,
+      }));
+    const firstApply = appliedFor.current !== slug;
+    // Continuously mirror layout/paper/bookPages from server. Skipped
+    // during the 1.5s after a local toggle (lastMetaEditAtRef) so an
+    // SWR poll returning pre-PUT body can't revert the user's choice.
+    const skipMetaSync = Date.now() - lastMetaEditAtRef.current < 1500;
+    if (!skipMetaSync) {
+      if (doc.paperMode && doc.paperMode !== paperMode) {
+        setPaperMode(doc.paperMode);
+      }
+      if (doc.layoutMode && doc.layoutMode !== layoutMode) {
+        setLayoutMode(doc.layoutMode);
+      }
+      // Only seed customBg from doc on FIRST apply per slug — the
+      // polling effect re-runs on every SWR refresh (new doc ref each
+      // time) and continuously setting state from doc would feedback
+      // with onChange → save → reload chain into an update loop.
+      if (firstApply && typeof doc.canvasBg === "string" && doc.canvasBg !== customBgRef.current) {
+        setCustomBg(doc.canvasBg);
+      }
+      if (Array.isArray(doc.bookPages)) {
+        const remotePages = doc.bookPages as BookPage[];
+        const localPagesJson = JSON.stringify(bookPagesRef.current);
+        const remotePagesJson = JSON.stringify(remotePages);
+        if (remotePages.length > 0 && remotePagesJson !== localPagesJson) {
+          setBookPages(remotePages);
+        }
+      } else if (firstApply && typeof doc.bookPageCount === "number" && doc.bookPageCount > 0) {
+        // Backward compat: expand old `bookPageCount` to inherit-pages.
+        setBookPages(Array.from({ length: doc.bookPageCount }, () => ({ paper: "inherit" as const })));
+      }
+    }
+    if (firstApply) {
+      appliedFor.current = slug;
+      // Defer the very first updateScene off the React commit phase
+      // too. Excalidraw's internal store fires its subscriber set
+      // synchronously inside updateScene; running that while React
+      // is still committing this same tree was the actual source of
+      // the `Set.forEach → <MM>` infinite-update loop.
+      const tid = setTimeout(() => {
+        const a = excalRef.current;
+        if (!a) return;
+        applyingRemoteRef.current = true;
+        try {
+          (a.updateScene as (d: { elements?: unknown[] }) => void)({ elements: remoteEls as unknown[] });
+        } catch {}
+        setTimeout(() => { applyingRemoteRef.current = false; }, 0);
+        const mod = excalModRef.current;
+        if (mod) {
+          try {
+            lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(remoteEls as never);
+          } catch {}
+        }
+      }, 0);
+      return () => clearTimeout(tid);
+    }
+    // Subsequent SWR refreshes: reconcile remote against local off
+    // the React commit phase so updateScene's internal store emit
+    // doesn't loop back into the MainMenu render (was the source of
+    // the recurring "Maximum update depth" crashes). The setTimeout
+    // hop pushes the reconcile into a fresh task, after commit.
+    const mod = excalModRef.current;
+    if (!mod) return;
+    const remoteVer = (() => { try { return mod.getSceneVersion(remoteEls as never); } catch { return -1; } })();
+    if (remoteVer <= lastBroadcastedOrReceivedSceneVersion.current) return;
+    const tid = setTimeout(() => {
+      const a = excalRef.current;
+      if (!a) return;
+      try {
+        const local = a.getSceneElements() as never;
+        const appState = a.getAppState() as never;
+        const restored = (mod.restoreElements as (r: unknown, e: unknown) => unknown)(remoteEls, local);
+        const reconciled = mod.reconcileElements(local, restored as never, appState);
+        lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
+        applyingRemoteRef.current = true;
+        (a.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
+          elements: reconciled as unknown as unknown[],
+          captureUpdate: mod.CaptureUpdateAction.NEVER,
+        });
+        setTimeout(() => { applyingRemoteRef.current = false; }, 0);
+      } catch { applyingRemoteRef.current = false; }
+    }, 0);
+    return () => clearTimeout(tid);
   }, [slug, doc, excalReady]);
-  useEffect(() => { appliedFor.current = ""; }, [slug]);
+
+  // Insert a single library item's raw Excalidraw elements onto the canvas.
+  // The categorized stamp sidebar uses this; library items are already in
+  // final element form (not skeleton), so we just regen IDs + remap bindings
+  // + translate next to existing content. Without ID remapping the same
+  // stamp dropped twice would collide on element id.
+  const insertLibElements = useCallback(async (rawEls: ReadonlyArray<Record<string, unknown>>) => {
+    const api = excalRef.current;
+    if (!api || !rawEls.length) return;
+    const newId = () => "lib_" + Math.random().toString(36).slice(2, 10);
+    const idMap = new Map<string, string>();
+    for (const e of rawEls) {
+      const id = (e as { id?: string }).id;
+      if (typeof id === "string") idMap.set(id, newId());
+    }
+    const remap = (s: string | undefined): string | undefined => (s && idMap.get(s)) || s;
+    const groupRemap = new Map<string, string>();
+    const fresh = rawEls.map((src) => {
+      const e = { ...src } as Record<string, unknown>;
+      const oldId = e.id as string | undefined;
+      if (oldId) e.id = idMap.get(oldId) ?? newId();
+      e.seed = Math.floor(Math.random() * 2 ** 31);
+      if (Array.isArray(e.boundElements)) {
+        e.boundElements = (e.boundElements as Array<{ id?: string; type?: string }>).map((b) => ({ ...b, id: remap(b.id) ?? "" }));
+      }
+      const sb = e.startBinding as { elementId?: string } | undefined;
+      if (sb?.elementId) e.startBinding = { ...sb, elementId: remap(sb.elementId) };
+      const eb = e.endBinding as { elementId?: string } | undefined;
+      if (eb?.elementId) e.endBinding = { ...eb, elementId: remap(eb.elementId) };
+      if (typeof e.containerId === "string") e.containerId = remap(e.containerId);
+      if (Array.isArray(e.groupIds)) {
+        e.groupIds = (e.groupIds as string[]).map((g) => {
+          if (!groupRemap.has(g)) groupRemap.set(g, newId());
+          return groupRemap.get(g)!;
+        });
+      }
+      return e;
+    });
+    const bb = sceneBBox(fresh);
+    if (bb) {
+      const current = api.getSceneElements();
+      const sceneBB = sceneBBox(current);
+      const appState = api.getAppState() as { scrollX?: number; scrollY?: number; width?: number; height?: number; zoom?: { value?: number } };
+      let targetX: number, targetY: number;
+      if (sceneBB) {
+        targetX = sceneBB.maxX + 60;
+        targetY = sceneBB.minY;
+      } else if (typeof appState.scrollX === "number" && typeof appState.width === "number") {
+        const zoom = appState.zoom?.value ?? 1;
+        targetX = -appState.scrollX + (appState.width / zoom) / 2 - (bb.maxX - bb.minX) / 2;
+        targetY = -(appState.scrollY ?? 0) + ((appState.height ?? 0) / zoom) / 2 - (bb.maxY - bb.minY) / 2;
+      } else {
+        targetX = 100; targetY = 100;
+      }
+      const dx = targetX - bb.minX;
+      const dy = targetY - bb.minY;
+      for (const el of fresh) {
+        if (typeof el.x === "number") el.x = (el.x as number) + dx;
+        if (typeof el.y === "number") el.y = (el.y as number) + dy;
+      }
+    }
+    const current = api.getSceneElements();
+    api.updateScene({ elements: [...(current as unknown[]), ...fresh] });
+    try { api.scrollToContent(fresh as never); } catch {}
+  }, []);
+  useEffect(() => { appliedFor.current = ""; lastBroadcastedOrReceivedSceneVersion.current = -1; }, [slug]);
+
+  // Stable onLibraryChange — inline arrow at the Excalidraw JSX site
+  // creates a fresh function every SkillSketch render, which made
+  // Excalidraw's emitter re-attach subscribers and trip the
+  // "Maximum update depth" loop (same trap mainMenuNode warns about).
+  const onLibraryChange = useCallback((items: ReadonlyArray<Record<string, unknown>>) => {
+    try {
+      const extras = items.filter((it) => {
+        const id = (it as { id?: string }).id ?? "";
+        return !id.startsWith("seed-");
+      });
+      localStorage.setItem(`sklib-imports-${slug}`, JSON.stringify(extras));
+    } catch { /* quota/SecurityError → silently drop */ }
+  }, [slug]);
+
+  // Seed Excalidraw's NATIVE library with our 6 vendored
+  // .excalidrawlib categories. Built-in library sidebar (book icon)
+  // renders them with native UX. Fighting withInternalFallback with a
+  // custom Sidebar always looped on "Maximum update depth".
+  //
+  // For category filtering: we track per-cat counts in state, then
+  // <LibraryFilterBar /> portals a tab strip into the library panel's
+  // header. Filter sets a data attribute on the items grid; CSS rules
+  // hide library-units outside the active cat by nth-child range.
+  const libSeededRef = useRef(false);
+  const [catCounts, setCatCounts] = useState<number[] | null>(null);
+  // Number of user-imported items sitting AHEAD of our seeded section
+  // in Excalidraw's library list (Excalidraw merges new items at the
+  // FRONT). Filter-bar nth-child ranges shift by this amount so a
+  // category click still hides/shows the right rows after imports.
+  const [frontOffset, setFrontOffset] = useState(0);
+  useEffect(() => {
+    if (!excalReady || libSeededRef.current) return;
+    const api = excalRef.current;
+    if (!api?.updateLibrary) return;
+    libSeededRef.current = true;
+    (async () => {
+      const lists = await Promise.all(LIB_CATS.map(async (c) => {
+        try {
+          const r = await fetch(`/sketch-libs/${c.file}.excalidrawlib`);
+          if (!r.ok) return [] as Array<Record<string, unknown>>;
+          const j = await r.json() as { libraryItems?: Array<Record<string, unknown>>; library?: unknown[][] };
+          // Use STABLE per-cat IDs so reloads see the same items
+          // already in the library and we can compute frontOffset by
+          // diffing live library vs. seeded ID set.
+          if (Array.isArray(j.libraryItems)) {
+            return j.libraryItems.map((it, i) => ({
+              ...it,
+              status: "unpublished",
+              id: `seed-${c.id}-${i}`,
+            }));
+          }
+          if (Array.isArray(j.library)) {
+            return j.library.map((els, i) => ({
+              status: "unpublished",
+              elements: els,
+              id: `seed-${c.id}-${i}`,
+              created: Date.now(),
+            }));
+          }
+          return [];
+        } catch { return []; }
+      }));
+      const counts = lists.map((l) => l.length);
+      const allSeed = lists.flat();
+      if (!allSeed.length) return;
+      const seedIdSet = new Set(allSeed.map((it) => (it as { id: string }).id));
+      try {
+        // Use the function form of updateLibrary so we can inspect the
+        // CURRENT library before merging. This lets us:
+        //   1. Compute how many user-imported items live at the front
+        //      of the library (Excalidraw places new items at index 0).
+        //   2. Skip seed items already present to avoid duplicate
+        //      churn after a reload.
+        // Reload user-imported items from localStorage so they
+        // survive a page refresh. Excalidraw's library is in-memory
+        // only — we own persistence via `onLibraryChange`.
+        const stored = (() => {
+          try {
+            const raw = localStorage.getItem(`sklib-imports-${slug}`);
+            if (!raw) return [] as Array<Record<string, unknown>>;
+            const arr = JSON.parse(raw) as Array<Record<string, unknown>>;
+            return Array.isArray(arr) ? arr : [];
+          } catch { return [] as Array<Record<string, unknown>>; }
+        })();
+        api.updateLibrary?.({
+          libraryItems: (curr: Array<{ id?: string }>) => {
+            const haveIds = new Set(curr.map((it) => it.id).filter(Boolean) as string[]);
+            // Order matters: imports BEFORE seed so they land at the
+            // front (matching Excalidraw's merge behavior — new items
+            // go to index 0 — so subsequent live imports keep stacking
+            // on top in the same relative order).
+            const additions = [
+              ...stored.filter((it) => !haveIds.has((it as { id?: string }).id ?? "")),
+              ...allSeed.filter((s) => !haveIds.has((s as { id: string }).id)),
+            ];
+            const frontCount = curr.filter((it) => !seedIdSet.has(it.id ?? "")).length
+              + stored.filter((it) => !haveIds.has((it as { id?: string }).id ?? "")).length;
+            setFrontOffset(frontCount);
+            return additions;
+          },
+          merge: true,
+          defaultStatus: "unpublished",
+        });
+        setCatCounts(counts);
+      } catch (e) { console.warn("updateLibrary failed", e); }
+    })();
+  }, [excalReady]);
 
   const initialData = useMemo(() => {
     if (!doc) return undefined;
     const rawEls = Array.isArray(doc.elements) ? doc.elements : [];
-    const elements = (rawEls as Array<Record<string, unknown> | null | undefined>)
-      .filter((el): el is Record<string, unknown> => !!el && typeof el === "object" && typeof el.type === "string");
+    // NUCLEAR: mount Excalidraw EMPTY. Real elements get pushed via
+    // updateScene right after mount — that path goes through our
+    // patched updateScene which strips every malformed/dangling
+    // reference. Putting raw doc.elements into initialData has been
+    // crashing Excalidraw's render before any of our defenses run,
+    // because internal mount paths bypass updateScene.
+    const elements: Array<Record<string, unknown>> = [];
+    // Keep raw elements stashed on the doc itself so a post-mount
+    // effect can push them through updateScene (see below).
+    void (rawEls as unknown);
     const src = (doc.appState ?? {}) as Record<string, unknown>;
     const SAFE_KEYS = [
       "viewBackgroundColor", "gridSize", "gridModeEnabled",
@@ -185,6 +1184,16 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     ] as const;
     const safeAppState: Record<string, unknown> = {};
     for (const k of SAFE_KEYS) if (src[k] !== undefined) safeAppState[k] = src[k];
+    // Force initial viewBackgroundColor to match the layoutMode/paperMode
+    // about to be applied. Otherwise the canvas mounts white and any
+    // BookPagesOverlay / PaperBackdrop underneath stays hidden until the
+    // post-mount effect at line ~229 runs — long enough for the user to
+    // see a flash of "no pages".
+    // Canvas bg is always painted by the wrapper div now (see
+    // viewBackgroundColor effect + JSX style prop), so Excalidraw's
+    // internal viewBackgroundColor stays transparent across all
+    // paper/layout modes. Keeps dark colors actually dark in plain.
+    safeAppState.viewBackgroundColor = "transparent";
     return {
       elements: elements as never,
       appState: { ...safeAppState, collaborators: new Map() } as never,
@@ -194,14 +1203,35 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   }, [slug, !!doc]);
 
   const save = useCallback(async (payload: object) => {
-    const body = JSON.stringify({ data: { ...payload, title: skill } });
+    // Read meta from refs so save always uses the latest layout/paper
+    // values (the useCallback only depends on skill+slug; capturing
+    // state directly would stale-close over post-toggle values and
+    // ship the prior layoutMode/paperMode/bookPages with every save).
+    const merged = {
+      ...payload,
+      title: skill,
+      paperMode: paperModeRef.current,
+      layoutMode: layoutModeRef.current,
+      bookPages: bookPagesRef.current,
+      canvasBg: customBgRef.current,
+    };
+    const body = JSON.stringify({ data: merged });
     if (body === last.current) return;
     last.current = body;
     const r = await fetch(`${API}/api/drawings/${slug}`, {
       method: "PUT", headers: { "Content-Type": "application/json", ...authHeaders() }, body,
     });
-    if (r.ok) { setSaved(true); setTimeout(() => setSaved(false), 1500); mutate(); }
-  }, [skill, slug, mutate]);
+    if (r.ok) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+      // Prime ETag with the FULL merged body (including meta) so the
+      // imminent SWR 304 returns a body that still has layoutMode /
+      // paperMode / bookPages — without this the cached body was
+      // missing meta and the SWR re-render flipped book mode off.
+      const newEtag = r.headers.get("etag");
+      if (newEtag) primeEtag(`/api/drawings/${slug}`, newEtag, merged);
+    }
+  }, [skill, slug]);
 
   // Manual save: bypass the debounce + dedupe and force-flush the live scene.
   // Auto-save covers the happy path; this gives the user a recovery handle for
@@ -220,6 +1250,10 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
           elements: [...api.getSceneElements()],
           appState: api.getAppState(),
           files: api.getFiles(),
+          paperMode: paperModeRef.current,
+          layoutMode: layoutModeRef.current,
+          bookPages: bookPagesRef.current,
+          canvasBg: customBgRef.current,
         },
       });
       const r = await fetch(`${API}/api/drawings/${slug}`, {
@@ -229,7 +1263,8 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       last.current = body;
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
-      mutate();
+      const newEtag = r.headers.get("etag");
+      if (newEtag) primeEtag(`/api/drawings/${slug}`, newEtag, JSON.parse(body).data);
       toast.success("Saved");
     } catch (e) {
       toast.error("Save failed", { description: String(e) });
@@ -342,7 +1377,14 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       } catch {}
     };
     beat();
-    const id = setInterval(beat, 4000);
+    // Adaptive heartbeat: 8 s while tab visible, 30 s when hidden.
+    // Backend prunes at 15 s so 8 s keeps the row alive with one
+    // beat per window. Was 4 s and produced log spam in dev.
+    let id: ReturnType<typeof setInterval>;
+    const start = () => { id = setInterval(beat, document.visibilityState === "hidden" ? 30000 : 8000); };
+    const restart = () => { clearInterval(id); start(); };
+    start();
+    document.addEventListener("visibilitychange", restart);
     const onUnload = () => {
       // DELETE with keepalive is reliable on page hide in modern browsers
       // and avoids the prior POST-without-body which the route 400s on.
@@ -351,7 +1393,12 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       } catch {}
     };
     window.addEventListener("beforeunload", onUnload);
-    return () => { clearInterval(id); window.removeEventListener("beforeunload", onUnload); onUnload(); };
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", restart);
+      window.removeEventListener("beforeunload", onUnload);
+      onUnload();
+    };
   }, [slug, decidePad]);
 
   useEffect(() => {
@@ -365,6 +1412,24 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     return () => window.removeEventListener("keydown", onKey);
   }, [manualSave]);
 
+  // Excalidraw's official collab pattern (lifted from
+  // excalidraw-app/collab/Collab.tsx). One counter is shared between
+  // outgoing broadcasts and incoming applies: we only emit when the
+  // local scene version exceeds it, and we set it to the reconciled
+  // version on every remote apply.
+  const excalModRef = useRef<ExcalMod | null>(null);
+  useEffect(() => { excalModRef.current = excalMod; }, [excalMod]);
+  const lastBroadcastedOrReceivedSceneVersion = useRef(-1);
+  // Synchronous flag set just before any `updateScene` call we make
+  // ourselves (initial seed, remote apply, reset). Excalidraw fires
+  // onChange synchronously inside updateScene, and even with
+  // `captureUpdate: NEVER` the post-apply scene version can differ
+  // from the value we pre-set the counter to — which let the
+  // save→mutate→refetch→apply loop slip through and tripped React's
+  // "Maximum update depth". The flag makes the gate boolean and
+  // race-proof.
+  const applyingRemoteRef = useRef(false);
+
   const miniThrottle = useRef(0);
   const lastEditAt = useRef(0);
   const lastSeenFingerprint = useRef("");
@@ -374,6 +1439,17 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
   const trailingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const incomingRaf = useRef<number | null>(null);
   const incomingPending = useRef<unknown[] | null>(null);
+  // Per-tab random senderId + monotonically increasing seq so peers
+  // can drop their own loopbacks and out-of-order frames deterministically,
+  // independent of timing heuristics. Survives the timing-window
+  // edge cases that broke laptop→tablet sync.
+  const senderId = useRef<string>(
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2),
+  );
+  const seqRef = useRef(0);
+  const lastSeqBySender = useRef<Map<string, number>>(new Map());
   const flushPending = useCallback(() => {
     if (trailingTimer.current) { clearTimeout(trailingTimer.current); trailingTimer.current = null; }
     const p = pendingSend.current;
@@ -388,6 +1464,8 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
         elements: p.elements,
         appState: { viewBackgroundColor: p.bg },
         ts: Date.now(),
+        senderId: senderId.current,
+        seq: ++seqRef.current,
       }));
     } catch {}
   }, []);
@@ -406,78 +1484,58 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       last.current = "";
     };
   }, [slug]);
-  // Realtime peer count from the WS room. When > 0 (iPad connected), the
-  // laptop yields authorship: autosave PUTs paused + outgoing scene
-  // broadcasts skipped. iPad becomes the sole writer to avoid table-overwrite
-  // races. The laptop still RECEIVES iPad's scenes via WS to stay in view.
-  const [livePeers, setLivePeers] = useState(0);
-  const livePeersRef = useRef(0);
-  useEffect(() => { livePeersRef.current = livePeers; }, [livePeers]);
   const onChange = useCallback((
     elements: readonly unknown[],
     appState: unknown,
     files: Record<string, unknown>,
   ) => {
-    // Block save until the server's scene has been seen at least once.
-    // Without this, Excalidraw's mount-time empty onChange would PUT empty
-    // elements to the backend and wipe the drawing on every reload.
-    if (!doc) return;
-    // Also block until we've actually applied the server scene into
-    // Excalidraw — otherwise the empty onChange that fires right before
-    // `appliedFor` flips can race the apply and overwrite the doc.
-    if (appliedFor.current !== slug) return;
-    // Inline fingerprint (count + last visible id) so iPad pulls cleanly.
-    let cnt = 0; let lid = "";
-    for (const raw of elements) {
-      const e = raw as { id?: string; isDeleted?: boolean } | null;
-      if (!e || e.isDeleted) continue;
-      cnt++;
-      if (e.id) lid = e.id;
+    // If onChange is being triggered by our own `updateScene` call
+    // (remote apply, initial seed, reset), suppress everything —
+    // including setMiniData, which would otherwise re-render
+    // SkillSketch, which re-renders Excalidraw's MainMenu, which
+    // emits, which fires another onChange echo, etc. The seed effect
+    // and the reconcile effect both update miniData directly.
+    if (applyingRemoteRef.current) return;
+    const mod = excalModRef.current;
+    if (mod) {
+      try {
+        const sceneVersion = mod.getSceneVersion(elements as never);
+        if (sceneVersion > lastBroadcastedOrReceivedSceneVersion.current) {
+          lastBroadcastedOrReceivedSceneVersion.current = sceneVersion;
+        }
+      } catch {}
     }
-    const fp = `${cnt}:${lid}`;
-    // Echo suppression: only skip when this onChange's fingerprint matches
-    // the scene we just applied from the remote. If the local user added a
-    // stroke, fingerprint differs and we broadcast — fixes the bug where a
-    // burst of incoming strokes kept extending the time window and locked
-    // out simultaneous local edits.
-    if (Date.now() < applyingRemoteUntil.current && fp === lastSeenFingerprint.current) {
-      const now0 = Date.now();
-      if (now0 - miniThrottle.current > 280) {
-        miniThrottle.current = now0;
-        setMiniData({ els: elements, app: appState as Record<string, unknown> });
-      }
-      return;
-    }
-    lastSeenFingerprint.current = fp;
     lastEditAt.current = Date.now();
     if (t.current) clearTimeout(t.current);
-    // Both sides autosave now — backend reconciles elements by (id, version)
-    // so concurrent PUTs from laptop + tablet merge instead of overwriting.
-    // This unblocks the "tablet save wipes laptop strokes" data loss path.
+    // Both sides autosave — backend reconciles by (id, version) so
+    // concurrent PUTs from laptop + tablet merge instead of overwriting.
     t.current = setTimeout(() => {
       save({ elements: [...elements], appState: appState as Record<string, unknown>, files });
     }, DEBOUNCE_MS);
     const now = Date.now();
-    if (now - miniThrottle.current > 280) {
+    if (now - miniThrottle.current > 33) {
       miniThrottle.current = now;
       setMiniData({ els: elements, app: appState as Record<string, unknown> });
     }
-    // Outgoing broadcast stays on regardless of peers — iPad needs to see
-    // laptop strokes too. Leading-edge 16ms + trailing flush so the final
-    // stroke frame always lands on the receiver (the missing trailing send
-    // is what made remote rendering feel choppy).
-    const bg = (appState as { viewBackgroundColor?: string })?.viewBackgroundColor;
-    pendingSend.current = { elements, bg };
-    // 33ms ≈ 30 msg/s. Halves JSON.stringify cost vs 60Hz and is still
-    // visually smooth on the receiver. Trailing flush keeps final frame.
-    if (now - wsSendThrottle.current >= 33 && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      flushPending();
-    } else if (!trailingTimer.current) {
-      const wait = Math.max(8, 33 - (now - wsSendThrottle.current));
-      trailingTimer.current = setTimeout(() => {
-        trailingTimer.current = null;
-        flushPending();
-      }, wait);
+    // Realtime broadcast — version already advanced above in the
+    // echo-gate, so we just stage the pending payload here. ws.onopen
+    // drains it if the socket isn't open yet.
+    if (mod) {
+      try {
+        const bg = (appState as { viewBackgroundColor?: string })?.viewBackgroundColor;
+        pendingSend.current = { elements, bg };
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          if (now - wsSendThrottle.current >= 16) {
+            flushPending();
+          } else if (!trailingTimer.current) {
+            const wait = Math.max(4, 16 - (now - wsSendThrottle.current));
+            trailingTimer.current = setTimeout(() => {
+              trailingTimer.current = null;
+              flushPending();
+            }, wait);
+          }
+        }
+      } catch {}
     }
   }, [save, flushPending]);
 
@@ -489,7 +1547,10 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
     const host = window.location.hostname;
     const tok = readSketchToken();
-    const url = `${proto}://${host}:8000/ws/drawings/${encodeURIComponent(slug)}${tok ? `?t=${encodeURIComponent(tok)}` : ""}`;
+    // Backend WS port — env-driven so deployments not on :8000 don't
+    // have to fork the client. Defaults to 8000 (FastAPI dev port).
+    const wsPort = process.env.NEXT_PUBLIC_BACKEND_WS_PORT || "8000";
+    const url = `${proto}://${host}:${wsPort}/ws/drawings/${encodeURIComponent(slug)}${tok ? `?t=${encodeURIComponent(tok)}` : ""}`;
     let ws: WebSocket | null = null;
     let alive = true;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -499,18 +1560,19 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       wsRef.current = ws;
       ws.onmessage = (ev) => {
         try {
-          const msg = JSON.parse(ev.data) as { type: string; elements?: unknown[]; count?: number };
+          const msg = JSON.parse(ev.data) as { type: string; count?: number; elements?: unknown[]; senderId?: string; seq?: number };
           if (msg.type === "peers") {
-            // Subtract 1 because the server counts ourselves in the room.
             setLivePeers(Math.max(0, (msg.count ?? 1) - 1));
             return;
           }
           if (msg.type !== "scene" || !Array.isArray(msg.elements)) return;
-          const api = excalRef.current;
-          if (!api) return;
-          if (!shouldApplyIncomingScene(Date.now(), lastEditAt.current)) return;
-          // Coalesce bursty incoming scenes (iPad sends ~60/s during a
-          // stroke) into one updateScene per animation frame.
+          // Defense in depth: drop own loopbacks + stale frames.
+          if (msg.senderId === senderId.current) return;
+          if (msg.senderId && typeof msg.seq === "number") {
+            const last = lastSeqBySender.current.get(msg.senderId) ?? 0;
+            if (msg.seq <= last) return;
+            lastSeqBySender.current.set(msg.senderId, msg.seq);
+          }
           incomingPending.current = msg.elements;
           if (incomingRaf.current != null) return;
           incomingRaf.current = requestAnimationFrame(() => {
@@ -519,19 +1581,44 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
             incomingPending.current = null;
             if (!next) return;
             const a = excalRef.current;
-            if (!a) return;
-            applyingRemoteUntil.current = Date.now() + 80;
-            try { (a.updateScene as unknown as (d: { elements?: unknown[] }) => void)({ elements: next }); } catch {}
-            let cnt = 0; let lid = "";
-            for (const raw of next) {
-              const e = raw as { id?: string; isDeleted?: boolean } | null;
-              if (!e || e.isDeleted) continue;
-              cnt++;
-              if (e.id) lid = e.id;
-            }
-            lastSeenFingerprint.current = `${cnt}:${lid}`;
+            const mod = excalModRef.current;
+            if (!a || !mod) return;
+            try {
+              const local = a.getSceneElements() as never;
+              const appState = a.getAppState() as never;
+              const restored = (mod.restoreElements as (r: unknown, e: unknown) => unknown)(next, local);
+              const reconciled = mod.reconcileElements(local, restored as never, appState);
+              // CRITICAL: bump version BEFORE updateScene so the
+              // synchronous onChange echo returns early.
+              lastBroadcastedOrReceivedSceneVersion.current = mod.getSceneVersion(reconciled as never);
+              applyingRemoteRef.current = true;
+              (a.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
+                elements: reconciled as unknown as unknown[],
+                captureUpdate: mod.CaptureUpdateAction.NEVER,
+              });
+              setTimeout(() => { applyingRemoteRef.current = false; }, 0);
+              setMiniData({ els: reconciled as unknown as readonly unknown[], app: a.getAppState() as Record<string, unknown> });
+            } catch { applyingRemoteRef.current = false; }
           });
         } catch {}
+      };
+      ws.onopen = () => {
+        // On (re)connect, flush the latest scene from this client so a
+        // peer that joined first immediately sees what we already drew.
+        // Without this, strokes made while the socket was still
+        // connecting silently dropped and only appeared after the next
+        // local edit / next SWR poll.
+        const a = excalRef.current;
+        const mod = excalModRef.current;
+        if (a && mod) {
+          try {
+            const getAll = (a as unknown as { getSceneElementsIncludingDeleted?: () => readonly unknown[] }).getSceneElementsIncludingDeleted;
+            const all = getAll ? getAll.call(a) : a.getSceneElements();
+            const bg = (a.getAppState() as { viewBackgroundColor?: string }).viewBackgroundColor;
+            pendingSend.current = { elements: all as readonly unknown[], bg };
+            flushPending();
+          } catch {}
+        }
       };
       ws.onclose = () => {
         wsRef.current = null;
@@ -549,26 +1636,138 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     };
   }, [slug]);
 
+  // rAF-coalesce pan updates so a 60Hz drag doesn't trigger 60
+  // React renders — the per-stroke jitter that made the minimap
+  // feel clunky.
+  const miniNavPending = useRef<{ wx: number; wy: number } | null>(null);
+  const miniNavRaf = useRef<number | null>(null);
   const onMiniNav = (worldX: number, worldY: number) => {
-    const api = excalRef.current as (ExcalApi & {
-      updateScene?: (d: { appState?: Record<string, unknown> }) => void;
-    }) | null;
+    miniNavPending.current = { wx: worldX, wy: worldY };
+    if (miniNavRaf.current != null) return;
+    miniNavRaf.current = requestAnimationFrame(() => {
+      miniNavRaf.current = null;
+      const pending = miniNavPending.current;
+      miniNavPending.current = null;
+      if (!pending) return;
+      const api = excalRef.current as (ExcalApi & {
+        updateScene?: (d: { appState?: Record<string, unknown> }) => void;
+      }) | null;
+      if (!api) return;
+      const app = api.getAppState() as { width?: number; height?: number; zoom?: { value?: number } };
+      const zoom = app.zoom?.value ?? 1;
+      const w = app.width ?? 0;
+      const h = app.height ?? 0;
+      api.updateScene({
+        appState: {
+          scrollX: -(pending.wx - (w / zoom) / 2),
+          scrollY: -(pending.wy - (h / zoom) / 2),
+        },
+      });
+    });
+  };
+  // Wheel-zoom on the minimap: anchor zoom around the pointer's world
+  // position so the point under the cursor stays put (Figma/Photoshop
+  // behavior). Without this, wheel just panned the canvas, which is
+  // never what you want from a minimap.
+  const onMiniZoom = (worldX: number, worldY: number, deltaY: number) => {
+    const api = excalRef.current;
     if (!api) return;
     const app = api.getAppState() as { width?: number; height?: number; zoom?: { value?: number } };
-    const zoom = app.zoom?.value ?? 1;
     const w = app.width ?? 0;
     const h = app.height ?? 0;
+    const curZoom = app.zoom?.value ?? 1;
+    // Exponential zoom step — matches Excalidraw's pinch feel.
+    const factor = Math.exp(-deltaY * 0.0015);
+    const nextZoom = Math.max(0.1, Math.min(8, curZoom * factor));
+    if (nextZoom === curZoom) return;
     api.updateScene({
       appState: {
-        scrollX: -(worldX - (w / zoom) / 2),
-        scrollY: -(worldY - (h / zoom) / 2),
+        zoom: { value: nextZoom },
+        scrollX: -(worldX - (w / nextZoom) / 2),
+        scrollY: -(worldY - (h / nextZoom) / 2),
       },
     });
   };
 
 
+  // Synchronously flush a pending save — used by reset + beforeunload
+  // so a quick reload doesn't drop the most recent edit on the floor.
+  const flushSaveNow = useCallback(async () => {
+    const api = excalRef.current;
+    if (!api) return;
+    if (t.current) { clearTimeout(t.current); t.current = null; }
+    try {
+      const getAll = (api as unknown as { getSceneElementsIncludingDeleted?: () => readonly unknown[] }).getSceneElementsIncludingDeleted;
+      const all = getAll ? getAll.call(api) : api.getSceneElements();
+      last.current = ""; // bypass dedupe so even a forced re-save lands
+      await save({ elements: [...all], appState: api.getAppState() as Record<string, unknown>, files: api.getFiles() });
+    } catch {}
+  }, [save]);
+
+  // Best-effort flush on tab close / nav / hide. `sendBeacon` works
+  // when fetch wouldn't, and `visibilitychange` covers iOS swipe-to-
+  // background which never fires `beforeunload`.
+  useEffect(() => {
+    const beaconSave = () => {
+      const api = excalRef.current;
+      if (!api) return;
+      try {
+        const getAll = (api as unknown as { getSceneElementsIncludingDeleted?: () => readonly unknown[] }).getSceneElementsIncludingDeleted;
+        const all = getAll ? getAll.call(api) : api.getSceneElements();
+        const body = JSON.stringify({
+          data: { title: skill, elements: [...all], appState: api.getAppState(), files: api.getFiles() },
+        });
+        navigator.sendBeacon?.(`${API}/api/drawings/${encodeURIComponent(slug)}`, new Blob([body], { type: "application/json" }));
+      } catch {}
+    };
+    const onHidden = () => { if (document.visibilityState === "hidden") beaconSave(); };
+    window.addEventListener("beforeunload", beaconSave);
+    document.addEventListener("visibilitychange", onHidden);
+    return () => {
+      window.removeEventListener("beforeunload", beaconSave);
+      document.removeEventListener("visibilitychange", onHidden);
+    };
+  }, [skill, slug]);
+
   const reset = async () => {
     if (!confirm(`Clear all elements on ${skill} sketch?`)) return;
+    const api = excalRef.current;
+    const mod = excalModRef.current;
+    if (api && mod) {
+      // Tombstone every live element instead of PUT-ing []: the
+      // backend (and Excalidraw's collab reconciler) merge by id
+      // and would otherwise prefer existing live elements over a
+      // missing-from-peer one. Bumped version + fresh versionNonce
+      // guarantees reconcile picks the deleted record.
+      const getAll = (api as unknown as { getSceneElementsIncludingDeleted?: () => readonly unknown[] }).getSceneElementsIncludingDeleted;
+      const live = (getAll ? getAll.call(api) : api.getSceneElements()) as ReadonlyArray<Record<string, unknown>>;
+      const tombstoned = live.map((e) => ({
+        ...e,
+        isDeleted: true,
+        version: ((typeof e.version === "number" ? e.version : 0) as number) + 1,
+        versionNonce: Math.floor(Math.random() * 0x7fffffff),
+      }));
+      try {
+        (api.updateScene as unknown as (d: { elements?: unknown[]; captureUpdate?: string }) => void)({
+          elements: tombstoned,
+          captureUpdate: mod.CaptureUpdateAction.IMMEDIATELY,
+        });
+      } catch {}
+      // Force-save immediately so a quick reload can't drop the
+      // tombstones before the debounce fires. Without this, the
+      // user's clear gets lost on F5 and old strokes come back.
+      try {
+        last.current = ""; // bypass dedupe
+        await save({
+          elements: tombstoned as unknown as object[],
+          appState: api.getAppState() as Record<string, unknown>,
+          files: api.getFiles(),
+        });
+      } catch {}
+      return;
+    }
+    // Fallback if Excalidraw isn't mounted yet: blow the doc away
+    // server-side directly.
     await fetch(`${API}/api/drawings/${slug}`, {
       method: "PUT", headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ data: { title: skill, elements: [], appState: {}, files: {} } }),
@@ -577,22 +1776,6 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     mutate();
   };
 
-  // Compute bbox of existing elements (skipping deleted/missing dims) so we can
-  // offset inserts to empty space and avoid the scrambled stack we got before.
-  const sceneBBox = (els: readonly unknown[]) => {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const raw of els) {
-      const e = raw as { x?: number; y?: number; width?: number; height?: number; isDeleted?: boolean } | null;
-      if (!e || e.isDeleted) continue;
-      if (typeof e.x !== "number" || typeof e.y !== "number") continue;
-      const w = typeof e.width === "number" ? e.width : 0;
-      const h = typeof e.height === "number" ? e.height : 0;
-      minX = Math.min(minX, e.x); minY = Math.min(minY, e.y);
-      maxX = Math.max(maxX, e.x + w); maxY = Math.max(maxY, e.y + h);
-    }
-    if (!isFinite(minX)) return null;
-    return { minX, minY, maxX, maxY };
-  };
 
   // Normalize skeleton through Excalidraw's converter, then translate so it
   // sits to the right of existing content (or at viewport center if empty).
@@ -607,28 +1790,43 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
                        : (skeleton as Array<Record<string, unknown>>);
     if (fresh.length === 0) return 0;
 
-    // Translate so top-left of new batch lands in an empty area.
+    // Layout target: in book mode → current page bounds (so AI gen
+    // can't spill outside the sheet). Otherwise → next to existing
+    // content / center of viewport.
     const freshBBox = sceneBBox(fresh);
     if (freshBBox) {
-      const current = api.getSceneElements();
-      const sceneBB = sceneBBox(current);
-      const appState = api.getAppState() as { scrollX?: number; scrollY?: number; width?: number; height?: number; zoom?: { value?: number } };
-      let targetX: number, targetY: number;
-      if (sceneBB) {
-        targetX = sceneBB.maxX + 80; // park to right of existing
-        targetY = sceneBB.minY;
-      } else if (typeof appState.scrollX === "number" && typeof appState.width === "number") {
-        const zoom = appState.zoom?.value ?? 1;
-        targetX = -appState.scrollX + (appState.width / zoom) / 2 - (freshBBox.maxX - freshBBox.minX) / 2;
-        targetY = -(appState.scrollY ?? 0) + ((appState.height ?? 0) / zoom) / 2 - (freshBBox.maxY - freshBBox.minY) / 2;
+      if (layoutMode === "book") {
+        const top = bookPageTop(bookPageRef.current);
+        const fitted = fitElementsToBbox(
+          fresh as unknown as Array<{ x?: number; y?: number; width?: number; height?: number; fontSize?: number; points?: ReadonlyArray<readonly [number, number]> }>,
+          { x: 0, y: top, width: BOOK_PAGE_W, height: BOOK_PAGE_H },
+          40,
+        );
+        for (let i = 0; i < fresh.length; i++) {
+          const f = fitted[i] as Record<string, unknown>;
+          Object.assign(fresh[i], f);
+        }
       } else {
-        targetX = 100; targetY = 100;
-      }
-      const dx = targetX - freshBBox.minX;
-      const dy = targetY - freshBBox.minY;
-      for (const el of fresh) {
-        if (typeof el.x === "number") el.x = (el.x as number) + dx;
-        if (typeof el.y === "number") el.y = (el.y as number) + dy;
+        const current = api.getSceneElements();
+        const sceneBB = sceneBBox(current);
+        const appState = api.getAppState() as { scrollX?: number; scrollY?: number; width?: number; height?: number; zoom?: { value?: number } };
+        let targetX: number, targetY: number;
+        if (sceneBB) {
+          targetX = sceneBB.maxX + 80;
+          targetY = sceneBB.minY;
+        } else if (typeof appState.scrollX === "number" && typeof appState.width === "number") {
+          const zoom = appState.zoom?.value ?? 1;
+          targetX = -appState.scrollX + (appState.width / zoom) / 2 - (freshBBox.maxX - freshBBox.minX) / 2;
+          targetY = -(appState.scrollY ?? 0) + ((appState.height ?? 0) / zoom) / 2 - (freshBBox.maxY - freshBBox.minY) / 2;
+        } else {
+          targetX = 100; targetY = 100;
+        }
+        const dx = targetX - freshBBox.minX;
+        const dy = targetY - freshBBox.minY;
+        for (const el of fresh) {
+          if (typeof el.x === "number") el.x = (el.x as number) + dx;
+          if (typeof el.y === "number") el.y = (el.y as number) + dy;
+        }
       }
     }
 
@@ -659,6 +1857,14 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       if (!r.ok) throw new Error(d.detail || `${r.status}`);
       const els = d.elements as unknown[];
       if (!Array.isArray(els) || els.length === 0) throw new Error("AI returned no elements");
+      // Validate before pasting — flag the common "text outside frame"
+      // / "arrows are floating" issues so we can warn the user instead
+      // of letting Excalidraw render a garbled scene.
+      const report = validateAiElements(els as never);
+      if (!report.ok) {
+        const sample = report.issues.slice(0, 3).map((i) => i.kind).join(", ");
+        toast.warning(`AI output had ${report.issues.length} issue${report.issues.length === 1 ? "" : "s"} (${sample}). Pasting anyway.`);
+      }
       const n = await addElements(els);
       if (typeof n === "number") toast.success(`Added ${n} element${n > 1 ? "s" : ""}`);
       setAiOpen(false);
@@ -763,6 +1969,27 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
     triggerDownload(blob, `${skill}-sketch.svg`);
   };
 
+  // Native Excalidraw file export — opens cleanly in excalidraw.com,
+  // VS Code Excalidraw extension, or any Excalidraw-compatible tool.
+  const exportExcalidraw = async () => {
+    const api = excalRef.current;
+    if (!api) return toast.error("Canvas not ready");
+    const app = api.getAppState() as Record<string, unknown>;
+    const scene = {
+      type: "excalidraw",
+      version: 2,
+      source: "iwantajob",
+      elements: api.getSceneElements(),
+      appState: {
+        gridSize: app.gridSize ?? null,
+        viewBackgroundColor: (app.viewBackgroundColor as string) ?? "#ffffff",
+      },
+      files: api.getFiles(),
+    };
+    const blob = new Blob([JSON.stringify(scene, null, 2)], { type: "application/json" });
+    triggerDownload(blob, `${skill}-sketch.excalidraw`);
+  };
+
   const copyShareJson = async () => {
     const api = excalRef.current;
     if (!api) return toast.error("Canvas not ready");
@@ -779,6 +2006,32 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
       toast.error("Clipboard blocked. Use PNG/SVG export.");
     }
   };
+
+  // Keep MainMenu refs current. MainMenu is memoized on
+  // [excalMod, homeHref], so it calls exportRef.current.* at the time
+  // the user clicks — no re-memo needed.
+  useEffect(() => {
+    exportRef.current.png = exportPng;
+    exportRef.current.svg = exportSvg;
+    exportRef.current.json = copyShareJson;
+    exportRef.current.excali = exportExcalidraw;
+    exportRef.current.setPaper = (m) => { lastMetaEditAtRef.current = Date.now(); setPaperMode(m); };
+    exportRef.current.setLayout = (m) => { lastMetaEditAtRef.current = Date.now(); setLayoutMode(m); };
+    exportRef.current.setCanvasBg = (c) => {
+      lastMetaEditAtRef.current = Date.now();
+      setCustomBg(c);
+      // Wrapper div paints the bg in every mode now, so Excalidraw's
+      // canvas always stays transparent. No viewBackgroundColor push.
+      const api = excalRef.current;
+      if (!api) return;
+      try {
+        api.updateScene({ appState: { viewBackgroundColor: "transparent" } });
+        (api as { refresh?: () => void }).refresh?.();
+      } catch {}
+    };
+  });
+  useEffect(() => { paperModeRef.current = paperMode; }, [paperMode]);
+  useEffect(() => { layoutModeRef.current = layoutMode; }, [layoutMode]);
 
   return (
     <div className={full ? "fixed inset-0 z-50 bg-background p-3 flex flex-col gap-2" : "flex flex-col gap-2"}>
@@ -819,54 +2072,324 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
         </div>
       )}
 
-      <div className={`relative rounded-xl overflow-hidden border border-foreground/10 bg-card ${full ? "flex-1" : "h-[70vh]"}`}>
-        <Excalidraw
-          key={slug}
-          initialData={initialData}
-          onChange={onChange}
-          theme={resolvedTheme === "light" ? "light" : "dark"}
-          aiEnabled={false}
-          excalidrawAPI={(api) => { excalRef.current = api as ExcalApi; setExcalReady(true); }}
-        >
-          {excalMod && (() => {
-            const MM = excalMod.MainMenu as unknown as React.ComponentType<{ children?: React.ReactNode }> & {
-              Item: React.ComponentType<{ onSelect?: () => void; icon?: React.ReactNode; shortcut?: string; children?: React.ReactNode }>;
-              ItemLink: React.ComponentType<{ href: string; icon?: React.ReactNode; children?: React.ReactNode }>;
-              Separator: React.ComponentType;
-              Group: React.ComponentType<{ title?: string; children?: React.ReactNode }>;
-              DefaultItems: {
-                ToggleTheme: React.ComponentType;
-                ChangeCanvasBackground: React.ComponentType;
-                SearchMenu: React.ComponentType;
-                Help: React.ComponentType;
-                LoadScene: React.ComponentType;
-                ClearCanvas: React.ComponentType;
-                SaveAsImage: React.ComponentType;
-              };
-            };
-            return (
-              <MM>
-                {homeHref && (
-                  <>
-                    <MM.ItemLink href={homeHref} icon={<ArrowLeft style={{ width: 14, height: 14 }} />}>
-                      Home
-                    </MM.ItemLink>
-                    <MM.Separator />
-                  </>
-                )}
-                <MM.DefaultItems.SearchMenu />
-                <MM.DefaultItems.LoadScene />
-                <MM.DefaultItems.SaveAsImage />
-                <MM.DefaultItems.Help />
-                <MM.Separator />
-                <MM.DefaultItems.ChangeCanvasBackground />
-                <MM.DefaultItems.ToggleTheme />
-                <MM.Separator />
-                <MM.DefaultItems.ClearCanvas />
-              </MM>
-            );
-          })()}
-        </Excalidraw>
+      <div
+        ref={canvasWrapRef}
+        data-paper-overlay={(layoutMode === "book" || paperMode !== "plain") ? "1" : undefined}
+        className={`relative rounded-xl overflow-hidden border border-foreground/10 bg-card ${full ? "flex-1" : "h-[70vh]"}`}
+        // Wrapper paints canvas bg in ALL modes. No customBg → fall
+        // through to bg-card (theme color) so "Clear (theme)" behaves
+        // identically across paper modes (was rendering white in plain
+        // and theme-dark in dotted/grid/lined before).
+        style={customBg ? { background: customBg } : undefined}
+      >
+        {paperMode !== "plain" && layoutMode !== "book" && (
+          <PaperBackdrop mode={paperMode} appState={miniData.app} bgColor={customBg} />
+        )}
+        {layoutMode === "book" && (
+          <>
+            <BookPagesOverlay appState={miniData.app} pages={bookPages} globalPaper={paperMode} />
+            <BookNavWidget
+              page={bookPage}
+              pageCount={bookPageCount}
+              framePresenting={presenting}
+              onPrev={() => goToBookPage(bookPage - 1)}
+              onNext={() => goToBookPage(bookPage + 1)}
+              onJump={(idx) => goToBookPage(idx)}
+              onAddPage={() => {
+                lastMetaEditAtRef.current = Date.now();
+                setBookPages((prev) => [...prev, { paper: "inherit" }]);
+                setTimeout(() => goToBookPage(bookPagesRef.current.length), 0);
+              }}
+              onDeletePage={(idx) => {
+                lastMetaEditAtRef.current = Date.now();
+                setBookPages((prev) => {
+                  if (prev.length <= 1) return prev; // keep at least 1
+                  const next = prev.filter((_, i) => i !== idx);
+                  return next;
+                });
+                setTimeout(() => goToBookPage(Math.max(0, Math.min(bookPagesRef.current.length - 1, idx))), 0);
+              }}
+              onReorder={(from, to) => {
+                if (from === to) return;
+                lastMetaEditAtRef.current = Date.now();
+                setBookPages((prev) => {
+                  const next = [...prev];
+                  const [moved] = next.splice(from, 1);
+                  next.splice(to, 0, moved);
+                  return next;
+                });
+                setTimeout(() => goToBookPage(to), 0);
+              }}
+              onSetPagePaper={(idx, mode) => {
+                lastMetaEditAtRef.current = Date.now();
+                setBookPages((prev) => prev.map((p, i) => i === idx ? { ...p, paper: mode } : p));
+              }}
+              onSetPageBg={(idx, color) => {
+                lastMetaEditAtRef.current = Date.now();
+                setBookPages((prev) => prev.map((p, i) => i === idx ? { ...p, bgColor: color } : p));
+              }}
+              pages={bookPages}
+              globalPaper={paperMode}
+              onToggleOutline={() => setBookOutlineOpen((v) => !v)}
+              outlineOpen={bookOutlineOpen}
+              onExportPdf={async () => {
+                const api = excalRef.current;
+                if (!api) return toast.error("Canvas not ready");
+                const tid = toast.loading(`Rendering ${bookPageCount} pages…`);
+                try {
+                  const [{ exportToCanvas }, { default: JsPDF }] = await Promise.all([
+                    loadExcal(),
+                    import("jspdf"),
+                  ]);
+                  // Adaptive DPI by book size. Higher DPI = sharper
+                  // zoom in PDF viewer; lower DPI = less memory +
+                  // faster encode for big books.
+                  //   ≤ 5 pages  → 600 dpi
+                  //   ≤ 15 pages → 500 dpi
+                  //   ≤ 30 pages → 420 dpi
+                  //   else       → 360 dpi
+                  const DPI =
+                    bookPageCount <= 5  ? 600 :
+                    bookPageCount <= 15 ? 500 :
+                    bookPageCount <= 30 ? 420 : 360;
+                  const PX_W = Math.round(210 / 25.4 * DPI);
+                  const PX_H = Math.round(297 / 25.4 * DPI);
+                  const elsRaw = api.getSceneElements() as ReadonlyArray<Record<string, unknown>>;
+                  // PDF page in MILLIMETRES (A4 = 210×297 mm). The
+                  // embedded raster fills the page; using mm makes
+                  // the viewer scale the image to physical page size
+                  // (zoom stays smooth because the image is 600 dpi).
+                  const pdf = new JsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+                  const PAGE_MM_W = 210;
+                  const PAGE_MM_H = 297;
+                  // Detect if the page background is dark — if so we
+                  // should NOT remap white strokes to black (they'd
+                  // vanish). Per-page bg may override globally.
+                  const isDarkHex = (h: string | undefined | null) => {
+                    if (!h || typeof h !== "string") return false;
+                    const v = h.trim().toLowerCase();
+                    if (v === "transparent" || v === "white" || v === "#fff" || v === "#ffffff") return false;
+                    // Hex form (#rrggbb).
+                    const hm = /^#?([0-9a-f]{6})$/.exec(v.replace("#", ""));
+                    if (hm) {
+                      const n = parseInt(hm[1], 16);
+                      const r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
+                      return (0.299 * r + 0.587 * g + 0.114 * b) < 128;
+                    }
+                    // rgb()/rgba() form — getComputedStyle returns this.
+                    const rm = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(v);
+                    if (rm) {
+                      const r = +rm[1], g = +rm[2], b = +rm[3];
+                      return (0.299 * r + 0.587 * g + 0.114 * b) < 128;
+                    }
+                    return false;
+                  };
+                  // Per-page bg falls back to white when unset —
+                  // matches the on-screen BookPagesOverlay logic
+                  // (`p.bgColor || "#ffffff"`). Previously inherited
+                  // from the first explicitly-coloured page, which
+                  // made new blank pages inherit page-1's color
+                  // instead of staying white as shown on screen.
+                  // Render the book in CHUNKS rather than one giant
+                  // tall canvas. A 50-page book at 450 dpi × 2 scale
+                  // would need ~16 GB of RGBA — browser OOMs. With
+                  // CHUNK=4, peak canvas is ~280 MB and gets freed
+                  // after each chunk. Total time scales linearly but
+                  // memory stays bounded.
+                  // DPI already encodes the quality we want; keep
+                  // exportScale at 1 across the board so the canvas
+                  // matches the page pixel dims exactly. Saves big
+                  // memory on multi-page books.
+                  const exportScale = 1;
+                  // Chunk size by book size. Each chunk allocates a
+                  // tall canvas (PX_W × CHUNK*PX_H), so smaller
+                  // chunks for higher DPIs keep peak memory bounded.
+                  // Big books: CHUNK=1 so each exportToCanvas call
+                  // returns in ~1-2 s, letting us yield between
+                  // pages. Bigger CHUNK was producing single async
+                  // calls that ran >10s and tripped Brave's "page
+                  // unresponsive" dialog regardless of post-chunk
+                  // yields.
+                  const CHUNK_SIZE =
+                    bookPageCount <= 5  ? 2 :
+                    bookPageCount <= 15 ? 2 :
+                    bookPageCount <= 30 ? 2 : 1;
+                  // Use dark-theme rendering only when the canvas-
+                  // wide custom bg is dark. New pages default to
+                  // white regardless of theme to match the on-
+                  // screen overlay.
+                  const useDark = isDarkHex(customBgRef.current || "");
+                  // Sentinel elements anchor Excalidraw's auto-fit
+                  // bounding box to the chunk corners — otherwise a
+                  // chunk with content only in the middle gets
+                  // cropped and re-centered, breaking page alignment.
+                  const sentinel = (x: number, y: number, key: string) => ({
+                    id: `__pdf_anchor_${key}_${Math.random().toString(36).slice(2, 8)}`,
+                    type: "rectangle" as const,
+                    x, y, width: 1, height: 1, angle: 0,
+                    strokeColor: "transparent", backgroundColor: "transparent",
+                    fillStyle: "solid", strokeWidth: 0, strokeStyle: "solid",
+                    roughness: 0, opacity: 0, groupIds: [], frameId: null,
+                    roundness: null, seed: 1, version: 1, versionNonce: 1,
+                    isDeleted: false, boundElements: [], updated: 0,
+                    link: null, locked: false,
+                  });
+                  const CHUNK = CHUNK_SIZE;
+                  // Process one chunk at a time so canvas memory is
+                  // bounded. Each chunk renders [cstart, cend) pages.
+                  for (let cstart = 0; cstart < bookPageCount; cstart += CHUNK) {
+                    const cend = Math.min(cstart + CHUNK, bookPageCount);
+                    const chunkPages = cend - cstart;
+                    const chunkOffsetY = cstart * BOOK_PAGE_H;
+                    const chunkWorldH = BOOK_PAGE_H * chunkPages;
+                    const chunkCanvasH = PX_H * chunkPages;
+                    // Translate elements that overlap this chunk into
+                    // chunk-local coords (subtract chunkOffsetY from
+                    // every element's y).
+                    const chunkEls: Array<Record<string, unknown>> = [];
+                    for (const el of elsRaw) {
+                      if (el.isDeleted) continue;
+                      const y = (el.y as number) ?? 0;
+                      const h = (el.height as number) ?? 0;
+                      // Keep elements whose bbox intersects the chunk
+                      // vertical range. Elements straddling the
+                      // chunk edge stay intact so strokes don't get
+                      // visually clipped at chunk boundaries.
+                      if (y + h < chunkOffsetY) continue;
+                      if (y > chunkOffsetY + chunkWorldH) continue;
+                      chunkEls.push({ ...el, y: y - chunkOffsetY });
+                    }
+                    // Anchor auto-fit to chunk corners.
+                    chunkEls.unshift(sentinel(0, 0, "tl"));
+                    chunkEls.push(sentinel(BOOK_PAGE_W - 1, chunkWorldH - 1, "br"));
+                    // Yield BEFORE the heavy exportToCanvas call so
+                    // the browser can paint + reset its responsive
+                    // watchdog (Brave/Chrome counts uninterrupted
+                    // main-thread time, not async time).
+                    toast.loading(`Rendering pages ${cstart + 1}-${cend} of ${bookPageCount}…`, { id: tid });
+                    await new Promise((r) => setTimeout(r, 0));
+                    const chunkCanvas = await (exportToCanvas as unknown as (opts: unknown) => Promise<HTMLCanvasElement>)({
+                      elements: chunkEls,
+                      appState: {
+                        ...api.getAppState(),
+                        theme: useDark ? "dark" : "light",
+                        exportWithDarkMode: useDark,
+                        exportBackground: false,
+                        viewBackgroundColor: "transparent",
+                        exportScale,
+                        exportEmbedScene: false,
+                      },
+                      files: api.getFiles(),
+                      exportPadding: 0,
+                      getDimensions: () => ({ width: PX_W, height: chunkCanvasH, scale: PX_W / BOOK_PAGE_W }),
+                    });
+                    const srcPxPerOutPx = chunkCanvas.width / PX_W;
+                    for (let j = 0; j < chunkPages; j++) {
+                      const i = cstart + j;
+                    // White matches BookPagesOverlay's default.
+                    const themeDefaultBg = "#ffffff";
+                    // Composite onto a page-shaped canvas with the
+                    // per-page paper pattern painted in first so the
+                    // PDF matches what's on screen. A safe margin is
+                    // baked in so phone PDF readers in "fit page"
+                    // mode don't crop strokes that ran to the edge.
+                    // ~10% margin all sides (≈ 1 cm at A4). Phone PDF
+                    // viewers in "fit page" mode crop strokes at the
+                    // edge unless we bake a noticeable safe zone.
+                    const MARGIN = Math.round(PX_W * 0.05);
+                    const INNER_W = PX_W - 2 * MARGIN;
+                    const INNER_H = PX_H - 2 * MARGIN;
+                    const out = document.createElement("canvas");
+                    out.width = PX_W; out.height = PX_H;
+                    const ctx = out.getContext("2d");
+                    if (!ctx) throw new Error("2d context unavailable");
+                    const pgMeta = bookPagesRef.current[i] ?? {};
+                    // Use the same bg as detection — single source.
+                    const pgBg = pgMeta.bgColor || customBgRef.current || themeDefaultBg;
+                    // Fill the full sheet (incl. margin) with page bg
+                    // so the margin matches the page color (no white
+                    // strip around a dark page).
+                    ctx.fillStyle = pgBg;
+                    ctx.fillRect(0, 0, PX_W, PX_H);
+                    const effPaper: PaperMode =
+                      (!pgMeta.paper || pgMeta.paper === "inherit") ? paperMode : pgMeta.paper;
+                    // Paint paper pattern inside margin only.
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.rect(MARGIN, MARGIN, INNER_W, INNER_H);
+                    ctx.clip();
+                    drawPaperPattern(ctx, PX_W, PX_H, effPaper, PX_W / BOOK_PAGE_W, pgBg);
+                    ctx.restore();
+                    // Crop this page's strip from the chunk canvas.
+                    const srcX = 0;
+                    const srcY = j * PX_H * srcPxPerOutPx;
+                    const srcW = PX_W * srcPxPerOutPx;
+                    const srcH = PX_H * srcPxPerOutPx;
+                    ctx.drawImage(
+                      chunkCanvas,
+                      srcX, srcY, srcW, srcH,
+                      MARGIN, MARGIN, INNER_W, INNER_H,
+                    );
+                    // JPEG q=0.97 keeps line edges sharp at the
+                    // cost of ~10% larger file vs 0.95.
+                    const dataUrl = out.toDataURL("image/jpeg", 0.97);
+                    if (i > 0) pdf.addPage("a4", "portrait");
+                    pdf.addImage(dataUrl, "JPEG", 0, 0, PAGE_MM_W, PAGE_MM_H, undefined, "SLOW");
+                    // Help GC release the per-page canvas before the
+                    // next iteration.
+                    out.width = 0; out.height = 0;
+                    // Per-page progress + yield to the event loop so
+                    // the browser doesn't trip the "page unresponsive"
+                    // dialog on big books.
+                    toast.loading(`Rendering ${i + 1}/${bookPageCount} pages…`, { id: tid });
+                    await new Promise((r) => setTimeout(r, 0));
+                    }
+                    // Release the chunk canvas before the next chunk
+                    // allocates a fresh one.
+                    chunkCanvas.width = 0; chunkCanvas.height = 0;
+                    // Yield to the event loop so the toast/UI can
+                    // repaint between chunks on big books.
+                    await new Promise((r) => setTimeout(r, 0));
+                  }
+                  pdf.save(`${skill}-book.pdf`);
+                  toast.success(`Saved ${bookPageCount}-page PDF`, { id: tid });
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "PDF export failed", { id: tid });
+                }
+              }}
+            />
+            {bookOutlineOpen && (
+              <BookOutlinePanel
+                pages={bookPages}
+                elements={miniData.els}
+                currentPage={bookPage}
+                onJump={(i) => goToBookPage(i)}
+                onClose={() => setBookOutlineOpen(false)}
+              />
+            )}
+          </>
+        )}
+        <ExcalCrashBoundary onCrash={onCanvasCrash} onRetry={onCanvasRetry} resetKey={recoveryNonce}>
+          <Excalidraw
+            key={`${slug}-${recoveryNonce}`}
+            initialData={recoveryNonce > 0 ? nukedInitialData(initialData) : initialData}
+            onChange={onChange}
+            onLibraryChange={onLibraryChange}
+            theme={resolvedTheme === "light" ? "light" : "dark"}
+            aiEnabled={false}
+            excalidrawAPI={excalApiCallback}
+          >
+            {mainMenuNode}
+          </Excalidraw>
+        </ExcalCrashBoundary>
+        <SelectionAiWidget
+          excalRef={excalRef}
+          canvasWrapRef={canvasWrapRef}
+          miniData={miniData}
+          skill={skill}
+        />
+        <TrimMoreToolsDropdown />
+        <PropertyPanelSliders excalRef={excalRef} ready={excalReady} />
         <ShapeIslandTools
           onAi={() => setAiOpen(true)}
           onChat={() => setChatOpen(true)}
@@ -876,11 +2399,26 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
           onCopyJson={copyShareJson}
           full={full}
           onToggleFull={() => setFull((v) => !v)}
+          hideFullscreenButton={hideFullscreenButton}
           framesCount={miniData.els.filter((e) => (e as { type?: string }).type === "frame" && !(e as { isDeleted?: boolean }).isDeleted).length}
           presenting={presenting}
           onPresentToggle={() => {
-            if (presenting) { setPresentIdx(null); return; }
+            if (presenting) { setPresentIdx(null); setPreviewOpen(false); return; }
+            const api = excalRef.current;
+            if (!api) { toast.info("Canvas not ready yet."); return; }
+            const frames = (api.getSceneElements() as Array<Record<string, unknown>>)
+              .filter((e) => e.type === "frame" && !e.isDeleted);
+            if (!frames.length) {
+              toast.info("Add a Frame first (More tools → Frame), then press Play.");
+              setPreviewOpen(true);
+              return;
+            }
+            // Open the preview panel AND start on frame 0. Was: only
+            // opened the panel and waited for the user to click a
+            // thumbnail — which is the "start button does nothing"
+            // bug reported.
             setPreviewOpen(true);
+            showFrame(0);
           }}
           penOn={penMode}
           onTogglePen={togglePen}
@@ -893,6 +2431,36 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
           onSave={manualSave}
           saving={saving}
           savedTick={saved}
+          paperMode={paperMode}
+          onPaperMode={(m) => { lastMetaEditAtRef.current = Date.now(); setPaperMode(m); }}
+          onZoomDelta={(factor) => {
+            const api = excalRef.current;
+            if (!api) return;
+            const app = api.getAppState() as { width?: number; height?: number; zoom?: { value?: number }; scrollX?: number; scrollY?: number };
+            const cur = app.zoom?.value ?? 1;
+            const next = Math.max(0.01, Math.min(5, cur * factor));
+            if (next === cur) return;
+            const w = app.width ?? 0;
+            const h = app.height ?? 0;
+            // Zoom anchored on viewport center so content stays put.
+            const sx = app.scrollX ?? 0;
+            const sy = app.scrollY ?? 0;
+            const cx = -sx + (w / cur) / 2;
+            const cy = -sy + (h / cur) / 2;
+            api.updateScene({
+              appState: {
+                zoom: { value: next },
+                scrollX: -(cx - (w / next) / 2),
+                scrollY: -(cy - (h / next) / 2),
+              },
+            });
+          }}
+          onZoomReset={() => {
+            const api = excalRef.current;
+            if (!api) return;
+            api.updateScene({ appState: { zoom: { value: 1 } } });
+          }}
+          zoomPct={Math.round(((miniData.app as { zoom?: { value?: number } })?.zoom?.value ?? 1) * 100)}
         />
         {/* Share button removed — realtime WS sync replaces link sharing.
             The iPad dropdown (in TopRightTools) still shows the QR for
@@ -911,19 +2479,30 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
             index={presentIdx ?? 0}
             onPrev={() => showFrame((presentIdx ?? 0) - 1)}
             onNext={() => showFrame((presentIdx ?? 0) + 1)}
-            onExit={() => setPresentIdx(null)}
+            onExit={() => {
+              // Stopping the presentation also turns off any view-only
+              // lock and closes the slides side panel — the user said
+              // they expect a clean exit from the whole present mode.
+              setPresentIdx(null);
+              if (viewOnly) setViewOnly(false);
+              if (previewOpen) setPreviewOpen(false);
+            }}
             onTogglePanel={() => setPreviewOpen((v) => !v)}
             panelOpen={previewOpen}
             onToggleFocus={toggleSlideFocus}
             focused={slideFocus}
+            viewOnly={viewOnly}
+            onToggleViewOnly={() => setViewOnly((v) => !v)}
           />
         )}
-        <Minimap
+        {!viewOnly && <Minimap
           elements={miniData.els}
           appState={miniData.app}
+          cursor={cursorWorld}
           open={miniOpen}
           onToggle={() => setMiniOpen((v) => !v)}
           onNavigate={onMiniNav}
+          onZoom={onMiniZoom}
           onFitAll={() => {
             const api = excalRef.current;
             if (!api) return;
@@ -939,7 +2518,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
               });
             } catch {}
           }}
-        />
+        />}
         {chatOpen && (
           <SketchChatPanel
             skill={skill}
@@ -966,8 +2545,251 @@ export function SkillSketch({ skill, homeHref, defaultFull = false }: { skill: s
           />
         )}
       </div>
+      {catCounts && <LibraryFilterBar counts={catCounts} excalRef={excalRef} frontOffset={frontOffset} onImported={(n) => setFrontOffset((o) => o + n)} />}
     </div>
   );
+}
+
+// Portals a category tab strip into Excalidraw's library panel
+// header (`.library-menu-items-container__header`). Filtering uses
+// nth-child CSS ranges computed from per-cat counts — the seeded
+// items appear in known order so we can hide the rest without
+// touching Excalidraw internals. User-added items (custom shapes)
+// sit at the END of the grid (any nth > total seeded) so we let
+// them through on every filter EXCEPT when the user explicitly
+// picks a category they were tagged with (right-click → category
+// is a future enhancement; for now custom shapes show in "All" only).
+function LibraryFilterBar({ counts, excalRef, frontOffset, onImported }: {
+  counts: number[];
+  excalRef: React.MutableRefObject<ExcalApi | null>;
+  frontOffset: number;
+  onImported: (newItemCount: number) => void;
+}) {
+  // We don't portal into header (Excalidraw orders title + 3-dots
+  // there and we need to sit ABOVE both). Instead we inject our own
+  // host div as the FIRST child of `.library-menu` and portal into it.
+  // Re-mounts whenever the library panel mounts/unmounts (book-icon
+  // toggle).
+  const [host, setHost] = useState<HTMLElement | null>(null);
+  const [grid, setGrid] = useState<HTMLElement | null>(null);
+  const [active, setActive] = useState<string>("all");
+  const [importing, setImporting] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importUrl, setImportUrl] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    let mountedHost: HTMLElement | null = null;
+
+    const sync = () => {
+      if (cancelled) return;
+      // `.library-menu` is the 3-dots DROPDOWN content (Open/Save/Reset);
+      // the actual panel root is `.library-menu-items-container`. We
+      // mount the host as its FIRST child so the tab strip lands above
+      // the header (which holds "Personal Library" + 3-dots).
+      const container = document.querySelector(".library-menu-items-container") as HTMLElement | null;
+      const g = document.querySelector(".library-menu-items-container__items") as HTMLElement | null;
+      setGrid(g);
+      if (!container) {
+        if (mountedHost && !mountedHost.isConnected) mountedHost = null;
+        setHost(null);
+        return;
+      }
+      if (mountedHost && mountedHost.parentElement === container) return;
+      const h = document.createElement("div");
+      h.className = "sklib-filterbar-host";
+      container.insertBefore(h, container.firstChild);
+      mountedHost = h;
+      setHost(h);
+    };
+    sync();
+    const obs = new MutationObserver(sync);
+    obs.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      cancelled = true;
+      obs.disconnect();
+      if (mountedHost && mountedHost.parentElement) mountedHost.parentElement.removeChild(mountedHost);
+    };
+  }, []);
+
+  // Apply filter by setting data-cat-filter on the items grid. The
+  // companion CSS rules (added below as a static <style> tag) hide
+  // library-units outside the active cat via nth-child ranges.
+  useEffect(() => {
+    if (!grid) return;
+    grid.setAttribute("data-cat-filter", active);
+  }, [grid, active]);
+
+  // Inject the nth-child filter CSS based on actual counts + the
+  // front-offset (number of items imported AHEAD of the seeded set).
+  useEffect(() => {
+    const id = "sklib-cat-filter-rules";
+    let from = frontOffset;
+    const rules: string[] = [];
+    LIB_CATS.forEach((c, i) => {
+      const n = counts[i] ?? 0;
+      if (!n) return;
+      const start = from + 1;
+      const end = from + n;
+      // Hide every seeded library-unit OUTSIDE [start..end] when this
+      // filter is active. User-added items (past the seeded section,
+      // OR imported ones in front) are also hidden under a specific
+      // cat filter — they remain visible under "All".
+      rules.push(`.library-menu-items-container__items[data-cat-filter="${c.id}"] .library-unit:not(:nth-child(n+${start}):nth-child(-n+${end})) { display: none !important; }`);
+      from = end;
+    });
+    // "all" filter: show everything (including past total). Nothing
+    // to add — absence of a rule = no hide.
+    let el = document.getElementById(id) as HTMLStyleElement | null;
+    if (!el) {
+      el = document.createElement("style");
+      el.id = id;
+      document.head.appendChild(el);
+    }
+    el.textContent = rules.join("\n");
+    return () => {
+      // Keep the style tag across re-mounts — same rules apply for
+      // the whole session.
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [counts.join(","), frontOffset]);
+
+  const onImport = useCallback(async () => {
+    const api = excalRef.current;
+    if (!api?.updateLibrary) return;
+    const raw = importUrl.trim();
+    if (!raw) return;
+    setImporting(true);
+    try {
+      const items = await fetchExcalLibrary(raw);
+      if (!items.length) { toast.error("No items found at that URL."); return; }
+      const stamped = items.map((it, i) => ({
+        ...it,
+        status: "unpublished" as const,
+        id: (it as { id?: string }).id ?? `import-${Date.now()}-${i}`,
+      }));
+      api.updateLibrary({ libraryItems: stamped, merge: true, defaultStatus: "unpublished" });
+      onImported(stamped.length);
+      toast.success(`Imported ${stamped.length} item${stamped.length === 1 ? "" : "s"}.`);
+      setImportUrl("");
+      setImportOpen(false);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Import failed.");
+    } finally {
+      setImporting(false);
+    }
+  }, [excalRef, importUrl]);
+
+  if (!host) return null;
+
+  return createPortal(
+    <>
+      <div className="sklib-filterbar" role="tablist" aria-label="Library categories">
+        <button
+          type="button" role="tab"
+          aria-selected={active === "all"}
+          data-active={active === "all" ? "1" : undefined}
+          className="sklib-filterbtn"
+          title="All"
+          onClick={() => setActive("all")}
+        >
+          <Star className="sklib-fi" />
+        </button>
+        {LIB_CATS.map((c, i) => (
+          (counts[i] ?? 0) > 0 ? (
+            <button
+              key={c.id}
+              type="button" role="tab"
+              aria-selected={active === c.id}
+              data-active={active === c.id ? "1" : undefined}
+              className="sklib-filterbtn"
+              title={`${c.label} (${counts[i]})`}
+              onClick={() => setActive(c.id)}
+            >
+              <c.Icon className="sklib-fi" />
+            </button>
+          ) : null
+        ))}
+        <button
+          type="button"
+          className="sklib-filterbtn sklib-import-toggle"
+          title="Import from Excalidraw library URL"
+          data-active={importOpen ? "1" : undefined}
+          onClick={() => setImportOpen((v) => !v)}
+        >
+          <Plus className="sklib-fi" />
+        </button>
+      </div>
+      {importOpen && (
+        <div className="sklib-importrow">
+          <input
+            className="sklib-importinput"
+            type="url"
+            value={importUrl}
+            placeholder="Paste libraries.excalidraw.com URL…"
+            onChange={(e) => setImportUrl(e.currentTarget.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && !importing) onImport(); }}
+            autoFocus
+          />
+          <button
+            type="button"
+            className="sklib-importgo"
+            disabled={importing || !importUrl.trim()}
+            onClick={onImport}
+          >
+            {importing ? "…" : "Add"}
+          </button>
+        </div>
+      )}
+    </>,
+    host,
+  );
+}
+
+// Accepts:
+//   • Direct .excalidrawlib URL (fetched as-is)
+//   • libraries.excalidraw.com share URL (slug pulled from `#hash`,
+//     resolved against the public GitHub mirror which serves the file
+//     with CORS open)
+// Returns a flat libraryItems array (v1 `library` arrays auto-wrapped).
+async function fetchExcalLibrary(raw: string): Promise<Array<Record<string, unknown>>> {
+  let target = raw;
+  try {
+    const u = new URL(raw);
+    // libraries.excalidraw.com puts the library slug in the hash.
+    // Files live at /libraries/{author}/{name}.excalidrawlib but the
+    // share URL only gives us `{author}-{name}` — author may itself
+    // contain hyphens, so we resolve via libraries.json (CORS-open).
+    if (u.hostname.includes("libraries.excalidraw.com")) {
+      const slug = u.hash.replace(/^#/, "").trim();
+      if (!slug) throw new Error("URL missing library slug (#…).");
+      const idx = await fetch("https://libraries.excalidraw.com/libraries.json");
+      if (!idx.ok) throw new Error(`Index fetch failed (${idx.status}).`);
+      const list = await idx.json() as Array<{ source?: string }>;
+      const hit = list.find((e) => {
+        const s = (e.source ?? "").replace(/\.excalidrawlib$/, "").replace(/\//g, "-");
+        return s === slug;
+      });
+      if (!hit?.source) throw new Error(`Library "${slug}" not found in Excalidraw index.`);
+      target = `https://libraries.excalidraw.com/libraries/${hit.source}`;
+    }
+  } catch (e) {
+    if (e instanceof Error && /missing library slug|not found|Index fetch/.test(e.message)) throw e;
+    if (e instanceof TypeError) throw new Error("Invalid URL.");
+    throw e;
+  }
+  const r = await fetch(target);
+  if (!r.ok) throw new Error(`Fetch failed (${r.status}).`);
+  const j = await r.json() as { libraryItems?: Array<Record<string, unknown>>; library?: unknown[][] };
+  if (Array.isArray(j.libraryItems)) return j.libraryItems;
+  if (Array.isArray(j.library)) {
+    return j.library.map((els, i) => ({
+      elements: els,
+      id: `lib-${Date.now()}-${i}`,
+      created: Date.now(),
+    }));
+  }
+  return [];
 }
 
 function triggerDownload(blob: Blob, name: string) {
@@ -981,6 +2803,262 @@ function triggerDownload(blob: Blob, name: string) {
   URL.revokeObjectURL(url);
 }
 
+// Floating "ai" pill anchored just above any active selection. Click
+// to expand into an instruction input + Send. Submitting POSTs the
+// selected elements + prompt to /api/sketch/transform; the response
+// replaces the selection in-place. Laptop-only — gated on
+// `(hover:hover) and (pointer:fine)` so touch users don't get a
+// floating UI element that obscures their gestures.
+function SelectionAiWidget({
+  excalRef,
+  canvasWrapRef,
+  miniData,
+  skill,
+}: {
+  excalRef: React.MutableRefObject<ExcalApi | null>;
+  canvasWrapRef: React.MutableRefObject<HTMLDivElement | null>;
+  miniData: { els: readonly unknown[]; app: Record<string, unknown> };
+  skill: string;
+}) {
+  const [isLaptop, setIsLaptop] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(hover: hover) and (pointer: fine)");
+    const sync = () => setIsLaptop(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+
+  const [open, setOpen] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // Derive bbox of the current selection in world coords.
+  const selection = useMemo(() => {
+    const app = miniData.app as { selectedElementIds?: Record<string, boolean> };
+    const ids = app.selectedElementIds || {};
+    const selIds = Object.keys(ids).filter((k) => ids[k]);
+    if (!selIds.length) return null;
+    const idSet = new Set(selIds);
+    const els = (miniData.els as Array<Record<string, unknown>>).filter((e) => {
+      if (e.isDeleted) return false;
+      return typeof e.id === "string" && idSet.has(e.id as string);
+    });
+    if (!els.length) return null;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const e of els) {
+      const x = (e.x as number) ?? 0;
+      const y = (e.y as number) ?? 0;
+      const w = (e.width as number) ?? 0;
+      const h = (e.height as number) ?? 0;
+      minX = Math.min(minX, x); minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
+    }
+    return { ids: selIds, els, minX, minY, maxX, maxY };
+  }, [miniData]);
+
+  // Project world bbox to screen pos relative to canvas wrap. The
+  // whole widget (pill + optional input) renders as a SINGLE row
+  // anchored just ABOVE the selection's top-right corner, so it
+  // never overlaps the shapes themselves.
+  const screenPos = useMemo(() => {
+    if (!selection) return null;
+    const app = miniData.app as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
+    const zoom = app.zoom?.value ?? 1;
+    const sx = (app.scrollX ?? 0);
+    const sy = (app.scrollY ?? 0);
+    const selRight = (selection.maxX + sx) * zoom;
+    const selTop = (selection.minY + sy) * zoom;
+    const wrap = canvasWrapRef.current;
+    const wrapW = wrap?.clientWidth ?? 9999;
+    const ROW_W = open ? 302 : 32;     // pill 32 (icon-only), with input row ~302
+    const ROW_H = 28;
+    const ROW_GAP_ABOVE = 28;          // gap between widget bottom and selection top
+    const x = Math.max(8, Math.min(wrapW - ROW_W - 8, selRight - ROW_W));
+    const y = Math.max(8, selTop - ROW_H - ROW_GAP_ABOVE);
+    return { x, y };
+  }, [selection, miniData, open, canvasWrapRef]);
+
+  // Collapse on Esc.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setOpen(false); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  // Auto-focus when opened.
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+
+  const submit = useCallback(async () => {
+    if (!selection || !excalRef.current) return;
+    const q = prompt.trim();
+    if (!q) return;
+    setBusy(true);
+    const tid = toast.loading("Asking AI…");
+    // Snapshot bbox at request time. While the AI thinks (~5-20s) the
+    // user may drag the selection — without this we'd inject the new
+    // shapes at the OLD world coords (looks like nothing happened).
+    const snapBbox = {
+      minX: selection.minX, minY: selection.minY,
+      maxX: selection.maxX, maxY: selection.maxY,
+    };
+    const snapIds = selection.ids.slice();
+    try {
+      const r = await fetch(`${API}/api/sketch/transform`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ prompt: q, elements: selection.els, skill }),
+      });
+      // Backend may return a plain-text proxy error (Next.js 502 page)
+      // when the upstream times out — JSON.parse would crash. Read as
+      // text first and best-effort parse.
+      const txt = await r.text();
+      let d: { detail?: string; elements?: unknown; ops?: unknown } = {};
+      try { d = txt ? JSON.parse(txt) : {}; } catch {
+        // Next.js proxy 5xx pages return HTML — show a friendly message
+        // instead of dumping raw markup into the toast.
+        const isHtml = /^\s*<!doctype|^\s*<html/i.test(txt);
+        d = { detail: isHtml ? "Backend unreachable or timed out" : txt.slice(0, 200) };
+      }
+      if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+      const els = d.elements as Array<Record<string, unknown>>;
+      if (!Array.isArray(els) || !els.length) throw new Error("AI returned no elements");
+      const api = excalRef.current;
+      const selIdSet = new Set(snapIds);
+      const current = api.getSceneElements() as Array<Record<string, unknown>>;
+      // Compute drift: if the user moved the selection while AI was
+      // thinking, the new (added) shapes were computed against the
+      // OLD bbox. Translate them by (currentBbox - snapBbox) so they
+      // land relative to where the selection IS now.
+      let curMinX = Infinity, curMinY = Infinity, curMaxX = -Infinity, curMaxY = -Infinity;
+      let foundCur = false;
+      for (const e of current) {
+        if (typeof e.id !== "string" || !selIdSet.has(e.id as string)) continue;
+        const x = (e.x as number) ?? 0, y = (e.y as number) ?? 0;
+        const w = (e.width as number) ?? 0, h = (e.height as number) ?? 0;
+        curMinX = Math.min(curMinX, x); curMinY = Math.min(curMinY, y);
+        curMaxX = Math.max(curMaxX, x + w); curMaxY = Math.max(curMaxY, y + h);
+        foundCur = true;
+      }
+      const dx = foundCur ? (curMinX - snapBbox.minX) : 0;
+      const dy = foundCur ? (curMinY - snapBbox.minY) : 0;
+      const kept = current.filter((e) => !(typeof e.id === "string" && selIdSet.has(e.id as string)));
+      // Preserve original IDs for elements echoed back from the
+      // backend (server now keeps full originals and applies ops, so
+      // matching ids mean unchanged/modified bindings stay intact).
+      // Stamp a fresh id only on NEW elements the LLM added.
+      const stamped = els.map((e) => {
+        const id = (e as { id?: unknown }).id;
+        const isOriginal = typeof id === "string" && selIdSet.has(id);
+        if (isOriginal) {
+          // Merge AI's modifications into the CURRENT version of the
+          // original (which may have been moved/rotated since submit).
+          const cur = current.find((c) => c.id === id) as Record<string, unknown> | undefined;
+          const merged = cur ? { ...cur, ...e, id } : e;
+          return {
+            ...merged,
+            groupIds: Array.isArray((merged as { groupIds?: unknown }).groupIds) ? (merged as { groupIds: unknown[] }).groupIds : [],
+            boundElements: (merged as { boundElements?: unknown }).boundElements ?? null,
+          };
+        }
+        // New shape: translate by drift so it lands at the selection's
+        // CURRENT screen position, not where it was at submit time.
+        const ex = typeof (e as { x?: unknown }).x === "number" ? (e as { x: number }).x : 0;
+        const ey = typeof (e as { y?: unknown }).y === "number" ? (e as { y: number }).y : 0;
+        const base = { ...e, x: ex + dx, y: ey + dy, id: `ai-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` };
+        return {
+          ...base,
+          groupIds: Array.isArray((base as { groupIds?: unknown }).groupIds) ? (base as { groupIds: unknown[] }).groupIds : [],
+          boundElements: (base as { boundElements?: unknown }).boundElements ?? null,
+        };
+      });
+      // Final guard: Excalidraw crashes hard on any element missing
+      // `type`. Strip anything malformed before handing it the scene.
+      const safe = [...kept, ...stamped].filter((el): el is Record<string, unknown> =>
+        !!el && typeof el === "object" && typeof (el as { type?: unknown }).type === "string"
+      );
+      api.updateScene({ elements: safe });
+      const ops = d.ops as { added?: number; modified?: number; deleted?: number } | undefined;
+      const opsMsg = ops
+        ? `+${ops.added ?? 0} ~${ops.modified ?? 0} -${ops.deleted ?? 0}`
+        : `${selection.ids.length} → ${stamped.length}`;
+      toast.success(`AI: ${opsMsg}`, { id: tid });
+      setPrompt("");
+      setOpen(false);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Transform failed", { id: tid });
+    } finally {
+      setBusy(false);
+    }
+  }, [selection, prompt, excalRef, skill]);
+
+  if (!isLaptop || !selection || !screenPos) return null;
+
+  // Render absolutely inside the canvas wrapper. The wrapper itself is
+  // position:relative (from `relative` class) so 0,0 = its top-left.
+  const wrap = canvasWrapRef.current;
+  if (!wrap) return null;
+  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
+  return createPortal(
+    <div
+      className="excal-ai-sel"
+      style={{
+        position: "absolute",
+        left: screenPos.x,
+        top: screenPos.y,
+        zIndex: 15,
+        pointerEvents: "auto",
+      }}
+      onMouseDown={stop}
+      onPointerDown={stop}
+    >
+      <div className="excal-ai-sel-row" data-open={open ? "1" : undefined}>
+        {open && (
+          <div className="excal-ai-sel-box">
+            <input
+              ref={inputRef}
+              className="excal-ai-sel-input"
+              placeholder="Describe a change for the selected shapes…"
+              value={prompt}
+              disabled={busy}
+              onChange={(e) => setPrompt(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !busy) submit();
+                else if (e.key === "Escape") setOpen(false);
+              }}
+            />
+            <button
+              type="button"
+              className="excal-ai-sel-send"
+              disabled={busy || !prompt.trim()}
+              onClick={submit}
+            >
+              {busy ? "…" : <Send className="h-3.5 w-3.5" />}
+            </button>
+          </div>
+        )}
+        <button
+          type="button"
+          className="excal-ai-sel-pill"
+          data-open={open ? "1" : undefined}
+          aria-label={open ? "Close AI prompt" : "Ask AI to transform selection"}
+          title={open ? "Close AI prompt" : "Ask AI to transform selection"}
+          onClick={() => setOpen((v) => !v)}
+        >
+          <Sparkles className="h-4 w-4" />
+        </button>
+      </div>
+    </div>,
+    wrap,
+  );
+}
+
 export function SketchPreloader() {
   useEffect(() => { loadExcal().catch(() => {}); }, []);
   return null;
@@ -988,6 +3066,1239 @@ export function SketchPreloader() {
 
 // Watches the DOM for Excalidraw's shape-island toolbar, then portals our
 // AI/Chat/Templates/Share/Export buttons inside it so they read as one bar.
+// CSS paper backdrop. Sits absolutely-positioned BEHIND the Excalidraw
+// canvas; canvas viewBackgroundColor is forced to "transparent" when
+// active so the pattern shows through. Scale + scroll follow Excalidraw's
+// appState.zoom + scrollX/Y so the grid/dot/line spacing stays anchored
+// to world coordinates while the user pans/zooms.
+// Compact horizontal row injected into Excalidraw MainMenu — label
+// on the left, icon buttons inline. Saves vertical space vs the
+// default MM.Item-per-option layout.
+// Native-looking row inside Excalidraw MainMenu — uses their own
+// CSS vars so the styling tracks light/dark mode + theme changes.
+// 4-column swatch grid for the Canvas-color picker row. Last cell is
+// always a native color picker for arbitrary hex. Swatches use
+// Excalidraw's own `color-picker__button` class but with the dark-mode
+// `--theme-filter` neutralised — the wrapper paints raw colors
+// outside Excalidraw's filter, so swatches must too or the preview
+// won't match the applied result.
+function SidebarSwatchGrid({
+  label, swatches, onPick,
+}: {
+  label: string;
+  swatches: ReadonlyArray<{ title: string; value: string | null }>;
+  onPick: (c: string | null) => void;
+}) {
+  // Subscribe to the module-scoped store rather than taking `value`
+  // via props — that lets the parent's mainMenuNode memo stay stable
+  // across customBg changes (touching that memo re-attaches MM's own
+  // subscribers and triggers an infinite-update loop).
+  const value = useSyncExternalStore(
+    customBgStore.subscribe,
+    customBgStore.getSnapshot,
+    customBgStore.getServerSnapshot,
+  );
+  // Debounce native color-input drag → avoid re-rendering MainMenu on
+  // every pixel of hue slider movement.
+  const pickerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onColorInput = useCallback((next: string) => {
+    if (pickerTimer.current) clearTimeout(pickerTimer.current);
+    pickerTimer.current = setTimeout(() => onPick(next), 80);
+  }, [onPick]);
+  return (
+    <div style={{ padding: "2px 8px 6px" }}>
+      <div className="dropdown-menu-group-title" style={{ margin: "6px 0 4px", fontSize: 14, fontWeight: 500, color: "var(--color-on-surface)", opacity: 0.7 }}>
+        {label}
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4, 1.625rem)",
+          gap: 6,
+          justifyContent: "start",
+        }}
+      >
+        {swatches.map((c) => {
+          const isActive = value === c.value;
+          const isClear = c.value === null;
+          return (
+            <button
+              key={c.value ?? "clear"}
+              type="button"
+              title={c.title}
+              aria-pressed={isActive}
+              onClick={() => onPick(c.value)}
+              className={`color-picker__button${isActive ? " active" : ""}${isClear ? " is-transparent" : ""}`}
+              style={{
+                // Cancel Excalidraw's dark-mode invert so the swatch
+                // shows the literal color we'll paint on the wrapper.
+                filter: "none",
+                ...(isClear ? {} : { ["--swatch-color" as string]: c.value } as React.CSSProperties),
+              }}
+            >
+              {isActive && <div className="color-picker__button-outline" style={{ filter: "none" }} />}
+            </button>
+          );
+        })}
+        <label
+          title="Pick any color"
+          className="color-picker__button"
+          style={{
+            cursor: "pointer",
+            display: "inline-grid", placeItems: "center",
+            borderStyle: "dashed",
+            background: "conic-gradient(from 0deg, #ff4136, #ffdc00, #2ecc40, #0074d9, #b10dc9, #ff4136)",
+            filter: "none",
+          }}
+        >
+          <input
+            type="color"
+            defaultValue={value ?? "#ffffff"}
+            onInput={(e) => onColorInput((e.target as HTMLInputElement).value)}
+            onChange={(e) => onColorInput((e.target as HTMLInputElement).value)}
+            style={{ opacity: 0, width: 0, height: 0, position: "absolute" }}
+          />
+        </label>
+      </div>
+    </div>
+  );
+}
+
+function SidebarRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ padding: "2px 8px 6px" }}>
+      <div className="dropdown-menu-group-title" style={{ margin: "6px 0 4px", fontSize: 14, fontWeight: 500, color: "var(--color-on-surface)", opacity: 0.7 }}>
+        {label}
+      </div>
+      <div style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+function SidebarIconBtn({
+  title, onClick, active, children,
+}: {
+  title: string; onClick: () => void; active?: boolean; children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-pressed={active ?? undefined}
+      onClick={onClick}
+      style={{
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        width: "1.625rem", height: "1.625rem", borderRadius: "0.5rem",
+        border: "none",
+        background: active
+          ? "var(--color-primary-light, color-mix(in oklab, var(--color-primary, #6965db) 22%, transparent))"
+          : "transparent",
+        color: active ? "var(--color-primary, #6965db)" : "var(--color-on-surface, currentColor)",
+        cursor: "pointer",
+        padding: 0,
+        transition: "background 120ms ease, color 120ms ease",
+      }}
+      onMouseEnter={(e) => {
+        if (active) return;
+        (e.currentTarget as HTMLButtonElement).style.background =
+          "var(--button-hover-bg, color-mix(in oklab, var(--foreground) 8%, transparent))";
+      }}
+      onMouseLeave={(e) => {
+        if (active) return;
+        (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+// Page geometry constants — shared by overlay + page nav handlers.
+export const BOOK_PAGE_W = 794;
+export const BOOK_PAGE_H = 1123;
+export const BOOK_PAGE_GAP = 24;
+export function bookPageTop(idx: number): number {
+  return idx * (BOOK_PAGE_H + BOOK_PAGE_GAP);
+}
+
+// Visual page guides for "book" mode. A4 portrait at world-space
+// (~794×1123 css px @ 96dpi). Twelve pages stacked vertically, with
+// a 24px gap, starting at (0,0) in world coords.
+// Paint a paper pattern (grid/dots/lines) onto a 2D canvas. Scale is
+// px-per-world-px (so the PDF render at 2480×3508 uses scale ≈ 3.12).
+// Color picked for ~300 dpi print legibility on white paper.
+function drawPaperPattern(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  mode: PaperMode,
+  scale: number,
+  bgColor?: string | null,
+) {
+  if (mode === "plain") return;
+  ctx.save();
+  // Contrast-aware stroke — dark on light paper, light on dark paper.
+  const ink = isLightHex(bgColor)
+    ? "rgba(27,27,31,0.42)"
+    : "rgba(255,255,255,0.55)";
+  ctx.fillStyle = ink;
+  ctx.strokeStyle = ink;
+  if (mode === "grid") {
+    const sz = 32 * scale;
+    ctx.lineWidth = Math.max(1, scale);
+    ctx.beginPath();
+    for (let x = 0; x <= w; x += sz) { ctx.moveTo(x, 0); ctx.lineTo(x, h); }
+    for (let y = 0; y <= h; y += sz) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+    ctx.stroke();
+  } else if (mode === "dots") {
+    const sz = 24 * scale;
+    const r = Math.max(1, 1.2 * scale);
+    for (let x = 0; x <= w; x += sz) {
+      for (let y = 0; y <= h; y += sz) {
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  } else {
+    const sz = 28 * scale;
+    ctx.lineWidth = Math.max(1, scale);
+    ctx.beginPath();
+    for (let y = 0; y <= h; y += sz) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function pagePaperBackgroundCss(mode: PaperMode, zoom: number, bgColor?: string | null): React.CSSProperties {
+  // Pick pattern stroke color based on page background brightness so
+  // dots/lines stay visible regardless of paper color (dark dots on
+  // light paper, light dots on dark paper).
+  const lineColor = isLightHex(bgColor)
+    ? "rgba(20, 20, 24, 0.42)"
+    : "rgba(255, 255, 255, 0.55)";
+  if (mode === "plain") return {};
+  if (mode === "grid") {
+    const sz = 32 * zoom;
+    return {
+      backgroundImage:
+        `linear-gradient(to right, ${lineColor} 1px, transparent 1px), linear-gradient(to bottom, ${lineColor} 1px, transparent 1px)`,
+      backgroundSize: `${sz}px ${sz}px, ${sz}px ${sz}px`,
+    };
+  }
+  if (mode === "dots") {
+    const sz = 24 * zoom;
+    return {
+      backgroundImage: `radial-gradient(circle, ${lineColor} ${Math.max(1, 1.2 * zoom)}px, transparent ${Math.max(1, 1.2 * zoom)}px)`,
+      backgroundSize: `${sz}px ${sz}px`,
+    };
+  }
+  const sz = 28 * zoom;
+  return {
+    backgroundImage: `linear-gradient(to bottom, ${lineColor} 1px, transparent 1px)`,
+    backgroundSize: `${sz}px ${sz}px`,
+  };
+}
+export function BookPagesOverlay({ appState, pages, globalPaper }: { appState: Record<string, unknown>; pages: BookPageMeta[]; globalPaper: PaperMode }) {
+  const s = appState as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
+  const zoom = s.zoom?.value ?? 1;
+  const sx = (s.scrollX ?? 0) * zoom;
+  const sy = (s.scrollY ?? 0) * zoom;
+  const out = [];
+  for (let i = 0; i < pages.length; i++) {
+    const top = bookPageTop(i);
+    const p = pages[i];
+    const eff = (!p.paper || p.paper === "inherit") ? globalPaper : p.paper;
+    const pageBg = p.bgColor || "#ffffff";
+    const paperBg = pagePaperBackgroundCss(eff, zoom, pageBg);
+    const labelInk = isLightHex(pageBg) ? "#1b1b1f" : "rgba(255,255,255,0.85)";
+    out.push(
+      <div
+        key={i}
+        style={{
+          position: "absolute",
+          left: sx,
+          top: sy + top * zoom,
+          width: BOOK_PAGE_W * zoom,
+          height: BOOK_PAGE_H * zoom,
+          borderRadius: 4 * zoom,
+          background: pageBg,
+          border: `${Math.max(1, 1.5 * zoom)}px solid rgba(255,255,255,0.85)`,
+          boxShadow:
+            "0 6px 18px rgba(0,0,0,0.45), 0 1px 2px rgba(0,0,0,0.4)",
+          pointerEvents: "none",
+          overflow: "hidden",
+        }}
+      >
+        {(paperBg.backgroundImage as string | undefined) && (
+          <div
+            aria-hidden
+            style={{ position: "absolute", inset: 0, ...paperBg, opacity: 0.9 }}
+          />
+        )}
+        <div
+          style={{
+            position: "absolute",
+            top: 8 * zoom, right: 12 * zoom,
+            fontSize: 11 * zoom, opacity: 0.5,
+            color: labelInk,
+          }}
+        >{i + 1}</div>
+      </div>,
+    );
+  }
+  return (
+    <div aria-hidden style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none", zIndex: 0 }}>
+      {out}
+    </div>
+  );
+}
+
+function PageListPopover({
+  page, pages, globalPaper, onJump, onDelete, onReorder, onSetPaper, onSetBg,
+}: {
+  page: number;
+  pages: BookPageMeta[];
+  globalPaper: PaperMode;
+  onJump: (i: number) => void;
+  onDelete: (i: number) => void;
+  onReorder: (from: number, to: number) => void;
+  onSetPaper: (i: number, mode: PaperMode | "inherit") => void;
+  onSetBg: (i: number, color: string | null) => void;
+}) {
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [dragOver, setDragOver] = useState<number | null>(null);
+  const [paperMenu, setPaperMenu] = useState<number | null>(null);
+  // Close paper menu if clicking outside any row.
+  useEffect(() => {
+    if (paperMenu == null) return;
+    const onDoc = () => setPaperMenu(null);
+    window.addEventListener("click", onDoc);
+    return () => window.removeEventListener("click", onDoc);
+  }, [paperMenu]);
+  return (
+    <div
+      className="Island"
+      style={{
+        position: "absolute",
+        bottom: "calc(100% + 10px)",
+        // Center on the trigger button; viewport-edge clamp prevents
+        // overflow on narrow screens / when the widget is dodged
+        // to the left during frame presentation.
+        left: "50%",
+        transform: "translateX(-50%)",
+        maxWidth: "calc(100vw - 32px)",
+        padding: 6,
+        borderRadius: "var(--border-radius-lg, 10px)",
+        background: "var(--island-bg-color, #232329)",
+        color: "var(--text-primary-color, var(--foreground))",
+        boxShadow:
+          "0 0 0 1px var(--default-border-color, rgba(255,255,255,0.08)), 0 10px 28px rgba(0,0,0,0.3)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 1,
+        width: 320,
+        maxHeight: 320,
+        overflowY: "auto",
+        fontSize: 12,
+        fontFamily: "var(--ui-font, inherit)",
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div
+        style={{
+          display: "flex", alignItems: "center", gap: 6,
+          padding: "4px 8px 6px 8px",
+          fontSize: 10, fontWeight: 500,
+          color: "color-mix(in oklab, var(--foreground) 55%, transparent)",
+          textTransform: "uppercase", letterSpacing: 0.5,
+        }}
+      >
+        Pages
+        <span style={{ marginLeft: "auto", fontVariantNumeric: "tabular-nums", opacity: 0.7 }}>
+          {pages.length}
+        </span>
+      </div>
+      {pages.map((p, i) => {
+        const eff = !p.paper || p.paper === "inherit" ? globalPaper : p.paper;
+        const inheriting = !p.paper || p.paper === "inherit";
+        const active = i === page;
+        return (
+          <div
+            key={i}
+            draggable
+            onDragStart={() => setDragFrom(i)}
+            onDragOver={(e) => { e.preventDefault(); setDragOver(i); }}
+            onDragLeave={() => setDragOver((v) => v === i ? null : v)}
+            onDrop={(e) => { e.preventDefault(); if (dragFrom != null) onReorder(dragFrom, i); setDragFrom(null); setDragOver(null); }}
+            onDragEnd={() => { setDragFrom(null); setDragOver(null); }}
+            style={{
+              position: "relative",
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "4px 6px",
+              borderRadius: 6,
+              background: active
+                ? "var(--color-primary-light, color-mix(in oklab, var(--color-primary, #6965db) 18%, transparent))"
+                : dragOver === i
+                  ? "var(--button-hover-bg, color-mix(in oklab, var(--foreground) 8%, transparent))"
+                  : "transparent",
+              border: dragOver === i && dragFrom !== null && dragFrom !== i
+                ? "1px dashed var(--color-primary, #6965db)"
+                : "1px solid transparent",
+              cursor: "grab",
+              transition: "background 120ms ease",
+            }}
+            onMouseEnter={(e) => {
+              if (active || dragOver === i) return;
+              (e.currentTarget as HTMLDivElement).style.background =
+                "var(--button-hover-bg, color-mix(in oklab, var(--foreground) 6%, transparent))";
+            }}
+            onMouseLeave={(e) => {
+              if (active || dragOver === i) return;
+              (e.currentTarget as HTMLDivElement).style.background = "transparent";
+            }}
+          >
+            <span
+              aria-hidden
+              style={{
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                width: 14, height: 18,
+                color: "color-mix(in oklab, var(--foreground) 35%, transparent)",
+                userSelect: "none", cursor: "grab",
+                lineHeight: 1,
+              }}
+            >
+              <svg width="8" height="14" viewBox="0 0 6 10" fill="currentColor">
+                <circle cx="1.5" cy="2" r="1" /><circle cx="4.5" cy="2" r="1" />
+                <circle cx="1.5" cy="5" r="1" /><circle cx="4.5" cy="5" r="1" />
+                <circle cx="1.5" cy="8" r="1" /><circle cx="4.5" cy="8" r="1" />
+              </svg>
+            </span>
+            <button
+              onClick={() => onJump(i)}
+              style={{
+                flex: 1, textAlign: "left",
+                border: "none", background: "transparent",
+                color: active ? "var(--color-primary, #6965db)" : "inherit",
+                cursor: "pointer",
+                padding: "4px 2px", fontSize: 12,
+                fontWeight: active ? 600 : 400,
+                fontVariantNumeric: "tabular-nums",
+                fontFamily: "inherit",
+              }}
+            >Page {i + 1}</button>
+            <div style={{ position: "relative" }}>
+              <button
+                onClick={(e) => { e.stopPropagation(); setPaperMenu((v) => v === i ? null : i); }}
+                title={inheriting ? `Inherits global (${eff})` : `Paper: ${eff}`}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 4,
+                  padding: "0 6px", height: 22,
+                  borderRadius: 4,
+                  border: "1px solid var(--default-border-color, rgba(255,255,255,0.1))",
+                  background: paperMenu === i
+                    ? "var(--button-hover-bg, color-mix(in oklab, var(--foreground) 8%, transparent))"
+                    : "transparent",
+                  color: "inherit",
+                  cursor: "pointer", fontSize: 10,
+                  fontFamily: "inherit",
+                  lineHeight: 1,
+                }}
+              >
+                <PaperModeIcon mode={eff} />
+                <span
+                  style={{
+                    opacity: inheriting ? 0.55 : 1,
+                    textTransform: "capitalize",
+                  }}
+                >{eff}</span>
+                <ChevronDown style={{ width: 10, height: 10, opacity: 0.6 }} />
+              </button>
+              {paperMenu === i && (
+                <div
+                  style={{
+                    position: "absolute", top: "calc(100% + 4px)", right: 0,
+                    minWidth: 130,
+                    padding: 3,
+                    background: "var(--island-bg-color, #232329)",
+                    borderRadius: 6,
+                    boxShadow: "0 0 0 1px var(--default-border-color, rgba(255,255,255,0.08)), 0 6px 18px rgba(0,0,0,0.3)",
+                    zIndex: 2,
+                    display: "flex", flexDirection: "column", gap: 1,
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {(["inherit", "plain", "grid", "dots", "lines"] as const).map((m) => {
+                    const sel = (p.paper ?? "inherit") === m;
+                    const showIcon = m === "inherit" ? null : <PaperModeIcon mode={m} />;
+                    return (
+                      <button
+                        key={m}
+                        onClick={() => { onSetPaper(i, m); setPaperMenu(null); }}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 8,
+                          width: "100%", textAlign: "left",
+                          padding: "6px 8px", borderRadius: 4,
+                          border: "none",
+                          background: sel
+                            ? "var(--color-primary-light, color-mix(in oklab, var(--color-primary, #6965db) 18%, transparent))"
+                            : "transparent",
+                          color: sel ? "var(--color-primary, #6965db)" : "inherit",
+                          cursor: "pointer", fontSize: 11,
+                          textTransform: "capitalize",
+                          fontFamily: "inherit",
+                        }}
+                        onMouseEnter={(e) => {
+                          if (sel) return;
+                          (e.currentTarget as HTMLButtonElement).style.background =
+                            "var(--button-hover-bg, color-mix(in oklab, var(--foreground) 8%, transparent))";
+                        }}
+                        onMouseLeave={(e) => {
+                          if (sel) return;
+                          (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+                        }}
+                      >
+                        <span style={{ width: 14, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+                          {showIcon ?? <span style={{ opacity: 0.55 }}>↺</span>}
+                        </span>
+                        <span style={{ flex: 1 }}>{m}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <label
+              title={p.bgColor ? `Page color: ${p.bgColor} (right-click to clear)` : "Set page color"}
+              style={{
+                position: "relative",
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                width: 22, height: 22, borderRadius: 4,
+                border: "1px solid var(--default-border-color, rgba(255,255,255,0.1))",
+                background: p.bgColor || "transparent",
+                cursor: "pointer",
+                overflow: "hidden",
+              }}
+              onContextMenu={(e) => { e.preventDefault(); onSetBg(i, null); }}
+            >
+              {!p.bgColor && (
+                <span style={{ fontSize: 12, opacity: 0.55, lineHeight: 1 }}>🎨</span>
+              )}
+              <input
+                type="color"
+                value={p.bgColor || "#ffffff"}
+                onChange={(e) => onSetBg(i, e.currentTarget.value)}
+                style={{
+                  position: "absolute", inset: 0, opacity: 0,
+                  width: "100%", height: "100%", cursor: "pointer",
+                  border: "none", padding: 0,
+                }}
+              />
+            </label>
+            <button
+              onClick={() => onDelete(i)}
+              disabled={pages.length <= 1}
+              title="Delete page"
+              className="excal-present-btn"
+              style={{
+                width: 22, height: 22, padding: 0,
+                opacity: pages.length <= 1 ? 0.4 : 1,
+                cursor: pages.length <= 1 ? "not-allowed" : "pointer",
+              }}
+            ><X className="h-3 w-3" /></button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function LayoutIcon({ mode }: { mode: "board" | "book" }) {
+  const stroke = "currentColor";
+  if (mode === "board") {
+    return (
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={stroke} strokeWidth="1.2">
+        <rect x="1.5" y="3" width="11" height="8" rx="1" />
+      </svg>
+    );
+  }
+  // book: two stacked rectangles representing pages.
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={stroke} strokeWidth="1.2">
+      <rect x="2" y="1.8" width="9" height="5.2" rx="0.8" />
+      <rect x="2" y="7.4" width="9" height="5" rx="0.8" />
+    </svg>
+  );
+}
+
+// GoodNotes-style page nav. Sits above Excalidraw's "Scroll back to
+// content" anchor (~bottom 56px) so the two don't collide. Click the
+// page indicator to open a jump-to-page popover.
+// Same chrome as PresentOverlay (frame strip) — reuses `excal-present-*`
+// classes so the two bars look identical and sit nicely beside each
+// other. Anchored bottom-left when the frame strip is at center, so
+// they no longer stack on top of each other.
+export type PaperMode = "plain" | "grid" | "dots" | "lines";
+export type BookPageMeta = { paper?: PaperMode | "inherit"; bgColor?: string | null };
+export function BookNavWidget({
+  page, pageCount, onPrev, onNext, onJump, onAddPage, onDeletePage, onReorder, onSetPagePaper, onSetPageBg, onExportPdf, onToggleOutline, outlineOpen, framePresenting, pages, globalPaper,
+}: {
+  page: number; pageCount: number;
+  onPrev: () => void; onNext: () => void;
+  onJump: (idx: number) => void;
+  onAddPage: () => void;
+  onDeletePage: (idx: number) => void;
+  onReorder: (from: number, to: number) => void;
+  onSetPagePaper: (idx: number, mode: PaperMode | "inherit") => void;
+  onSetPageBg: (idx: number, color: string | null) => void;
+  onExportPdf: () => void;
+  onToggleOutline: () => void;
+  outlineOpen: boolean;
+  framePresenting: boolean;
+  pages: BookPageMeta[];
+  globalPaper: PaperMode;
+}) {
+  const [open, setOpen] = useState(false);
+  const positionClass = framePresenting
+    ? "left-4 -translate-x-0"  // dodge to the left when frame strip is centered
+    : "left-1/2 -translate-x-1/2";
+  return (
+    <div
+      className={`excal-present-bar absolute bottom-4 ${positionClass} z-40 inline-flex items-center gap-1`}
+    >
+      <button onClick={onPrev} disabled={page === 0} className="excal-present-btn" title="Previous page (←)">
+        <ChevronLeft className="h-4 w-4" />
+      </button>
+      <div style={{ position: "relative" }}>
+        <button
+          onClick={() => setOpen((v) => !v)}
+          title="Jump to page"
+          className={`excal-present-counter ${open ? "is-active" : ""}`}
+        >
+          page {page + 1} / {pageCount}
+        </button>
+        {open && (
+          <PageListPopover
+            page={page}
+            pages={pages}
+            globalPaper={globalPaper}
+            onJump={(i) => { onJump(i); setOpen(false); }}
+            onDelete={onDeletePage}
+            onReorder={onReorder}
+            onSetPaper={onSetPagePaper}
+            onSetBg={onSetPageBg}
+          />
+        )}
+      </div>
+      <button onClick={onNext} disabled={page >= pageCount - 1} className="excal-present-btn" title="Next page (→)">
+        <ChevronRight className="h-4 w-4" />
+      </button>
+      <span className="excal-present-sep" />
+      <button onClick={onAddPage} className="excal-present-btn" title="Add page">
+        <Plus className="h-4 w-4" />
+      </button>
+      <label
+        className="excal-present-btn"
+        title="Set color for all pages at once (right-click to clear all)"
+        style={{ position: "relative", cursor: "pointer", padding: 0, width: 32, height: 32, display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          pages.forEach((_, i) => onSetPageBg(i, null));
+        }}
+      >
+        <span
+          aria-hidden
+          style={{
+            display: "inline-block",
+            width: 16, height: 16,
+            borderRadius: 4,
+            border: "1px solid var(--default-border-color, rgba(255,255,255,0.18))",
+            background: (() => {
+              // Show current uniform color if all pages share one; otherwise multi-stripe.
+              const colors = pages.map((p) => p.bgColor || "#ffffff");
+              const uniform = colors.every((c) => c === colors[0]);
+              if (uniform) return colors[0];
+              return "linear-gradient(135deg, #ffffff 0 33%, #c4b5fd 33% 66%, #1f2937 66% 100%)";
+            })(),
+          }}
+        />
+        <input
+          type="color"
+          aria-label="Set color for all pages"
+          onChange={(e) => {
+            const c = e.currentTarget.value;
+            pages.forEach((_, i) => onSetPageBg(i, c));
+          }}
+          style={{
+            position: "absolute", inset: 0, opacity: 0,
+            width: "100%", height: "100%", cursor: "pointer",
+            border: "none", padding: 0,
+          }}
+        />
+      </label>
+      <button onClick={onToggleOutline} className={`excal-present-btn ${outlineOpen ? "is-active" : ""}`} title="Outline (text per page)">
+        <BookOpen className="h-4 w-4" />
+      </button>
+      <button onClick={onExportPdf} className="excal-present-btn" title="Export as PDF">
+        <Download className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+// Right-side outline panel — Notion-style two-column list with tiny
+// page thumbnails on the left and a hierarchical text outline on
+// the right. Headings = the first text on each page (largest size
+// wins), body lines = subsequent texts.
+function BookOutlinePanel({
+  pages, elements, currentPage, onJump, onClose,
+}: {
+  pages: BookPageMeta[];
+  elements: readonly unknown[];
+  currentPage: number;
+  onJump: (i: number) => void;
+  onClose: () => void;
+}) {
+  const byPage = useMemo(() => {
+    type TextEl = { text: string; fontSize: number; y: number };
+    const out: TextEl[][] = pages.map(() => []);
+    for (const raw of elements) {
+      const e = raw as { type?: string; isDeleted?: boolean; y?: number; text?: string; fontSize?: number } | null;
+      if (!e || e.isDeleted || e.type !== "text" || !e.text) continue;
+      const y = e.y ?? 0;
+      const pageIdx = Math.floor(y / (BOOK_PAGE_H + BOOK_PAGE_GAP));
+      if (pageIdx < 0 || pageIdx >= out.length) continue;
+      out[pageIdx].push({
+        text: String(e.text).split("\n").map((s) => s.trim()).filter(Boolean).join(" · ").slice(0, 100),
+        fontSize: typeof e.fontSize === "number" ? e.fontSize : 20,
+        y,
+      });
+    }
+    // Sort each page's items by y ascending so reading order matches.
+    for (const arr of out) arr.sort((a, b) => a.y - b.y);
+    return out;
+  }, [pages, elements]);
+  return (
+    <div
+      className="Island"
+      style={{
+        position: "absolute",
+        top: 56, right: 12, bottom: 12,
+        width: 260,
+        display: "flex", flexDirection: "column",
+        borderRadius: "var(--border-radius-lg, 10px)",
+        background: "var(--island-bg-color, #232329)",
+        boxShadow:
+          "0 0 0 1px var(--default-border-color, rgba(255,255,255,0.08)), 0 8px 24px rgba(0,0,0,0.25)",
+        zIndex: 5,
+        color: "var(--text-primary-color, var(--foreground))",
+        overflow: "hidden",
+        fontFamily: "var(--ui-font, inherit)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex", alignItems: "center", gap: 6,
+          padding: "8px 8px 8px 12px",
+          fontSize: 10, fontWeight: 600,
+          color: "color-mix(in oklab, var(--foreground) 65%, transparent)",
+          textTransform: "uppercase", letterSpacing: 0.6,
+          borderBottom: "1px solid var(--default-border-color, rgba(255,255,255,0.06))",
+        }}
+      >
+        <BookOpen style={{ width: 12, height: 12, opacity: 0.7 }} />
+        <span>Outline</span>
+        <span
+          style={{
+            marginLeft: "auto",
+            opacity: 0.55,
+            fontVariantNumeric: "tabular-nums",
+            textTransform: "none",
+            letterSpacing: 0,
+            fontWeight: 400,
+            fontSize: 11,
+          }}
+        >{pages.length} page{pages.length === 1 ? "" : "s"}</span>
+        <button
+          onClick={onClose}
+          title="Close"
+          className="excal-present-btn"
+          style={{ padding: 2, width: 22, height: 22 }}
+        ><X style={{ width: 12, height: 12 }} /></button>
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: "4px 4px" }}>
+        {byPage.map((items, i) => {
+          const head = items[0];
+          const rest = items.slice(1, 4);
+          const active = i === currentPage;
+          return (
+            <div
+              key={i}
+              role="button"
+              tabIndex={0}
+              onClick={() => onJump(i)}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onJump(i); }}
+              style={{
+                position: "relative",
+                padding: "6px 8px 6px 12px",
+                margin: "1px 0",
+                borderRadius: 6,
+                cursor: "pointer",
+                background: active
+                  ? "var(--color-primary-light, color-mix(in oklab, var(--color-primary, #6965db) 18%, transparent))"
+                  : "transparent",
+                transition: "background 120ms ease",
+              }}
+              onMouseEnter={(e) => {
+                if (active) return;
+                (e.currentTarget as HTMLDivElement).style.background =
+                  "var(--button-hover-bg, color-mix(in oklab, var(--foreground) 6%, transparent))";
+              }}
+              onMouseLeave={(e) => {
+                if (active) return;
+                (e.currentTarget as HTMLDivElement).style.background = "transparent";
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span
+                  style={{
+                    fontSize: 10, fontVariantNumeric: "tabular-nums",
+                    color: active ? "var(--color-primary, #6965db)" : "color-mix(in oklab, var(--foreground) 50%, transparent)",
+                    minWidth: 16,
+                  }}
+                >{i + 1}</span>
+                <span
+                  style={{
+                    flex: 1, minWidth: 0,
+                    fontSize: 12,
+                    fontWeight: head ? 500 : 400,
+                    color: head
+                      ? "var(--text-primary-color, var(--foreground))"
+                      : "color-mix(in oklab, var(--foreground) 50%, transparent)",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  }}
+                >
+                  {head ? head.text : `Page ${i + 1}`}
+                </span>
+              </div>
+              {rest.length > 0 && (
+                <div style={{ marginLeft: 22, marginTop: 2 }}>
+                  {rest.map((it, j) => (
+                    <div
+                      key={j}
+                      style={{
+                        fontSize: 10.5,
+                        color: "color-mix(in oklab, var(--foreground) 55%, transparent)",
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        lineHeight: 1.5,
+                      }}
+                    >{it.text}</div>
+                  ))}
+                  {items.length > 4 && (
+                    <div style={{ fontSize: 10, opacity: 0.35, lineHeight: 1.5 }}>+{items.length - 4} more</div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PaperModeIcon({ mode }: { mode: "plain" | "grid" | "dots" | "lines" }) {
+  const stroke = "currentColor";
+  if (mode === "plain") {
+    return (
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={stroke} strokeWidth="1.2">
+        <rect x="2" y="2" width="10" height="10" rx="1.5" />
+      </svg>
+    );
+  }
+  if (mode === "grid") {
+    return (
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={stroke} strokeWidth="1">
+        <rect x="2" y="2" width="10" height="10" rx="1.5" />
+        <path d="M5.3 2v10M8.6 2v10M2 5.3h10M2 8.6h10" opacity="0.7" />
+      </svg>
+    );
+  }
+  if (mode === "dots") {
+    return (
+      <svg width="14" height="14" viewBox="0 0 14 14" fill={stroke} stroke="none">
+        <rect x="2" y="2" width="10" height="10" rx="1.5" fill="none" stroke={stroke} strokeWidth="1" />
+        <circle cx="5" cy="5" r="0.7" /><circle cx="9" cy="5" r="0.7" />
+        <circle cx="5" cy="9" r="0.7" /><circle cx="9" cy="9" r="0.7" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={stroke} strokeWidth="1">
+      <rect x="2" y="2" width="10" height="10" rx="1.5" />
+      <path d="M2 5.3h10M2 8.6h10" opacity="0.7" />
+    </svg>
+  );
+}
+
+export function PaperBackdrop({
+  mode, appState, bgColor,
+}: {
+  mode: "grid" | "dots" | "lines";
+  appState: Record<string, unknown>;
+  bgColor?: string | null;
+}) {
+  const s = appState as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
+  const zoom = s.zoom?.value ?? 1;
+  const sx = (s.scrollX ?? 0) * zoom;
+  const sy = (s.scrollY ?? 0) * zoom;
+  // World-space spacing (px at zoom=1).
+  const baseGrid = 32;
+  const baseDots = 24;
+  const baseLines = 28;
+  const style: React.CSSProperties = {
+    position: "absolute",
+    inset: 0,
+    pointerEvents: "none",
+    zIndex: 0,
+    opacity: 0.85,
+  };
+  // Auto-flip pattern stroke based on wrapper bg brightness so dots
+  // stay visible on both cream/sand light bgs and forest/charcoal
+  // darks. Falls back to `--foreground` token when no explicit bg is
+  // set (the theme handles contrast itself).
+  const isLight = isLightHex(bgColor);
+  const lineColor = bgColor
+    ? (isLight ? "rgba(20, 20, 24, 0.45)" : "rgba(255, 255, 255, 0.45)")
+    : "color-mix(in oklab, var(--foreground) 32%, transparent)";
+  if (mode === "grid") {
+    const sz = baseGrid * zoom;
+    style.backgroundImage = `linear-gradient(to right, ${lineColor} 1px, transparent 1px), linear-gradient(to bottom, ${lineColor} 1px, transparent 1px)`;
+    style.backgroundSize = `${sz}px ${sz}px, ${sz}px ${sz}px`;
+    style.backgroundPosition = `${sx}px ${sy}px, ${sx}px ${sy}px`;
+  } else if (mode === "dots") {
+    const sz = baseDots * zoom;
+    style.backgroundImage = `radial-gradient(circle, ${lineColor} ${Math.max(1, 1.2 * zoom)}px, transparent ${Math.max(1, 1.2 * zoom)}px)`;
+    style.backgroundSize = `${sz}px ${sz}px`;
+    style.backgroundPosition = `${sx}px ${sy}px`;
+  } else {
+    const sz = baseLines * zoom;
+    style.backgroundImage = `linear-gradient(to bottom, ${lineColor} 1px, transparent 1px)`;
+    style.backgroundSize = `${sz}px ${sz}px`;
+    style.backgroundPosition = `${sx}px ${sy}px`;
+  }
+  return <div style={style} aria-hidden />;
+}
+
+function clampNum(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+// Cheap luminance check for #rrggbb / #rgb. Returns true when the
+// color reads "light" so PaperBackdrop can flip its stroke to dark.
+function isLightHex(c?: string | null): boolean {
+  if (!c || typeof c !== "string") return true;
+  let hex = c.trim().replace(/^#/, "");
+  if (hex.length === 3) hex = hex.split("").map((x) => x + x).join("");
+  if (hex.length !== 6) return true;
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return true;
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.55;
+}
+
+// Inject free-range sliders into Excalidraw's right-side properties
+// panel for stroke-width and font-size. We portal a React slider
+// inside the matching fieldset so it inherits panel styling, and we
+// mimic Excalidraw's native Range markup (`control-label`,
+// `range-wrapper`, `range-input`, `value-bubble`) so the result
+// matches the existing Opacity slider one-for-one.
+function PropertyPanelSliders({ excalRef, ready }: { excalRef: React.MutableRefObject<ExcalApi | null>; ready: boolean }) {
+  const [strokeHost, setStrokeHost] = useState<HTMLElement | null>(null);
+  const [fontHost, setFontHost] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!ready) return;
+    let strokeEl: HTMLDivElement | null = null;
+    let fontEl: HTMLDivElement | null = null;
+    const attach = () => {
+      const swProbe = document.querySelector('[data-testid="strokeWidth-thin"]');
+      const swFieldset = swProbe?.closest("fieldset") as HTMLElement | null;
+      if (swFieldset) {
+        if (!strokeEl || !swFieldset.contains(strokeEl)) {
+          strokeEl?.remove();
+          strokeEl = document.createElement("div");
+          strokeEl.className = "excal-extra-slider";
+          swFieldset.appendChild(strokeEl);
+          setStrokeHost(strokeEl);
+        }
+      } else if (strokeEl) {
+        strokeEl.remove();
+        strokeEl = null;
+        setStrokeHost(null);
+      }
+      const fsProbe = document.querySelector('[data-testid="fontSize-small"]');
+      const fsFieldset = fsProbe?.closest("fieldset") as HTMLElement | null;
+      if (fsFieldset) {
+        if (!fontEl || !fsFieldset.contains(fontEl)) {
+          fontEl?.remove();
+          fontEl = document.createElement("div");
+          fontEl.className = "excal-extra-slider";
+          fsFieldset.appendChild(fontEl);
+          setFontHost(fontEl);
+        }
+      } else if (fontEl) {
+        fontEl.remove();
+        fontEl = null;
+        setFontHost(null);
+      }
+    };
+    attach();
+    const obs = new MutationObserver(attach);
+    obs.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      obs.disconnect();
+      strokeEl?.remove();
+      fontEl?.remove();
+    };
+  }, [ready]);
+  return (
+    <>
+      {strokeHost && createPortal(
+        <SliderControl
+          excalRef={excalRef}
+          kind="strokeWidth"
+          min={0.1} max={20} step={0.1} defaultVal={2}
+          storageKey="sketch.thicknessPref"
+        />, strokeHost,
+      )}
+      {fontHost && createPortal(
+        <SliderControl
+          excalRef={excalRef}
+          kind="fontSize"
+          min={8} max={96} step={1} defaultVal={20}
+          storageKey="sketch.fontSizePref"
+        />, fontHost,
+      )}
+    </>
+  );
+}
+
+function SliderControl({
+  excalRef, kind, min, max, step, defaultVal, storageKey,
+}: {
+  excalRef: React.MutableRefObject<ExcalApi | null>;
+  kind: "strokeWidth" | "fontSize";
+  min: number; max: number; step: number; defaultVal: number;
+  storageKey: string;
+}) {
+  const [value, setValue] = useState<number>(() => {
+    if (typeof window === "undefined") return defaultVal;
+    const raw = window.localStorage.getItem(storageKey);
+    const n = raw == null ? NaN : Number(raw);
+    return Number.isFinite(n) ? clampNum(n, min, max) : defaultVal;
+  });
+  const valueRef = useRef(value);
+  useEffect(() => { valueRef.current = value; }, [value]);
+
+  // Poll appState so chip clicks (S/M/L/XL) update the slider too.
+  useEffect(() => {
+    const key = kind === "strokeWidth" ? "currentItemStrokeWidth" : "currentItemFontSize";
+    const id = window.setInterval(() => {
+      const api = excalRef.current;
+      if (!api) return;
+      const app = api.getAppState() as Record<string, unknown>;
+      const cur = Number(app[key]);
+      if (Number.isFinite(cur) && Math.abs(cur - valueRef.current) > 0.001) {
+        setValue(clampNum(cur, min, max));
+      }
+    }, 400);
+    return () => window.clearInterval(id);
+  }, [excalRef, kind, min, max]);
+
+  const apply = (raw: number) => {
+    const next = clampNum(raw, min, max);
+    setValue(next);
+    try { window.localStorage.setItem(storageKey, String(next)); } catch {}
+    const api = excalRef.current;
+    if (!api) return;
+    const appState = api.getAppState() as { selectedElementIds?: Record<string, boolean> };
+    const stateUpdate = kind === "strokeWidth"
+      ? { currentItemStrokeWidth: next }
+      : { currentItemFontSize: next };
+    const ids = appState.selectedElementIds ?? {};
+    const selectedKeys = Object.keys(ids).filter((k) => ids[k]);
+    if (selectedKeys.length > 0) {
+      const els = api.getSceneElements() as ReadonlyArray<Record<string, unknown>>;
+      const sel = new Set(selectedKeys);
+      const nextEls = els.map((e) => {
+        if (typeof e.id !== "string" || !sel.has(e.id)) return e;
+        if (kind === "fontSize" && e.type !== "text") return e;
+        return {
+          ...e,
+          [kind]: next,
+          version: ((e.version as number) ?? 0) + 1,
+          versionNonce: Math.floor(Math.random() * 0x7fffffff),
+          updated: Date.now(),
+        };
+      });
+      api.updateScene({ elements: nextEls as never, appState: stateUpdate });
+    } else {
+      api.updateScene({ appState: stateUpdate });
+    }
+  };
+
+  const label = kind === "strokeWidth" ? "Width" : "Size";
+  // Mimic Excalidraw's native Range: `control-label` wraps a
+  // `range-wrapper` containing a `range-input` and a `value-bubble`.
+  // We also paint the same linear-gradient on the track so the
+  // filled portion matches the native opacity slider visually.
+  const rangeRef = useRef<HTMLInputElement | null>(null);
+  const bubbleRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const r = rangeRef.current; const b = bubbleRef.current;
+    if (!r || !b) return;
+    const pct = ((value - min) / (max - min)) * 100;
+    const w = r.offsetWidth || 120;
+    const thumb = 15;
+    const pos = (pct / 100) * (w - thumb) + thumb / 2;
+    b.style.left = `${pos}px`;
+    r.style.background = `linear-gradient(to right, var(--color-slider-track) 0%, var(--color-slider-track) ${pct}%, var(--button-bg) ${pct}%, var(--button-bg) 100%)`;
+  }, [value, min, max]);
+  return (
+    <label className="control-label excal-extra-slider-label">
+      {label}
+      <div className="range-wrapper">
+        <input
+          ref={rangeRef}
+          type="range"
+          min={min} max={max} step={step}
+          value={value}
+          onChange={(e) => apply(Number(e.currentTarget.value))}
+          className="range-input"
+          aria-label={kind === "strokeWidth" ? "Stroke width" : "Font size"}
+        />
+        <div className="value-bubble" ref={bubbleRef}>{Number.isFinite(value) ? value : ""}</div>
+        <div className="zero-label">{min}</div>
+      </div>
+    </label>
+  );
+}
+
+// Trim Excalidraw's More-tools dropdown: remove the inline
+// "Generate" heading and the Mermaid item we don't expose. Restyling
+// to match excal-popover is in globals.css.
+function TrimMoreToolsDropdown() {
+  useEffect(() => {
+    const trim = () => {
+      const dd = document.querySelector(".App-toolbar__extra-tools-dropdown");
+      if (!dd) return;
+      // Remove the bold "Generate" sub-heading <div>.
+      dd.querySelectorAll<HTMLElement>(":scope > .Stack > div").forEach((n) => {
+        if (!n.classList.contains("dropdown-menu-item") && /generate/i.test(n.textContent || "")) {
+          n.style.display = "none";
+        }
+      });
+      // Hide the Mermaid item (it ships as data-testid="toolbar-embeddable"
+      // a second time, with the text "Mermaid to Excalidraw").
+      dd.querySelectorAll<HTMLElement>(".dropdown-menu-item").forEach((n) => {
+        if (/mermaid/i.test(n.textContent || "")) n.style.display = "none";
+      });
+    };
+    const obs = new MutationObserver(trim);
+    obs.observe(document.body, { childList: true, subtree: true });
+    trim();
+    return () => obs.disconnect();
+  }, []);
+  return null;
+}
+// Compact 3-column tile grid for the Templates dropdown. Replaces
+// the ~24-row vertical list which overflowed below the viewport.
+const TEMPLATE_ICONS: Record<TemplateKey, React.ReactNode> = {
+  mindmap:       <Network className="h-4 w-4" />,
+  flowchart:     <ArrowDown className="h-4 w-4" />,
+  kanban:        <Columns3 className="h-4 w-4" />,
+  swot:          <Grid2x2 className="h-4 w-4" />,
+  arch3tier:     <Layers className="h-4 w-4" />,
+  c4context:     <Boxes className="h-4 w-4" />,
+  microservices: <Boxes className="h-4 w-4" />,
+  deployment:    <Layers className="h-4 w-4" />,
+  classdiagram:  <Component className="h-4 w-4" />,
+  sequence:      <MessageSquare className="h-4 w-4" />,
+  statemachine:  <RotateCw className="h-4 w-4" />,
+  er:            <Database className="h-4 w-4" />,
+  usecase:       <Users className="h-4 w-4" />,
+  dfd:           <ArrowDown className="h-4 w-4" />,
+  cicd:          <GitBranch className="h-4 w-4" />,
+  gitflow:       <GitBranch className="h-4 w-4" />,
+  oauth:         <Key className="h-4 w-4" />,
+  rest:          <FileCode className="h-4 w-4" />,
+  mvvm:          <Component className="h-4 w-4" />,
+  stride:        <Shield className="h-4 w-4" />,
+  retro4ls:      <Grid2x2 className="h-4 w-4" />,
+  sprint:        <Columns3 className="h-4 w-4" />,
+  mathgrid:      <Sigma className="h-4 w-4" />,
+  mathplot:      <LineChart className="h-4 w-4" />,
+  mathproof:     <Triangle className="h-4 w-4" />,
+  mathfrac:      <PieChart className="h-4 w-4" />,
+  k8s:           <Cloud className="h-4 w-4" />,
+  docker:        <Container className="h-4 w-4" />,
+  registry:      <Package className="h-4 w-4" />,
+  monitor:       <Activity className="h-4 w-4" />,
+  wireframe:     <Layout className="h-4 w-4" />,
+  form:          <FormInput className="h-4 w-4" />,
+  cardgrid:      <LayoutGrid className="h-4 w-4" />,
+  modal:         <MessageSquare className="h-4 w-4" />,
+  hexarch:       <Hexagon className="h-4 w-4" />,
+  eventstorm:    <Workflow className="h-4 w-4" />,
+  layered:       <Layers className="h-4 w-4" />,
+  erext:         <Database className="h-4 w-4" />,
+};
+function TemplateGrid({ onTemplate }: { onTemplate: (k: TemplateKey) => void }) {
+  const cats: Array<{ key: string; title: string }> = [
+    { key: "general", title: "General" },
+    { key: "architecture", title: "Architecture" },
+    { key: "uml", title: "UML" },
+    { key: "process", title: "Process" },
+    { key: "security", title: "Security" },
+    { key: "team", title: "Team" },
+    { key: "math", title: "Math" },
+    { key: "devops", title: "DevOps" },
+    { key: "webui", title: "Web UI" },
+    { key: "diagrams", title: "Diagrams+" },
+  ];
+  return (
+    <>
+      {cats.map((c) => {
+        const keys = (Object.keys(TEMPLATE_META) as TemplateKey[]).filter(
+          (k) => TEMPLATE_META[k].cat === c.key,
+        );
+        if (!keys.length) return null;
+        return (
+          <Fragment key={c.key}>
+            <li className="excal-popover-section">{c.title}</li>
+            <li>
+              <div className="excal-popover-grid">
+                {keys.map((k) => (
+                  <button
+                    key={k}
+                    onClick={() => onTemplate(k)}
+                    className="excal-popover-tile"
+                    title={TEMPLATE_META[k].desc}
+                  >
+                    <span className="excal-popover-tile-icon">{TEMPLATE_ICONS[k]}</span>
+                    <span className="excal-popover-tile-label">{TEMPLATE_META[k].label}</span>
+                  </button>
+                ))}
+              </div>
+            </li>
+          </Fragment>
+        );
+      })}
+    </>
+  );
+}
 function ShapeIslandTools(props: React.ComponentProps<typeof TopRightTools>) {
   const [host, setHost] = useState<HTMLElement | null>(null);
 
@@ -1027,7 +4338,9 @@ function TopRightTools({
   onAi, onChat, onTemplate, onExportPng, onExportSvg, onCopyJson,
   full, onToggleFull, framesCount, presenting, onPresentToggle,
   penOn, onTogglePen, padUrl, padCount, viewerCount, onSave, saving, savedTick,
-  pendingPads, onApprovePad, onDenyPad,
+  pendingPads, onApprovePad, onDenyPad, paperMode, onPaperMode,
+  onZoomDelta, onZoomReset, zoomPct,
+  hideFullscreenButton,
 }: {
   onAi: () => void;
   onChat: () => void;
@@ -1051,8 +4364,14 @@ function TopRightTools({
   pendingPads: Array<{ sessionId: string; approval: "pending" | "approved" | "denied"; label?: string; device?: { ip?: string; screen?: string; language?: string } }>;
   onApprovePad: (sessionId: string) => void;
   onDenyPad: (sessionId: string) => void;
+  paperMode: "plain" | "grid" | "dots" | "lines";
+  onPaperMode: (m: "plain" | "grid" | "dots" | "lines") => void;
+  onZoomDelta: (factor: number) => void;
+  onZoomReset: () => void;
+  zoomPct: number;
+  hideFullscreenButton?: boolean;
 }) {
-  const [open, setOpen] = useState<null | "ai" | "export" | "pad">(null);
+  const [open, setOpen] = useState<null | "ai" | "export" | "pad" | "paper">(null);
   useEffect(() => {
     if (!open) return;
     const onDoc = () => setOpen(null);
@@ -1084,10 +4403,9 @@ function TopRightTools({
         <ExcalDropdownItem icon={<Sparkles className="h-4 w-4" />}      label="AI generate"   hint="prompt → diagram" onClick={() => { onAi(); setOpen(null); }} />
         <ExcalDropdownItem icon={<MessageCircle className="h-4 w-4" />} label="Ask AI"        hint="chat about scene"  onClick={() => { onChat(); setOpen(null); }} />
         <li className="excal-popover-section">Templates</li>
-        <ExcalDropdownItem icon={<Network className="h-4 w-4" />}   label="Mind map"  hint="branches"  onClick={() => { onTemplate("mindmap"); setOpen(null); }} />
-        <ExcalDropdownItem icon={<ArrowDown className="h-4 w-4" />} label="Flowchart" hint="top-down"  onClick={() => { onTemplate("flowchart"); setOpen(null); }} />
-        <ExcalDropdownItem icon={<Columns3 className="h-4 w-4" />}  label="Kanban"    hint="3 columns" onClick={() => { onTemplate("kanban"); setOpen(null); }} />
-        <ExcalDropdownItem icon={<Grid2x2 className="h-4 w-4" />}   label="SWOT"      hint="2×2 grid"  onClick={() => { onTemplate("swot"); setOpen(null); }} />
+        <TemplateGrid
+          onTemplate={(k) => { onTemplate(k); setOpen(null); }}
+        />
       </ExcalDropdown>
       {framesCount > 0 && (
         <button
@@ -1099,16 +4417,6 @@ function TopRightTools({
           <span className="ml-1 font-mono text-[10px] opacity-70">{framesCount}</span>
         </button>
       )}
-      <ExcalDropdown
-        label="Export"
-        icon={<Download className="h-3.5 w-3.5" />}
-        open={open === "export"}
-        onToggle={() => setOpen(open === "export" ? null : "export")}
-      >
-        <ExcalDropdownItem icon={<ImageIcon className="h-4 w-4" />} label="Export as PNG" onClick={() => { onExportPng(); setOpen(null); }} />
-        <ExcalDropdownItem icon={<FileCode className="h-4 w-4" />}  label="Export as SVG" onClick={() => { onExportSvg(); setOpen(null); }} />
-        <ExcalDropdownItem icon={<Copy className="h-4 w-4" />}      label="Copy scene JSON" onClick={() => { onCopyJson(); setOpen(null); }} />
-      </ExcalDropdown>
       <ExcalDropdown
         label="iPad & pen"
         icon={<Tablet className="h-3.5 w-3.5" />}
@@ -1128,9 +4436,11 @@ function TopRightTools({
           onDenyPad={onDenyPad}
         />
       </ExcalDropdown>
-      <button onClick={onToggleFull} className="excal-btn" title={full ? "Exit fullscreen (F)" : "Fullscreen (F)"}>
-        {full ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
-      </button>
+{!hideFullscreenButton && (
+        <button onClick={onToggleFull} className="excal-btn" title={full ? "Exit fullscreen (F)" : "Fullscreen (F)"}>
+          {full ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+        </button>
+      )}
     </div>
   );
 }
@@ -1324,6 +4634,12 @@ function PadPanel({ penOn, onTogglePen, url, padCount, viewerCount, pendingPads,
   const [qr, setQr] = useState<string>("");
   const [lanUrl, setLanUrl] = useState<string>(url);
   const [lanWarn, setLanWarn] = useState<string>("");
+  // All candidate LAN IPv4s — laptops with VPN or Docker bridges often
+  // expose several. Stored so the user can rotate to the right NIC if
+  // the auto-picked one (highest priority: 192.168>10>172) doesn't
+  // route to the tablet's Wi-Fi.
+  const [lanIps, setLanIps] = useState<string[]>([]);
+  const [lanIdx, setLanIdx] = useState(0);
 
   // Replace localhost hostname with the dev server's LAN IPv4 so the iPad,
   // which is on another device, can actually reach it.
@@ -1334,18 +4650,17 @@ function PadPanel({ penOn, onTogglePen, url, padCount, viewerCount, pendingPads,
       try {
         const u = new URL(url);
         const isLocal = u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "0.0.0.0";
-        if (!isLocal) { setLanUrl(url); setLanWarn(""); return; }
+        if (!isLocal) { setLanUrl(url); setLanWarn(""); setLanIps([]); return; }
         const r = await fetch("/api/lan", { cache: "no-store" });
         const d = await r.json();
-        const ip = Array.isArray(d.lan) ? d.lan[0] : undefined;
-        if (!ip) {
+        const ips: string[] = Array.isArray(d.lan) ? d.lan : [];
+        if (!ips.length) {
           if (!cancelled) { setLanUrl(url); setLanWarn("No LAN IP detected — iPad won't reach localhost."); }
           return;
         }
-        u.hostname = ip;
         if (!cancelled) {
-          setLanUrl(u.toString());
-          setLanWarn(`iPad must be on the same Wi-Fi as ${ip}.`);
+          setLanIps(ips);
+          setLanIdx(0);
         }
       } catch {
         if (!cancelled) { setLanUrl(url); setLanWarn("LAN lookup failed — link points to localhost."); }
@@ -1353,6 +4668,29 @@ function PadPanel({ penOn, onTogglePen, url, padCount, viewerCount, pendingPads,
     })();
     return () => { cancelled = true; };
   }, [url]);
+
+  // Rebuild lanUrl whenever the selected NIC changes. Separated from the
+  // fetch effect so cycling NICs doesn't re-hit `/api/lan`.
+  useEffect(() => {
+    if (!lanIps.length || !url) return;
+    try {
+      const u = new URL(url);
+      const ip = lanIps[lanIdx] ?? lanIps[0];
+      u.hostname = ip;
+      setLanUrl(u.toString());
+      setLanWarn(
+        lanIps.length > 1
+          ? `iPad must be on the same Wi-Fi as ${ip}. Tap ↻ to try ${lanIps.length - 1} other NIC${lanIps.length > 2 ? "s" : ""}.`
+          : `iPad must be on the same Wi-Fi as ${ip}.`,
+      );
+    } catch {}
+  }, [lanIps, lanIdx, url]);
+
+  const cycleIp = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (lanIps.length <= 1) return;
+    setLanIdx((i) => (i + 1) % lanIps.length);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1425,6 +4763,16 @@ function PadPanel({ penOn, onTogglePen, url, padCount, viewerCount, pendingPads,
           <ExternalLink className="h-3.5 w-3.5" />
           <span>Open</span>
         </a>
+        {lanIps.length > 1 && (
+          <button
+            onClick={cycleIp}
+            className="excal-pad-v2-action"
+            title={`Cycle NIC — currently ${lanIps[lanIdx]} (${lanIdx + 1}/${lanIps.length})`}
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            <span>NIC {lanIdx + 1}/{lanIps.length}</span>
+          </button>
+        )}
       </div>
       {pendingPads.filter((p) => p.approval === "pending").length > 0 && (
         <div className="mt-3 space-y-2">
@@ -1499,6 +4847,7 @@ function FrameThumb({ frame, kids }: { frame: FrameEl; kids: SceneEl[] }) {
 
 function PresentOverlay({
   index, onPrev, onNext, onExit, onTogglePanel, panelOpen, onToggleFocus, focused,
+  viewOnly, onToggleViewOnly,
 }: {
   index: number;
   onPrev: () => void;
@@ -1508,6 +4857,8 @@ function PresentOverlay({
   panelOpen: boolean;
   onToggleFocus: () => void;
   focused: boolean;
+  viewOnly: boolean;
+  onToggleViewOnly: () => void;
 }) {
   return (
     <div className="excal-present-bar absolute bottom-4 left-1/2 -translate-x-1/2 z-50 inline-flex items-center gap-1">
@@ -1532,6 +4883,13 @@ function PresentOverlay({
         className={`excal-present-btn ${focused ? "is-active" : ""}`}
       >
         {focused ? <ZoomOut className="h-4 w-4" /> : <ZoomIn className="h-4 w-4" />}
+      </button>
+      <button
+        onClick={onToggleViewOnly}
+        title={viewOnly ? "Exit view mode (edit again)" : "View mode (read-only)"}
+        className={`excal-present-btn ${viewOnly ? "is-active" : ""}`}
+      >
+        <Eye className="h-4 w-4" />
       </button>
       <span className="excal-present-sep" />
       <button onClick={onExit} title="Stop presentation (Esc)" className="excal-present-btn excal-present-btn--danger">
@@ -1582,18 +4940,25 @@ function ExcalDropdownItem({ icon, label, hint, onClick }: { icon: React.ReactNo
   );
 }
 
-export function Minimap({
-  elements, appState, open, onToggle, onNavigate, onFitAll, size = "sm", defaultCorner = "br",
-}: {
+type MinimapProps = {
   elements: readonly unknown[];
   appState: Record<string, unknown>;
   open: boolean;
   onToggle: () => void;
   onNavigate: (worldX: number, worldY: number) => void;
+  onZoom?: (worldX: number, worldY: number, deltaY: number) => void;
   onFitAll?: () => void;
   size?: "sm" | "lg";
   defaultCorner?: "tl" | "tr" | "bl" | "br";
-}) {
+  cursor?: { x: number; y: number } | null;
+  // Extra inset (px) added to the corner's vertical edge — used on iPad
+  // to clear the centered native top toolbar so they don't overlap.
+  topOffset?: number;
+};
+
+function MinimapImpl({
+  elements, appState, open, onToggle, onNavigate, onZoom, onFitAll, size = "sm", defaultCorner = "br", cursor, topOffset = 0,
+}: MinimapProps) {
   const W = size === "lg" ? 320 : 220;
   const H = size === "lg" ? 220 : 150;
   const PAD = 24;
@@ -1649,22 +5014,59 @@ export function Minimap({
       worldY: bbox.minY + (py - offY) / scale,
     };
   };
-  // Drag-pan: pointerdown inside the svg starts a drag; every move
-  // forwards a new world coord to onNavigate so the main canvas pans
-  // continuously while the finger/mouse is held.
-  const svgDrag = useRef(false);
+  // Drag-pan modes:
+  //  - "jump": pointerdown OUTSIDE the viewport rect → snap viewport
+  //    center to the click point, then continue panning under finger.
+  //  - "grab": pointerdown INSIDE the viewport rect → preserve the
+  //    pointer-to-viewport offset, so the rect moves with the cursor
+  //    instead of snapping under it. Matches every Figma/Photoshop
+  //    minimap and was the single biggest source of "clunky" feel.
+  const svgDrag = useRef<{ mode: "jump" | "grab"; offsetX: number; offsetY: number } | null>(null);
+  const isInsideViewport = (wx: number, wy: number) =>
+    wx >= viewport.x && wx <= viewport.x + viewport.w &&
+    wy >= viewport.y && wy <= viewport.y + viewport.h;
   const onSvgDown = (e: React.PointerEvent<SVGSVGElement>) => {
-    svgDrag.current = true;
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
     const { worldX, worldY } = toWorld(e);
-    onNavigate(worldX, worldY);
+    if (isInsideViewport(worldX, worldY)) {
+      // Offset = pointer position - viewport center, in world coords.
+      svgDrag.current = {
+        mode: "grab",
+        offsetX: worldX - (viewport.x + viewport.w / 2),
+        offsetY: worldY - (viewport.y + viewport.h / 2),
+      };
+    } else {
+      svgDrag.current = { mode: "jump", offsetX: 0, offsetY: 0 };
+      onNavigate(worldX, worldY);
+    }
   };
   const onSvgMove = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (!svgDrag.current) return;
+    const d = svgDrag.current;
+    if (!d) return;
     const { worldX, worldY } = toWorld(e);
-    onNavigate(worldX, worldY);
+    onNavigate(worldX - d.offsetX, worldY - d.offsetY);
   };
-  const onSvgUp = () => { svgDrag.current = false; };
+  const onSvgUp = () => { svgDrag.current = null; };
+  const onSvgWheel = (e: React.WheelEvent<SVGSVGElement>) => {
+    if (!onZoom) return;
+    // No preventDefault — React onWheel is passive on the listener
+    // attached by React in modern versions, but the inner browser
+    // listener is what controls scroll. We attach a non-passive native
+    // listener via ref below to actually stop the page from scrolling.
+    const { worldX, worldY } = toWorld(e);
+    onZoom(worldX, worldY, e.deltaY);
+  };
+  // Attach a non-passive wheel listener so we can preventDefault and
+  // stop the page from scrolling when zooming the minimap. Without
+  // this, the wheel zooms the minimap AND scrolls the page — clunky.
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el || !onZoom) return;
+    const handler = (e: WheelEvent) => { e.preventDefault(); };
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, [onZoom]);
 
   // Draggable: default-parked at bottom-right via `right`/`bottom`; first drag
   // switches to absolute `left`/`top` and stays where the user drops it.
@@ -1691,9 +5093,11 @@ export function Minimap({
   };
   const onHeadUp = () => { drag.current = null; };
 
+  const cornerStyle = pickMinimapCornerStyle(defaultCorner);
+  if (topOffset && typeof cornerStyle.top === "number") cornerStyle.top += topOffset;
   const style: React.CSSProperties = pos
     ? { position: "absolute", left: pos.left, top: pos.top, zIndex: 4 }
-    : { position: "absolute", ...pickMinimapCornerStyle(defaultCorner), zIndex: 4 };
+    : { position: "absolute", ...cornerStyle, zIndex: 4 };
 
   return (
     <div ref={rootRef} className="excal-minimap select-none" style={style}>
@@ -1729,13 +5133,18 @@ export function Minimap({
         </div>
         {open && (
           <svg
+            ref={svgRef}
             width={W} height={H}
             onPointerDown={onSvgDown}
             onPointerMove={onSvgMove}
             onPointerUp={onSvgUp}
             onPointerCancel={onSvgUp}
+            onWheel={onSvgWheel}
             className="excal-minimap-svg"
-            style={{ touchAction: "none" }}
+            style={{
+              touchAction: "none",
+              cursor: svgDrag.current?.mode === "grab" ? "grabbing" : "crosshair",
+            }}
           >
             {items.map((it, i) => {
               const x = toX(it.x);
@@ -1759,12 +5168,70 @@ export function Minimap({
               fill="none" stroke="#6965db"
               strokeWidth={1.5} strokeDasharray="3 2" opacity={0.95}
             />
+            {cursor && (
+              // Local cursor dot — bright pulse so it's findable at
+              // a glance like the tablet's pencil indicator.
+              <>
+                <circle
+                  cx={toX(cursor.x)} cy={toY(cursor.y)} r={6}
+                  fill="#f59e0b" opacity={0.25}
+                />
+                <circle
+                  cx={toX(cursor.x)} cy={toY(cursor.y)} r={3.5}
+                  fill="#fbbf24" stroke="#fff" strokeWidth={1.25} opacity={1}
+                />
+              </>
+            )}
           </svg>
         )}
       </div>
     </div>
   );
 }
+
+// React.memo with a fingerprint-based equality. SVG-heavy minimap was
+// re-rendering on every parent onChange even when the scene + viewport
+// hadn't moved enough to matter visually. Comparing (element count,
+// last live id, viewport rect rounded to 0.5 px, zoom rounded to 3 dp,
+// open flag) skips ~90 % of renders during steady drawing without
+// dropping any user-visible frame.
+function minimapPropsEqual(a: MinimapProps, b: MinimapProps): boolean {
+  if (a.open !== b.open) return false;
+  if (a.size !== b.size) return false;
+  if (a.defaultCorner !== b.defaultCorner) return false;
+  if (a.elements === b.elements) {
+    // appState may still have moved.
+  } else {
+    if (a.elements.length !== b.elements.length) return false;
+    // Cheap sample: same first/last live ids.
+    const sampleId = (els: readonly unknown[], idx: number) => {
+      const e = els[idx] as { id?: string; isDeleted?: boolean } | null | undefined;
+      return e && !e.isDeleted ? e.id ?? "" : "";
+    };
+    if (a.elements.length > 0) {
+      if (sampleId(a.elements, 0) !== sampleId(b.elements, 0)) return false;
+      const last = a.elements.length - 1;
+      if (sampleId(a.elements, last) !== sampleId(b.elements, last)) return false;
+    }
+  }
+  const av = a.appState as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
+  const bv = b.appState as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
+  const round = (n: number | undefined) => Math.round((n ?? 0) * 2) / 2;
+  if (round(av.scrollX) !== round(bv.scrollX)) return false;
+  if (round(av.scrollY) !== round(bv.scrollY)) return false;
+  const zoomA = Math.round((av.zoom?.value ?? 1) * 1000);
+  const zoomB = Math.round((bv.zoom?.value ?? 1) * 1000);
+  if (zoomA !== zoomB) return false;
+  // Cursor dot — re-render when it moves more than 0.5 px in world
+  // coords, when it appears, or when it disappears.
+  if (!!a.cursor !== !!b.cursor) return false;
+  if (a.cursor && b.cursor) {
+    if (Math.round(a.cursor.x * 2) !== Math.round(b.cursor.x * 2)) return false;
+    if (Math.round(a.cursor.y * 2) !== Math.round(b.cursor.y * 2)) return false;
+  }
+  return true;
+}
+export const Minimap = memo(MinimapImpl, minimapPropsEqual);
 
 type ChatMsg = { role: "user" | "assistant"; text: string; refs?: { id: string; label: string }[] };
 

@@ -167,6 +167,16 @@ def save(name: str, data: dict[str, Any]) -> None:
     if incoming or existing_els:
         merged["elements"] = _reconcile_elements(list(incoming), list(existing_els))
 
+    # Preserve doc-level meta (layoutMode/paperMode/bookPages) when the
+    # incoming PUT omits them. The iPad client used to send only
+    # title/elements/appState/files, which silently wiped the
+    # laptop-authored paper template + book layout on every autosave.
+    # Backstop here so any client that forgets these fields doesn't
+    # destroy them.
+    for key in ("layoutMode", "paperMode", "bookPages", "bookPageCount", "canvasBg"):
+        if key not in merged and key in existing_doc:
+            merged[key] = existing_doc[key]
+
     payload = json.dumps(merged, ensure_ascii=False)
 
     with session_scope() as s:

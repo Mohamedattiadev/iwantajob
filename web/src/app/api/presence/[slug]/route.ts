@@ -26,7 +26,7 @@ type Entry = {
   label?: string;
   device?: DeviceInfo;
 };
-const STALE_MS = 15_000;
+const STALE_MS = 30_000;
 const g = globalThis as unknown as { __presence?: Map<string, Map<string, Entry>> };
 if (!g.__presence) g.__presence = new Map();
 const presence = g.__presence;

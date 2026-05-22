@@ -641,6 +641,24 @@
 /* Hide the floating "?" help button — we expose the menu via MainMenu. */
 .excalidraw .help-icon { display: none !important; }
 
+/* Free-range sliders we inject inside the strokeWidth / fontSize
+   fieldsets of Excalidraw's right-side properties panel. They reuse
+   Excalidraw's own Range markup (`control-label` → `range-wrapper`
+   → `range-input` + `value-bubble` + `zero-label`) so the visual
+   styling already loaded from Excalidraw's CSS bundle applies. We
+   only add a hair of breathing room under the chip row + hide the
+   redundant text label (the existing fieldset legend already names
+   the control). */
+.excal-extra-slider {
+  width: 100%;
+  padding-top: 8px;
+}
+.excal-extra-slider-label {
+  font-size: 0;
+}
+.excal-extra-slider-label .range-wrapper { font-size: 12px; }
+
+
 /* Top-right injected toolbar (renderTopRightUI) inherits Excalidraw colors. */
 .excal-tools { font-family: inherit; }
 .excal-tools .excal-btn {
@@ -673,6 +691,45 @@
   z-index: 10;
   padding: 4px;
   min-width: 200px;
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+}
+/* Compact 2-column grid for templates so the popover never goes
+   below the viewport. Each cell mirrors Excalidraw's dropdown row
+   styling — left-aligned icon + label, hover surface from
+   --button-hover-bg, no extra borders. */
+.excal-popover-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  padding: 2px;
+}
+.excal-popover-tile {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: left;
+  min-width: 0;
+  transition: background 120ms ease;
+}
+.excal-popover-tile:hover {
+  background: var(--button-hover-bg, rgba(127,127,127,0.12));
+}
+.excal-popover-tile-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px;
+  opacity: 0.85;
+  flex-shrink: 0;
+}
+.excal-popover-tile-label {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 :root[data-theme="light"] .excal-popover,
 .excalidraw.theme--light ~ * .excal-popover {
@@ -747,6 +804,52 @@
 }
 .excal-minimap-drag { cursor: grab; touch-action: none; }
 .excal-minimap-drag:active { cursor: grabbing; }
+
+/* Excalidraw's "More tools" dropdown — restyle to match our
+   excal-popover (Frame tool, Web Embed, Laser pointer). Also hides
+   the awkward "Generate" inline label and the Mermaid item which
+   we don't expose. */
+.excalidraw .App-toolbar__extra-tools-dropdown.dropdown-menu {
+  background: var(--island-bg-color) !important;
+  border: 1px solid var(--default-border-color, rgba(255,255,255,0.08)) !important;
+  border-radius: var(--border-radius-lg, 10px) !important;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.04), 0 6px 20px rgba(0,0,0,0.25) !important;
+  padding: 4px !important;
+  min-width: 200px;
+}
+.excalidraw .App-toolbar__extra-tools-dropdown .dropdown-menu-item {
+  border-radius: 6px !important;
+  padding: 6px 10px !important;
+  font-size: 12.5px;
+  transition: background 120ms ease;
+}
+.excalidraw .App-toolbar__extra-tools-dropdown .dropdown-menu-item:hover {
+  background: var(--button-hover-bg, rgba(127,127,127,0.12)) !important;
+}
+.excalidraw .App-toolbar__extra-tools-dropdown .dropdown-menu-item__icon {
+  width: 18px;
+  opacity: 0.85;
+}
+/* Hide the inline "Generate" label + the Mermaid item we don't use. */
+.excalidraw .App-toolbar__extra-tools-dropdown > .Stack > div[style*="font-weight: 600"],
+.excalidraw .App-toolbar__extra-tools-dropdown .dropdown-menu-container > div[style*="font-weight: 600"] {
+  display: none !important;
+}
+.excalidraw .App-toolbar__extra-tools-dropdown [data-testid="toolbar-embeddable"]:has(.dropdown-menu-item__text:not([data-original])) {
+  /* fallback selector, see explicit hide below */
+}
+/* Mermaid item — match by text content. */
+.excalidraw .App-toolbar__extra-tools-dropdown .dropdown-menu-item:has(.dropdown-menu-item__text:is(*)):where([data-testid="toolbar-embeddable"]:nth-of-type(2)) {
+  display: none !important;
+}
+
+/* Push Excalidraw's "Scroll back to content" pill up so it doesn't sit
+   directly on top of our book-mode page navigator. The native default
+   is roughly `bottom: 20px`; lift it ~64 px so both bars stack. */
+.excalidraw .scroll-back-to-content,
+.excalidraw-container .scroll-back-to-content {
+  bottom: 84px !important;
+}
 
 /* Present-mode bottom bar — mirrors Excalidraw's `.Island` look (surface bg,
    soft border, subtle shadow), button styling matches its ToolIcon hover. */
@@ -837,15 +940,47 @@
   }
   html.sketch-fullscreen.ipad-mode .excalidraw { touch-action: none; }
 
-  /* Hide Excalidraw's selection-properties side panel (Stroke / Background
-     / Stroke width / Opacity / Layers). It eats the entire left side of
-     the iPad screen. Our custom control panel below covers the same use
-     cases with touch-friendly controls. */
+  /* Hide Excalidraw's selection-properties side panel on iPad — we
+     proxy its controls (stroke style, opacity, color, layers) through
+     the unified ipad-ctrl rail so the tablet shows ONE sidebar instead
+     of two overlapping ones. */
   html.sketch-fullscreen.ipad-mode .excalidraw .App-menu_top__left,
   html.sketch-fullscreen.ipad-mode .excalidraw .layer-ui__wrapper__top-left,
   html.sketch-fullscreen.ipad-mode .excalidraw .App-menu__left {
     display: none !important;
   }
+
+  /* Force every Excalidraw wrapper + canvas element transparent on iPad
+     so the sibling BookPagesOverlay / PaperBackdrop underneath actually
+     shows through. The dark theme paints the outer `.App` and inner
+     canvases opaque even when `viewBackgroundColor` is set transparent
+     in appState. */
+  html.sketch-fullscreen.ipad-mode .excalidraw,
+  html.sketch-fullscreen.ipad-mode .excalidraw .App,
+  html.sketch-fullscreen.ipad-mode .excalidraw .layer-ui__wrapper,
+  html.sketch-fullscreen.ipad-mode .excalidraw .excalidraw__canvases,
+  html.sketch-fullscreen.ipad-mode .excalidraw canvas {
+    background: transparent !important;
+    background-color: transparent !important;
+  }
+}
+
+/* Same problem on laptop view: when paper pattern or book mode is
+   active, Excalidraw's dark theme paints `.App` + canvases opaque even
+   though appState.viewBackgroundColor is set transparent — hiding the
+   sibling BookPagesOverlay / PaperBackdrop AND the wrapper's chosen
+   bg color. Gated by `[data-paper-overlay="1"]` on the wrapper so
+   board+plain mode keeps Excalidraw's native canvas painting. */
+[data-paper-overlay="1"] .excalidraw,
+[data-paper-overlay="1"] .excalidraw .App,
+[data-paper-overlay="1"] .excalidraw .layer-ui__wrapper,
+[data-paper-overlay="1"] .excalidraw .excalidraw__canvases,
+[data-paper-overlay="1"] .excalidraw canvas {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+@media (pointer: coarse) {
 
   /* Hide the "Library" trigger on iPad — not used for sketching. Keeps the
      top-right cluster clean alongside the live/peers pill. */
@@ -858,8 +993,21 @@
      and hiding the left column collapses it, shifting center off-axis.
      Decouple center from the grid via absolute positioning relative to
      the layer-ui wrapper, so it always lands at exact screen midpoint. */
+  /* Centered top toolbar — force the parent wrapper to span the full
+     canvas width and absolutely-center the toolbar inside it. Without
+     forcing width:100%, hiding the left grid column collapsed the
+     wrapper and shifted its 50% reference off-axis. */
   html.sketch-fullscreen.ipad-mode .excalidraw .layer-ui__wrapper__top {
     position: relative !important;
+    width: 100% !important;
+    left: 0 !important;
+    right: 0 !important;
+    display: block !important;
+  }
+  html.sketch-fullscreen.ipad-mode .excalidraw .App-menu_top {
+    display: block !important;
+    width: 100% !important;
+    grid-template-columns: none !important;
   }
   html.sketch-fullscreen.ipad-mode .excalidraw .App-menu_top__center {
     position: absolute !important;
@@ -868,12 +1016,6 @@
     transform: translateX(-50%) !important;
     margin: 0 !important;
     z-index: 3;
-  }
-  html.sketch-fullscreen.ipad-mode .excalidraw .App-menu_top {
-    justify-content: flex-end !important;
-  }
-  html.sketch-fullscreen.ipad-mode .excalidraw .App-toolbar {
-    margin: 0 !important;
   }
 }
 
@@ -1604,4 +1746,279 @@ html.sketch-fullscreen .ambient-bg { display: none !important; }
   top: calc(100% + 6px);
   right: 0;
   min-width: 200px;
+}
+
+/* Selection-AI widget — pill + expanded input above the current
+   selection bbox. Matches Excalidraw chrome (Island bg, ToolIcon
+   border-radius, --color-primary accent). */
+.excal-ai-sel {
+  font-family: var(--ui-font, inherit);
+}
+.excal-ai-sel-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Match Excalidraw .ToolIcon — square icon button with --border-radius-lg
+   and the same hover bg, sitting on an Island-tinted surface. */
+.excal-ai-sel-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: var(--border-radius-lg, 10px);
+  border: 1px solid var(--default-border-color, rgba(255,255,255,0.10));
+  background: var(--island-bg-color, #232329);
+  color: var(--icon-fill-color, var(--text-primary-color, inherit));
+  cursor: pointer;
+  box-shadow: 0 6px 14px rgba(0,0,0,0.28);
+  transition: background-color 100ms ease, border-color 100ms ease, color 100ms ease;
+}
+.excal-ai-sel-pill:hover {
+  background: var(--button-hover-bg, color-mix(in oklab, var(--foreground) 8%, transparent));
+  color: var(--color-primary, #6965db);
+}
+.excal-ai-sel-pill[data-open="1"] {
+  background: var(--color-surface-primary-container, color-mix(in oklab, var(--color-primary, #6965db) 18%, transparent));
+  color: var(--color-on-primary-container, var(--color-primary, #6965db));
+  border-color: var(--color-primary, #6965db);
+}
+.excal-ai-sel-pill svg { stroke-width: 1.75; }
+.excal-ai-sel-box {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 3px;
+  border-radius: var(--border-radius-lg, 10px);
+  border: 1px solid var(--default-border-color, rgba(255,255,255,0.10));
+  background: var(--island-bg-color, #232329);
+  box-shadow: 0 10px 28px rgba(0,0,0,0.32);
+}
+.excal-ai-sel-input {
+  width: 200px;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-primary-color, inherit);
+  font-family: inherit;
+}
+.excal-ai-sel-input::placeholder {
+  color: color-mix(in oklab, var(--text-primary-color, #fff) 45%, transparent);
+}
+.excal-ai-sel-input:focus {
+  outline: none;
+  border-color: var(--color-primary, #6965db);
+  background: color-mix(in oklab, var(--color-primary, #6965db) 8%, transparent);
+}
+.excal-ai-sel-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-left: 4px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: var(--color-primary, #6965db);
+  color: #fff;
+  cursor: pointer;
+  padding: 0;
+}
+.excal-ai-sel-send:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.excal-ai-sel-send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Library filter bar — injected as the FIRST child of .library-menu
+   so the tab strip sits ABOVE "Personal Library" + the 3-dots menu.
+   Centered, full-width row with ToolIcon-style category buttons. */
+.sklib-filterbar-host {
+  display: block;
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid var(--default-border-color, rgba(0,0,0,0.08));
+  margin-bottom: 6px;
+  position: relative;
+  z-index: 2;
+  background: var(--island-bg-color, transparent);
+}
+.sklib-filterbar::before {
+  /* Visual separator before the import (+) button. Drawn via a pseudo
+     element on the bar so the separator doesn't interfere with the
+     trigger button's hover/active rounded corners. */
+  content: none;
+}
+.sklib-import-toggle {
+  margin-left: 4px;
+  position: relative;
+}
+.sklib-import-toggle::before {
+  content: "";
+  position: absolute;
+  left: -4px;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--default-border-color, rgba(0,0,0,0.12));
+}
+/* Hide the "Excalidraw Library" section when empty. The "No items
+   added yet" div has no class — only inline styles — so we identify
+   the empty state by the absence of a sibling `.library-menu-items-container__grid`. */
+.excalidraw .library-menu-items-container__header--excal:not(:has(+ .library-menu-items-container__grid)) {
+  display: none !important;
+}
+.excalidraw .library-menu-items-container__header--excal + div:not(.library-menu-items-container__grid) {
+  display: none !important;
+}
+
+/* Excalidraw positions the 3-dots dropdown absolute top:1rem,
+   right:.75rem inside `.layer-ui__library` and that selector beats a
+   single-class override. Push it down past our filter bar (host ~50px
+   tall) so it lands inline with "Personal Library" instead of over
+   the tab icons. */
+.excalidraw .layer-ui__library .library-menu-dropdown-container--in-heading {
+  top: 64px !important;
+}
+.sklib-filterbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.sklib-filterbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--border-radius-md, 8px);
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  color: var(--icon-fill-color, var(--text-primary-color, inherit));
+  opacity: 0.78;
+  transition: background-color 120ms ease, border-color 120ms ease, opacity 120ms ease, color 120ms ease;
+}
+.sklib-filterbtn:hover {
+  background: var(--button-hover-bg, rgba(105,101,219,0.08));
+  opacity: 1;
+}
+.sklib-filterbtn[data-active="1"] {
+  background: var(--color-surface-primary-container, rgba(105,101,219,0.18));
+  color: var(--color-on-primary-container, var(--color-primary, #6965db));
+  opacity: 1;
+}
+.sklib-fi {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.75;
+}
+.sklib-importrow {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  align-items: center;
+}
+.sklib-importinput {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--default-border-color, rgba(0,0,0,0.18));
+  background: var(--input-bg-color, var(--island-bg-color, #fff));
+  color: var(--text-primary-color, inherit);
+}
+.sklib-importinput:focus {
+  outline: none;
+  border-color: var(--color-primary, #6965db);
+}
+.sklib-importgo {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid var(--color-primary, #6965db);
+  background: var(--color-primary, #6965db);
+  color: #fff;
+  cursor: pointer;
+}
+.sklib-importgo:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ─── Stamp library sidebar (custom Excalidraw <Sidebar name="lib-tabs">) ─── */
+/* Uses Excalidraw's own CSS vars so the panel looks native in both themes. */
+.sklib-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--color-primary, #6965db);
+  padding: 4px 0;
+}
+.sklib-empty {
+  padding: 16px;
+  font-size: 13px;
+  color: var(--text-primary-color, #1b1b1f);
+  opacity: 0.55;
+  text-align: center;
+}
+.sklib-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 8px;
+  overflow-y: auto;
+}
+.sklib-tile {
+  aspect-ratio: 1 / 1;
+  display: grid;
+  place-items: center;
+  padding: 6px;
+  background: var(--island-bg-color, #ffffff);
+  border: 1px solid var(--default-border-color, rgba(0,0,0,0.08));
+  border-radius: var(--border-radius-md, 8px);
+  cursor: grab;
+  transition: transform 100ms ease, background-color 100ms ease, border-color 100ms ease;
+  overflow: hidden;
+}
+.sklib-tile:hover {
+  background: var(--button-hover-bg, rgba(105,101,219,0.08));
+  border-color: var(--color-primary, #6965db);
+  transform: translateY(-1px);
+}
+.sklib-tile:active { cursor: grabbing; transform: translateY(0); }
+.sklib-thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.sklib-thumb svg {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+.sklib-skel {
+  display: block;
+  width: 60%;
+  height: 60%;
+  border-radius: 6px;
+  background: linear-gradient(90deg, transparent 0%, rgba(127,127,127,0.18) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: sklib-shimmer 1.2s linear infinite;
+}
+@keyframes sklib-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }

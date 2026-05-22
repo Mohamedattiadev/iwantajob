@@ -8,8 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
 from pydantic import BaseModel
 from typing import Any
@@ -77,6 +78,15 @@ class SketchGenIn(BaseModel):
     skill: str | None = None
 
 
+class SketchTransformIn(BaseModel):
+    prompt: str
+    # Raw Excalidraw scene elements the user has selected. The LLM
+    # returns a modified array; frontend deletes the originals and
+    # inserts the response in their place.
+    elements: list[dict[str, Any]]
+    skill: str | None = None
+
+
 class SketchNode(BaseModel):
     id: str
     type: str
@@ -114,6 +124,186 @@ _scrape_state: dict = {
     "result": None,
     "error": None,
 }
+
+
+# ─── Deterministic sketch-transform fast-path ─────────────────────────
+# Pure math; no LLM call. Recognises common phrasings and computes the
+# resulting geometry exactly so the user gets perfect output instantly.
+
+_WRAP_VERBS = (
+    "put in", "put inside", "put it in", "put it inside", "put this in",
+    "put this inside", "put them in", "put them inside", "put both in",
+    "put all in", "put around", "wrap with", "wrap in", "wrap inside",
+    "wrap around", "enclose with", "enclose in", "surround with",
+    "surround by", "draw around", "add around", "place in", "place inside",
+    "inside a", "inside an", "in a", "in an", "in circle", "in square",
+    "in rectangle", "in ellipse", "in diamond",
+)
+
+_SHAPE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "ellipse_circle":  ("circle", "round"),
+    "ellipse_oval":    ("ellipse", "oval"),
+    "rectangle_square": ("square",),
+    "rectangle":       ("rectangle", "rect ", "box", "frame"),
+    "diamond":         ("diamond", "rhombus"),
+}
+
+_COLOR_NAMES = {
+    "red": "#e03131", "blue": "#1971c2", "green": "#2f9e44",
+    "yellow": "#f59f00", "orange": "#f76707", "purple": "#9c36b5",
+    "pink": "#e64980", "black": "#1e1e1e", "white": "#ffffff",
+    "gray": "#868e96", "grey": "#868e96", "cyan": "#0c8599",
+    "magenta": "#c2255c", "teal": "#0ca678", "brown": "#8b5e3c",
+}
+
+
+def _detect_wrap_target(text: str) -> str | None:
+    """Return one of 'circle','ellipse','square','rectangle','diamond' if the
+    instruction asks to wrap with a specific shape, else None."""
+    t = text.lower()
+    has_wrap_verb = any(v in t for v in _WRAP_VERBS)
+    if not has_wrap_verb:
+        return None
+    # Order matters: square before rectangle to avoid 'rectangle' matching
+    # 'square'-only intent, and circle before ellipse.
+    for key, words in _SHAPE_KEYWORDS.items():
+        for w in words:
+            if w in t:
+                return key
+    return None
+
+
+def _wrap_shape(kind: str, bbox: dict, pad: float = 16.0) -> dict:
+    """Return an Excalidraw element that mathematically encloses bbox."""
+    import math as _math
+    import uuid as _u
+    cx, cy = bbox["cx"], bbox["cy"]
+    bw, bh = bbox["width"], bbox["height"]
+    base = {
+        "id": _u.uuid4().hex[:16], "angle": 0,
+        "strokeColor": "#1e1e1e", "backgroundColor": "transparent",
+        "fillStyle": "hachure", "strokeWidth": 2, "strokeStyle": "solid",
+        "roughness": 1, "opacity": 100, "groupIds": [], "frameId": None,
+        "roundness": {"type": 2}, "seed": 1, "version": 1, "versionNonce": 1,
+        "isDeleted": False, "boundElements": [], "updated": 0,
+        "link": None, "locked": False,
+    }
+    if kind == "ellipse_circle":
+        # Smallest CIRCLE enclosing the bbox rectangle: radius = half
+        # the bbox diagonal + padding. Guarantees corners fit.
+        diag = _math.hypot(bw, bh)
+        r = diag / 2 + pad
+        return {**base, "type": "ellipse",
+                "x": cx - r, "y": cy - r, "width": 2 * r, "height": 2 * r}
+    if kind == "ellipse_oval":
+        # Smallest enclosing AXIS-ALIGNED ELLIPSE for a rectangle has
+        # half-axes (w/2)*√2 and (h/2)*√2.
+        hw = bw / 2 * _math.sqrt(2) + pad
+        hh = bh / 2 * _math.sqrt(2) + pad
+        return {**base, "type": "ellipse",
+                "x": cx - hw, "y": cy - hh, "width": 2 * hw, "height": 2 * hh}
+    if kind == "rectangle_square":
+        side = max(bw, bh) + 2 * pad
+        return {**base, "type": "rectangle",
+                "x": cx - side / 2, "y": cy - side / 2,
+                "width": side, "height": side}
+    if kind == "rectangle":
+        return {**base, "type": "rectangle",
+                "x": bbox["x"] - pad, "y": bbox["y"] - pad,
+                "width": bw + 2 * pad, "height": bh + 2 * pad}
+    if kind == "diamond":
+        # Diamond inscribed in rect of width 2w', height 2h' contains
+        # the bbox if w' >= bw, h' >= bh (so the diamond's straight
+        # axes meet at the corners). Use w' = bw + pad, h' = bh + pad
+        # then expand by √2 factor so corners of bbox fit inside the
+        # rotated square locus.
+        w2 = (bw + 2 * pad) * _math.sqrt(2)
+        h2 = (bh + 2 * pad) * _math.sqrt(2)
+        return {**base, "type": "diamond",
+                "x": cx - w2 / 2, "y": cy - h2 / 2, "width": w2, "height": h2}
+    raise ValueError(f"unknown wrap kind: {kind}")
+
+
+def _detect_color(text: str) -> str | None:
+    t = text.lower()
+    # Honor hex codes the user typed directly.
+    import re as _re
+    m = _re.search(r"#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b", text)
+    if m:
+        return "#" + m.group(1)
+    # Otherwise match a single named colour.
+    for word, hexcode in _COLOR_NAMES.items():
+        if _re.search(rf"\b{word}\b", t):
+            return hexcode
+    return None
+
+
+def _try_deterministic(instruction: str, elements: list[dict], bbox: dict) -> dict | None:
+    """Pure-math recognisers. Returns {elements, ops} or None to fall back."""
+    import re as _re
+    t = instruction.lower().strip()
+
+    # — Delete intent —
+    if _re.search(r"\b(delete|remove|erase|clear)\b", t):
+        ids_to_delete = {e.get("id") for e in elements if isinstance(e.get("id"), str)}
+        remaining: list[dict] = []  # all selected deleted
+        return {
+            "elements": remaining,
+            "ops": {"added": 0, "modified": 0, "deleted": len(ids_to_delete)},
+        }
+
+    # — Wrap intent —
+    kind = _detect_wrap_target(t)
+    if kind is not None:
+        shape = _wrap_shape(kind, bbox)
+        return {
+            "elements": [dict(e) for e in elements] + [shape],
+            "ops": {"added": 1, "modified": 0, "deleted": 0},
+        }
+
+    # — Recolor intent —
+    if _re.search(r"\b(make|color|colour|paint|recolour|recolor|tint)\b", t) or \
+       _re.search(r"\b(red|blue|green|yellow|orange|purple|pink|black|white|gray|grey|cyan|magenta|teal|brown)\b", t):
+        color = _detect_color(t)
+        if color is not None:
+            target_field = "backgroundColor" if any(
+                w in t for w in ("fill", "background", "inside", "interior")
+            ) else "strokeColor"
+            out = []
+            modified = 0
+            for e in elements:
+                new = dict(e)
+                if new.get(target_field) != color:
+                    new[target_field] = color
+                    modified += 1
+                out.append(new)
+            if modified:
+                return {
+                    "elements": out,
+                    "ops": {"added": 0, "modified": modified, "deleted": 0},
+                }
+
+    # — Stroke thickness intent —
+    m = _re.search(r"\bstroke\b.*\b(thicker|thinner|bolder|lighter)\b|\b(thicker|thinner|bolder|lighter)\b.*\bstroke\b|\b(thicker|thinner|bolder|lighter)\b", t)
+    if m and ("stroke" in t or "thick" in t or "thin" in t):
+        delta = 1
+        if any(w in t for w in ("thinner", "lighter")):
+            delta = -1
+        out, modified = [], 0
+        for e in elements:
+            new = dict(e)
+            cur = float(new.get("strokeWidth") or 1)
+            new["strokeWidth"] = max(1, min(8, cur + delta))
+            if new["strokeWidth"] != cur:
+                modified += 1
+            out.append(new)
+        if modified:
+            return {
+                "elements": out,
+                "ops": {"added": 0, "modified": modified, "deleted": 0},
+            }
+
+    return None
 
 
 def _scrape_job(sources: list[str]) -> None:
@@ -168,6 +358,10 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # gzip every response >= 500 B. The /api/drawings/{slug} ETag-miss
+    # path returns 250+ KB of JSON; gzipping drops that to ~25 KB
+    # without touching the client (browsers decode automatically).
+    app.add_middleware(GZipMiddleware, minimum_size=500)
 
     # ── LAN auth token ───────────────────────────────────────────────────
     # If SKETCH_AUTH_TOKEN is set in the environment, every request to a
@@ -904,24 +1098,42 @@ def create_app() -> FastAPI:
 
         elements: list[dict[str, Any]] = []
         node_centers: dict[int, tuple[int, int, int, int]] = {}
+        rect_id_by_node: dict[int, str] = {}
+        bound_by_rect: dict[str, list[dict[str, str]]] = {}
         now_ms = int(time.time() * 1000)
+        # Choose font size based on label length so wide labels still fit
+        # in the box without overflowing — was the "text outside frame"
+        # bug the user reported.
+        def font_for(label: str, w: int) -> int:
+            # Cap so a 22-char label fits a 220px box at ~10 px / char.
+            return max(12, min(18, (w - 28) // max(8, len(label))))
         for n in order:
             x, y, w, h = positions[n]
             label = node_label[n]
             color = group_color[node_group[n] or "default"]
             rect_id = str(_uuid.uuid4())
+            text_id = str(_uuid.uuid4())
+            rect_id_by_node[n] = rect_id
+            bound_by_rect[rect_id] = [{"id": text_id, "type": "text"}]
             elements.append({
                 "id": rect_id, "type": "rectangle", "x": x, "y": y, "width": w, "height": h,
                 "angle": 0, "strokeColor": color, "backgroundColor": "transparent",
                 "fillStyle": "hachure", "strokeWidth": 2, "strokeStyle": "solid",
                 "roughness": 1, "opacity": 100, "groupIds": [], "roundness": {"type": 3},
                 "seed": now_ms + n, "version": 1, "versionNonce": 1,
-                "isDeleted": False, "boundElements": [], "updated": now_ms, "link": None, "locked": False,
+                "isDeleted": False,
+                "boundElements": bound_by_rect[rect_id],  # mutated below to add arrows
+                "updated": now_ms, "link": None, "locked": False,
             })
+            fs = font_for(label, w)
+            # Text is bound to its container; Excalidraw centers + word-
+            # wraps it from the container's bbox. We still set position to
+            # the inside-padded rect so legacy renderers stay sane.
             elements.append({
-                "id": str(_uuid.uuid4()), "type": "text",
-                "x": x + 14, "y": y + h // 2 - 12, "width": max(60, w - 28), "height": 24,
-                "text": label, "fontSize": 18, "fontFamily": 1,
+                "id": text_id, "type": "text",
+                "x": x + 14, "y": y + h // 2 - fs,
+                "width": w - 28, "height": fs * 2,
+                "text": label, "fontSize": fs, "fontFamily": 1,
                 "textAlign": "center", "verticalAlign": "middle",
                 "strokeColor": color, "backgroundColor": "transparent",
                 "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "solid",
@@ -929,18 +1141,19 @@ def create_app() -> FastAPI:
                 "seed": now_ms + n * 31 + 1, "version": 1, "versionNonce": 1,
                 "isDeleted": False, "boundElements": [], "updated": now_ms, "link": None, "locked": False,
                 "containerId": rect_id,
+                "autoResize": True,
+                "lineHeight": 1.25,
+                "originalText": label,
             })
             node_centers[n] = (x + w // 2, y + h // 2, w, h)
 
         for a_id, b_id in edges:
             ax, ay, aw, ah = node_centers[a_id]
             bx, by, bw, bh = node_centers[b_id]
-            # Clip arrow endpoints to box edges so they don't bury inside.
             dx, dy = bx - ax, by - ay
             if dx == 0 and dy == 0:
                 continue
             def _clip(cx: int, cy: int, w: int, h: int, vx: float, vy: float) -> tuple[float, float]:
-                # Scale (vx,vy) to land on the box edge from center.
                 if vx == 0 and vy == 0:
                     return cx, cy
                 tx = abs((w / 2) / vx) if vx != 0 else float("inf")
@@ -949,8 +1162,13 @@ def create_app() -> FastAPI:
                 return cx + vx * t, cy + vy * t
             sx, sy = _clip(ax, ay, aw, ah, dx, dy)
             ex, ey = _clip(bx, by, bw, bh, -dx, -dy)
+            arr_id = str(_uuid.uuid4())
+            start_rid = rect_id_by_node[a_id]
+            end_rid = rect_id_by_node[b_id]
+            bound_by_rect[start_rid].append({"id": arr_id, "type": "arrow"})
+            bound_by_rect[end_rid].append({"id": arr_id, "type": "arrow"})
             elements.append({
-                "id": str(_uuid.uuid4()), "type": "arrow",
+                "id": arr_id, "type": "arrow",
                 "x": sx, "y": sy, "width": ex - sx, "height": ey - sy,
                 "angle": 0, "strokeColor": "#94a3b8", "backgroundColor": "transparent",
                 "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -958,13 +1176,297 @@ def create_app() -> FastAPI:
                 "seed": now_ms + a_id * 17 + b_id, "version": 1, "versionNonce": 1,
                 "isDeleted": False, "boundElements": [], "updated": now_ms, "link": None, "locked": False,
                 "points": [[0, 0], [ex - sx, ey - sy]],
-                "startBinding": None, "endBinding": None,
+                # `startBinding`/`endBinding` anchor the arrow's tips to
+                # the actual boxes; without these the arrow looks like a
+                # free floating line that doesn't follow the box if moved.
+                "startBinding": {"elementId": start_rid, "focus": 0, "gap": 4},
+                "endBinding":   {"elementId": end_rid,   "focus": 0, "gap": 4},
                 "lastCommittedPoint": None, "startArrowhead": None, "endArrowhead": "arrow",
+                "elbowed": False,
             })
 
         if not elements:
             raise HTTPException(502, detail="AI produced no usable elements.")
         return {"elements": elements}
+
+    @app.post("/api/ai/sketch-transform")
+    @app.post("/api/sketch/transform")
+    def api_sketch_transform(body: SketchTransformIn):
+        """Modify a set of Excalidraw elements via user prompt.
+
+        Contract is OP-based, not full-replacement. The LLM returns:
+            {"add": [{...new element}],
+             "modify": [{"id": "...", "<field>": ...}],
+             "delete": ["id1", ...]}
+
+        Server applies ops to a copy of the original selection and
+        returns `{elements: [...]}` — the frontend swaps that in for
+        the selection. This guarantees unchanged originals stay intact
+        (the LLM would otherwise hallucinate or strip them when asked
+        to re-emit everything).
+        """
+        from . import llm as llm_mod
+        import json as _json
+        import re as _re
+        import time as _time
+        import pathlib as _pl
+
+        if not body.elements:
+            raise HTTPException(400, detail="No selected elements provided.")
+        instruction = (body.prompt or "").strip()
+        if not instruction:
+            raise HTTPException(400, detail="Empty prompt.")
+        sel = body.elements[:120]
+        # Debug trace file — every call appends a [REQUEST] block and a
+        # [RESPONSE]/[ERROR] block. User can `cat` it to share with us
+        # for diagnosis when the LLM picks the wrong intent.
+        TRACE = _pl.Path("/tmp/sketch-transform.log")
+        ts = _time.strftime("%Y-%m-%d %H:%M:%S")
+
+        def _trace(tag: str, payload: str) -> None:
+            try:
+                with TRACE.open("a", encoding="utf-8") as fh:
+                    fh.write(f"\n========== {tag} {ts} ==========\n{payload}\n")
+            except Exception:
+                pass
+
+        # Compute selection bbox so the LLM can place a wrapping shape
+        # without guessing world coordinates.
+        bbox_min_x = bbox_min_y = float("inf")
+        bbox_max_x = bbox_max_y = float("-inf")
+        for el in sel:
+            try:
+                x = float(el.get("x") or 0)
+                y = float(el.get("y") or 0)
+                w = float(el.get("width") or 0)
+                h = float(el.get("height") or 0)
+                bbox_min_x = min(bbox_min_x, x); bbox_min_y = min(bbox_min_y, y)
+                bbox_max_x = max(bbox_max_x, x + w); bbox_max_y = max(bbox_max_y, y + h)
+            except (TypeError, ValueError):
+                continue
+        if bbox_min_x == float("inf"):
+            bbox_min_x = bbox_min_y = bbox_max_x = bbox_max_y = 0
+        bbox = {
+            "x": bbox_min_x, "y": bbox_min_y,
+            "width": bbox_max_x - bbox_min_x, "height": bbox_max_y - bbox_min_y,
+            "cx": (bbox_min_x + bbox_max_x) / 2, "cy": (bbox_min_y + bbox_max_y) / 2,
+        }
+
+        # ─── Deterministic fast-path ──────────────────────────────────
+        # For unambiguous prompts ("put in a circle", "wrap with square",
+        # "make red", "delete", etc) we skip the LLM entirely and compute
+        # the geometry server-side. Guarantees mathematical correctness
+        # and zero LLM latency / quota usage.
+        deterministic = _try_deterministic(instruction, body.elements, bbox)
+        if deterministic is not None:
+            _trace("FAST_PATH", _json.dumps({
+                "instruction": instruction,
+                "selection_bbox": bbox,
+                "result_ops": deterministic["ops"],
+                "added": [
+                    {"type": e.get("type"), "x": e.get("x"), "y": e.get("y"),
+                     "width": e.get("width"), "height": e.get("height")}
+                    for e in deterministic["elements"]
+                    if not any(e.get("id") == s.get("id") for s in body.elements)
+                ],
+            }, indent=2, default=str))
+            return deterministic
+
+        if not llm_mod.have_provider():
+            _trace("ERROR", "No LLM provider configured.")
+            raise HTTPException(503, detail="No LLM provider configured (set GEMINI_API_KEY).")
+        # Slim payload so prompt budget stays sane. Heavy fields
+        # (large points arrays) get summarised.
+        slim = []
+        for el in sel:
+            row: dict[str, Any] = {}
+            for k in (
+                "id", "type", "x", "y", "width", "height", "angle",
+                "strokeColor", "backgroundColor", "fillStyle", "strokeWidth",
+                "strokeStyle", "roughness", "opacity", "roundness",
+                "text", "fontSize", "fontFamily", "textAlign", "verticalAlign",
+                "startArrowhead", "endArrowhead",
+            ):
+                v = el.get(k)
+                if v is not None:
+                    row[k] = v
+            pts = el.get("points")
+            if isinstance(pts, list):
+                if len(pts) <= 8:
+                    row["points"] = pts
+                else:
+                    row["pointsCount"] = len(pts)
+            slim.append(row)
+        skill_ctx = f"\nContext skill: {body.skill.strip()}" if body.skill else ""
+        system = (
+            "You edit Excalidraw scenes via a small op DSL. Input:\n"
+            "  - `instruction`: what the user wants done.\n"
+            "  - `bbox`: {x, y, width, height, cx, cy} of the selection in\n"
+            "    world coordinates. Use these numbers verbatim for any new\n"
+            "    element that should wrap or relate to the selection.\n"
+            "  - `elements`: the currently selected elements (slimmed).\n"
+            "Output: ONE JSON object with these optional keys:\n"
+            "  {\n"
+            "    \"add\":    [<new excalidraw element>, ...],\n"
+            "    \"modify\": [{\"id\": <existing id>, <field>: <value>, ...}],\n"
+            "    \"delete\": [<id>, ...]\n"
+            "  }\n"
+            "Strict rules:\n"
+            "- Originals NOT in `modify` or `delete` are preserved unchanged. "
+            "  Default behavior is preservation.\n"
+            "- For 'put X around', 'put inside a circle', 'wrap with', etc.: "
+            "  use ONLY `add`, never delete originals. Compute the new shape "
+            "  from `bbox` so it MATHEMATICALLY encloses the selection.\n"
+            "  ENCLOSURE MATH (use exact formulas, no eyeballing):\n"
+            "  * Wrapping RECTANGLE: x = bbox.x - P, y = bbox.y - P,\n"
+            "    width = bbox.width + 2P, height = bbox.height + 2P (P = padding, 16-24).\n"
+            "  * Wrapping ELLIPSE/CIRCLE (must enclose rectangular bbox):\n"
+            "    half-width  hw = (bbox.width  / 2) * sqrt(2) + P  (P ≈ 12)\n"
+            "    half-height hh = (bbox.height / 2) * sqrt(2) + P\n"
+            "    x = bbox.cx - hw, y = bbox.cy - hh,\n"
+            "    width = 2*hw, height = 2*hh.\n"
+            "    For a perfect CIRCLE: hw = hh = max(hw, hh) so width = height.\n"
+            "  * INSCRIBED rectangle/square INSIDE an existing ellipse selection:\n"
+            "    inner half-w = ellipse.width / (2*sqrt(2)),\n"
+            "    inner half-h = ellipse.height / (2*sqrt(2)),\n"
+            "    x = ellipse.cx - half-w, y = ellipse.cy - half-h.\n"
+            "  * Square: width == height; if bbox not square, use max(bbox.w, bbox.h).\n"
+            "  Example wrapping ellipse:\n"
+            "    {type:'ellipse', x: bbox.cx - (bbox.width/2)*1.414 - 12,\n"
+            "     y: bbox.cy - (bbox.height/2)*1.414 - 12,\n"
+            "     width:  bbox.width*1.414  + 24,\n"
+            "     height: bbox.height*1.414 + 24,\n"
+            "     strokeColor:'#1e1e1e', backgroundColor:'transparent',\n"
+            "     fillStyle:'hachure', strokeWidth:2, roughness:1, opacity:100}.\n"
+            "- For recolor/restyle ('make them red', 'thicker stroke'): use "
+            "  `modify` with just the changed fields.\n"
+            "- For deletion ('remove the arrow'): use `delete` with the id.\n"
+            "- For full geometry replacement ('redraw as a diamond'): "
+            "  `delete` the originals AND `add` the new geometry.\n"
+            "- World coordinates only — never normalise to origin.\n"
+            "- Output strictly one JSON object. No prose. No markdown fences."
+            f"{skill_ctx}"
+        )
+        user_msg = (
+            f"instruction: {instruction}\n"
+            f"bbox: {_json.dumps(bbox, separators=(',', ':'))}\n"
+            f"elements: {_json.dumps(slim, separators=(',', ':'))}"
+        )
+        _trace("REQUEST", _json.dumps({
+            "skill": body.skill,
+            "instruction": instruction,
+            "bbox": bbox,
+            "selected_count": len(sel),
+            "selected_ids": [el.get("id") for el in sel],
+            "elements_slim": slim,
+            "system_prompt": system,
+            "user_msg": user_msg,
+        }, indent=2, default=str))
+        try:
+            # tier="cheap" prefers groq → gemini-lite → gemini-flash.
+            # Auto-failover on quota/503/UNAVAILABLE keeps the endpoint
+            # responsive when any single provider is overloaded.
+            # Op DSL output is tiny (~200 tokens typical). 4000 caused
+            # multi-second latency on gemini; 800 is plenty and ~3x
+            # faster end-to-end.
+            raw = llm_mod.generate(user_msg, system=system, max_tokens=800, tier="cheap").strip()
+        except llm_mod.LLMError as e:
+            _trace("ERROR llm", str(e))
+            raise HTTPException(502, detail=str(e))
+        except Exception as e:  # noqa: BLE001 — surface anything else so the proxy doesn't dump HTML
+            _trace("ERROR unexpected", f"{type(e).__name__}: {e}")
+            raise HTTPException(502, detail=f"{type(e).__name__}: {e}")
+        _trace("RAW_RESPONSE", raw)
+        raw = _re.sub(r"^```(?:json)?\s*|\s*```$", "", raw).strip()
+        try:
+            spec = _json.loads(raw)
+        except _json.JSONDecodeError as e:
+            _trace("ERROR parse", f"{e}\n{raw[:1000]}")
+            raise HTTPException(502, detail=f"AI returned non-JSON: {e}\n{raw[:200]}")
+        _trace("PARSED_OPS", _json.dumps(spec, indent=2, default=str))
+        if not isinstance(spec, dict):
+            raise HTTPException(502, detail="AI did not return an op object.")
+        add_ops = spec.get("add") or []
+        mod_ops = spec.get("modify") or []
+        del_ops = spec.get("delete") or []
+        if not isinstance(add_ops, list) or not isinstance(mod_ops, list) or not isinstance(del_ops, list):
+            raise HTTPException(502, detail="AI ops must be arrays.")
+        del_ids = {d for d in del_ops if isinstance(d, str)}
+        mod_by_id: dict[str, dict[str, Any]] = {}
+        for m in mod_ops:
+            if isinstance(m, dict):
+                mid = m.get("id")
+                if isinstance(mid, str):
+                    mod_by_id[mid] = {k: v for k, v in m.items() if k != "id"}
+        # Apply ops to FULL originals (not the slim copy) so we keep
+        # bindings, seed, version, etc. intact for the preserved set.
+        out: list[dict[str, Any]] = []
+        for el in body.elements:
+            eid = el.get("id")
+            if isinstance(eid, str) and eid in del_ids:
+                continue
+            new_el = dict(el)
+            if isinstance(eid, str) and eid in mod_by_id:
+                new_el.update(mod_by_id[eid])
+            out.append(new_el)
+        added_geoms: list[dict[str, Any]] = []
+        for nv in add_ops:
+            if isinstance(nv, dict) and isinstance(nv.get("type"), str):
+                out.append(nv)
+                added_geoms.append(nv)
+        if not out:
+            raise HTTPException(502, detail="AI ops produced no elements.")
+
+        # Geometry sanity audit — for any added shape that is supposed
+        # to enclose the selection (ellipse/rectangle/diamond), compute
+        # whether the selection bbox actually fits inside the new
+        # shape's bbox. This lets us verify math accuracy from the log.
+        def _encloses(outer: dict[str, Any], inner: dict[str, Any]) -> dict[str, Any]:
+            ox = float(outer.get("x") or 0); oy = float(outer.get("y") or 0)
+            ow = float(outer.get("width") or 0); oh = float(outer.get("height") or 0)
+            ix = float(inner["x"]); iy = float(inner["y"])
+            iw = float(inner["width"]); ih = float(inner["height"])
+            left_slack   = ix - ox
+            top_slack    = iy - oy
+            right_slack  = (ox + ow) - (ix + iw)
+            bottom_slack = (oy + oh) - (iy + ih)
+            return {
+                "outer_bbox": {"x": ox, "y": oy, "w": ow, "h": oh},
+                "inner_bbox": {"x": ix, "y": iy, "w": iw, "h": ih},
+                "slack": {
+                    "left": left_slack, "top": top_slack,
+                    "right": right_slack, "bottom": bottom_slack,
+                },
+                "encloses_bbox": min(left_slack, top_slack, right_slack, bottom_slack) >= 0,
+            }
+
+        audit = {
+            "instruction": instruction,
+            "selection_count": len(body.elements),
+            "selection_bbox": bbox,
+            "ops_summary": {
+                "added": len(add_ops),
+                "modified": len(mod_by_id),
+                "deleted": len(del_ids),
+            },
+            "added": [
+                {
+                    "type": g.get("type"),
+                    "x": g.get("x"), "y": g.get("y"),
+                    "width": g.get("width"), "height": g.get("height"),
+                    "enclosure": _encloses(g, bbox) if g.get("type") in ("ellipse", "rectangle", "diamond") else None,
+                }
+                for g in added_geoms
+            ],
+            "modified_fields": {mid: list(mfields.keys()) for mid, mfields in mod_by_id.items()},
+            "deleted_ids": list(del_ids),
+        }
+        _trace("RESULT", _json.dumps(audit, indent=2, default=str))
+        return {"elements": out, "ops": {
+            "added": len(add_ops),
+            "modified": len(mod_by_id),
+            "deleted": len(del_ids),
+        }}
 
     @app.post("/api/ai/sketch-ask")
     @app.post("/api/sketch/ask")
@@ -1258,16 +1760,43 @@ Return STRICT JSON only — no prose, no markdown — in this exact shape:
         return drawings_mod.list_all()
 
     @app.get("/api/drawings/{name}")
-    def api_drawing_get(name: str):
+    def api_drawing_get(name: str, request: Request):
+        import hashlib
+        import json as _json
         data = drawings_mod.load(name)
         if data is None:
-            return {"slug": name, "title": name, "elements": [], "appState": {}, "files": {}}
-        return data
+            data = {"slug": name, "title": name, "elements": [], "appState": {}, "files": {}}
+        # ETag = sha1 of the canonical payload. SWR polls every 500 ms;
+        # an If-None-Match hit returns 304 with no body, cutting per-
+        # poll bandwidth from ~40 KB to ~200 B.
+        payload = _json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+        etag = '"' + hashlib.sha1(payload).hexdigest() + '"'
+        inm = request.headers.get("if-none-match")
+        if inm and inm == etag:
+            return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
+        return Response(
+            content=payload,
+            media_type="application/json",
+            headers={"ETag": etag, "Cache-Control": "no-cache"},
+        )
 
     @app.put("/api/drawings/{name}")
     def api_drawing_put(name: str, body: DrawingIn):
+        import hashlib
+        import json as _json
         drawings_mod.save(name, body.data)
-        return {"ok": True}
+        # Echo the ETag of the freshly-stored doc so the saver can seed
+        # its local cache. Eliminates the inevitable next-poll ETag
+        # miss + 25 KB full body that would otherwise fire 0–500 ms
+        # after every PUT.
+        merged = drawings_mod.load(name) or {}
+        payload = _json.dumps(merged, sort_keys=True, separators=(",", ":")).encode()
+        etag = '"' + hashlib.sha1(payload).hexdigest() + '"'
+        return Response(
+            content=_json.dumps({"ok": True}),
+            media_type="application/json",
+            headers={"ETag": etag},
+        )
 
     @app.delete("/api/drawings/{name}", status_code=204)
     def api_drawing_delete(name: str):

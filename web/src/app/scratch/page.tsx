@@ -11,7 +11,7 @@ export default function ScratchPage() {
   return (
     <>
       <SketchPreloader />
-      <SkillSketch skill="Scratchpad" homeHref="/" defaultFull />
+      <SkillSketch skill="Scratchpad" homeHref="/" defaultFull hideFullscreenButton />
     </>
   );
 }

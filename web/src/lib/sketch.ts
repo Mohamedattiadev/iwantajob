@@ -24,19 +24,29 @@ export const PEN_PROFILES: Record<PenKey, PenProfile> = {
 
 export const PEN_KEYS: readonly PenKey[] = ["ballpoint", "fountain", "brush", "highlighter"];
 
-// Cheap change-detection: live (non-deleted) element count + id of the
-// last live element in iteration order. Stable across no-op re-renders;
-// changes when a stroke is added or removed.
+// Cheap change-detection: live (non-deleted) element count + an
+// order-independent xor-sum of cheap id hashes. Stable across no-op
+// re-renders and across `updateScene` paths that reorder elements (iOS
+// Excalidraw does this), so echo suppression doesn't false-positive
+// when a remote scene is applied and re-emitted by `onChange` with a
+// different element order. Bumping format → callers comparing strings
+// continue to work; just both sides must use this same function.
+function cheapStringHash(s: string): number {
+  // djb2 trimmed to 32-bit.
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return h >>> 0;
+}
 export function sceneFingerprint(els: readonly unknown[]): string {
   let count = 0;
-  let lastId = "";
+  let xor = 0;
   for (const raw of els) {
     const e = raw as { id?: string; isDeleted?: boolean } | null;
     if (!e || e.isDeleted) continue;
     count++;
-    if (e.id) lastId = e.id;
+    if (e.id) xor = (xor ^ cheapStringHash(e.id)) >>> 0;
   }
-  return `${count}:${lastId}`;
+  return `${count}:${xor.toString(36)}`;
 }
 
 // Iterate scene elements and patch the freedraw ones that haven't been
@@ -110,6 +120,132 @@ export function pickMinimapCornerStyle(corner: MinimapCorner = "br"): {
     case "br":
     default:   return { bottom: 12, right: 12 };
   }
+}
+
+// Lightweight validation of AI-generated Excalidraw element batches.
+// Catches the common LLM-output issues (text not bound to a container,
+// arrows missing bindings, text label longer than its rectangle can
+// hold) BEFORE pasting into the canvas, so we can show a useful error
+// instead of letting Excalidraw render a garbled scene.
+export type AiValidationIssue =
+  | { kind: "no-elements" }
+  | { kind: "text-no-container"; id?: string }
+  | { kind: "text-dangling-container"; id?: string; containerId: string }
+  | { kind: "arrow-unbound"; id?: string }
+  | { kind: "arrow-dangling-binding"; id?: string; side: "start" | "end"; ref: string }
+  | { kind: "label-too-long"; id?: string; chars: number; widthPx: number };
+export type AiValidationReport = {
+  ok: boolean;
+  counts: { rect: number; text: number; arrow: number; other: number };
+  issues: AiValidationIssue[];
+};
+type AiEl = {
+  id?: string;
+  type?: string;
+  width?: number;
+  height?: number;
+  text?: string;
+  fontSize?: number;
+  containerId?: string;
+  startBinding?: { elementId?: string } | null;
+  endBinding?: { elementId?: string } | null;
+};
+export function validateAiElements(elements: ReadonlyArray<AiEl>): AiValidationReport {
+  const counts = { rect: 0, text: 0, arrow: 0, other: 0 };
+  const issues: AiValidationIssue[] = [];
+  if (!elements.length) return { ok: false, counts, issues: [{ kind: "no-elements" }] };
+  const byId = new Map<string, AiEl>();
+  for (const e of elements) if (e.id) byId.set(e.id, e);
+  for (const e of elements) {
+    if (e.type === "rectangle") counts.rect++;
+    else if (e.type === "text") counts.text++;
+    else if (e.type === "arrow") counts.arrow++;
+    else counts.other++;
+    if (e.type === "text") {
+      if (!e.containerId) {
+        issues.push({ kind: "text-no-container", id: e.id });
+      } else if (!byId.has(e.containerId)) {
+        issues.push({ kind: "text-dangling-container", id: e.id, containerId: e.containerId });
+      } else {
+        const container = byId.get(e.containerId);
+        const cw = typeof container?.width === "number" ? container.width : 0;
+        const text = typeof e.text === "string" ? e.text : "";
+        const fs = typeof e.fontSize === "number" ? e.fontSize : 16;
+        // Heuristic: at ~0.55 × fontSize per char, a label fits if
+        // chars × 0.55 × fontSize ≤ container width − 28 padding.
+        const fitChars = Math.max(1, Math.floor((cw - 28) / Math.max(1, fs * 0.55)));
+        const longest = text.split(/\s+/).reduce((m, w) => Math.max(m, w.length), 0);
+        if (longest > fitChars * 1.4) {
+          issues.push({ kind: "label-too-long", id: e.id, chars: longest, widthPx: cw });
+        }
+      }
+    }
+    if (e.type === "arrow") {
+      const startRef = e.startBinding?.elementId;
+      const endRef = e.endBinding?.elementId;
+      if (!startRef && !endRef) {
+        issues.push({ kind: "arrow-unbound", id: e.id });
+      } else {
+        if (startRef && !byId.has(startRef)) issues.push({ kind: "arrow-dangling-binding", id: e.id, side: "start", ref: startRef });
+        if (endRef && !byId.has(endRef))     issues.push({ kind: "arrow-dangling-binding", id: e.id, side: "end",   ref: endRef });
+      }
+    }
+  }
+  return { ok: issues.length === 0, counts, issues };
+}
+
+// Bbox helpers, used for fitting AI-generated diagrams into a fixed
+// rectangle (e.g. a Book-mode page) without text spilling outside.
+// Pure functions so they're unit-testable without React or Excalidraw.
+type ElLike = { x?: number; y?: number; width?: number; height?: number };
+export type Bbox = { minX: number; minY: number; maxX: number; maxY: number };
+export function elementsBbox(elements: ReadonlyArray<ElLike | null | undefined>): Bbox | null {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const e of elements) {
+    if (!e) continue;
+    if (typeof e.x !== "number" || typeof e.y !== "number") continue;
+    const w = typeof e.width === "number" ? e.width : 1;
+    const h = typeof e.height === "number" ? e.height : 1;
+    minX = Math.min(minX, e.x); minY = Math.min(minY, e.y);
+    maxX = Math.max(maxX, e.x + w); maxY = Math.max(maxY, e.y + h);
+  }
+  if (!isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY };
+}
+// Translate + uniform-scale every element so the source bbox fits
+// inside `target` with `padding` px of inner margin. Returns the new
+// element list (input untouched). Font sizes are scaled too so text
+// stays readable. Arrows keep their relative points + bindings.
+export function fitElementsToBbox<T extends ElLike & { fontSize?: number; points?: ReadonlyArray<readonly [number, number]> }>(
+  elements: ReadonlyArray<T>,
+  target: { x: number; y: number; width: number; height: number },
+  padding: number = 24,
+): T[] {
+  if (!elements.length) return [];
+  const bb = elementsBbox(elements as ReadonlyArray<ElLike>);
+  if (!bb) return elements.slice();
+  const srcW = Math.max(1, bb.maxX - bb.minX);
+  const srcH = Math.max(1, bb.maxY - bb.minY);
+  const availW = Math.max(1, target.width - padding * 2);
+  const availH = Math.max(1, target.height - padding * 2);
+  const scale = Math.min(1, availW / srcW, availH / srcH);
+  // Center the scaled bbox inside the target.
+  const offX = target.x + padding + (availW - srcW * scale) / 2 - bb.minX * scale;
+  const offY = target.y + padding + (availH - srcH * scale) / 2 - bb.minY * scale;
+  return elements.map((el) => {
+    const next = { ...el } as T;
+    if (typeof el.x === "number") next.x = el.x * scale + offX;
+    if (typeof el.y === "number") next.y = el.y * scale + offY;
+    if (typeof el.width === "number") next.width = el.width * scale;
+    if (typeof el.height === "number") next.height = el.height * scale;
+    if (typeof el.fontSize === "number") next.fontSize = Math.max(8, el.fontSize * scale);
+    if (Array.isArray(el.points)) {
+      next.points = el.points.map(
+        ([px, py]) => [px * scale, py * scale] as readonly [number, number],
+      ) as never;
+    }
+    return next;
+  });
 }
 
 // "Fit all" — compute the Excalidraw appState that centers the whole

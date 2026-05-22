@@ -44,8 +44,12 @@ def _have_groq() -> bool:
     return bool(os.environ.get("GROQ_API_KEY"))
 
 
+def _have_openai() -> bool:
+    return bool(os.environ.get("OPENAI_API_KEY"))
+
+
 def have_provider() -> bool:
-    return _have_gemini() or _have_groq()
+    return _have_gemini() or _have_groq() or _have_openai()
 
 
 def generate(prompt: str, *, system: str | None = None, max_tokens: int = 800,
@@ -67,6 +71,13 @@ def generate(prompt: str, *, system: str | None = None, max_tokens: int = 800,
         except LLMError as e:
             log.warning("llm: %s failed: %s", name, e)
             last_err = e
+            # Local DNS failure — every provider shares the resolver, so
+            # trying the next one wastes ~HTTP_TIMEOUT seconds and the
+            # frontend proxy times out before we can return a useful
+            # error. Bail out immediately.
+            msg = str(e).lower()
+            if "name resolution" in msg or "name or service not known" in msg or "[errno -3]" in msg or "[errno -2]" in msg:
+                raise LLMError("network offline: DNS resolution failed (no internet?)") from e
             continue
     raise LLMError(f"all providers failed (last: {last_err})")
 
@@ -77,9 +88,11 @@ def _chain_for(tier: str) -> list[tuple[str, Callable]]:
         if _have_groq():   chain.append(("groq", _groq_generate))
         if _have_gemini(): chain.append(("gemini-lite", _gemini_lite_generate))
         if _have_gemini(): chain.append(("gemini-flash", _gemini_flash_generate))
+        if _have_openai(): chain.append(("openai-mini", _openai_mini_generate))
     else:  # "high"
         if _have_gemini(): chain.append(("gemini-flash", _gemini_flash_generate))
         if _have_gemini(): chain.append(("gemini-lite", _gemini_lite_generate))
+        if _have_openai(): chain.append(("openai", _openai_generate))
         if _have_groq():   chain.append(("groq", _groq_generate))
     return chain
 
@@ -105,15 +118,19 @@ def _gemini_call(model: str, prompt: str, *, system: str | None, max_tokens: int
     try:
         with httpx.Client(timeout=HTTP_TIMEOUT) as c:
             r = c.post(url, params={"key": key}, json=payload)
-            if r.status_code == 429:
-                raise LLMQuotaError(f"gemini/{model} 429: {r.text[:200]}")
+            # 429 (quota) + 503 (UNAVAILABLE / high demand) + 500/504
+            # (transient) should ALL fall through to the next provider
+            # instead of bubbling up as a fatal LLMError.
+            if r.status_code in (429, 500, 503, 504):
+                raise LLMQuotaError(f"gemini/{model} {r.status_code}: {r.text[:200]}")
             r.raise_for_status()
             data = r.json()
     except httpx.HTTPStatusError as e:
         body = e.response.text or ""
-        if e.response.status_code == 429 or "quota" in body.lower() or "rate" in body.lower():
-            raise LLMQuotaError(f"gemini/{model}: {body[:200]}") from e
-        raise LLMError(f"gemini/{model} http {e.response.status_code}: {body[:200]}") from e
+        code = e.response.status_code
+        if code in (429, 500, 503, 504) or "quota" in body.lower() or "rate" in body.lower() or "unavailable" in body.lower() or "overloaded" in body.lower():
+            raise LLMQuotaError(f"gemini/{model} {code}: {body[:200]}") from e
+        raise LLMError(f"gemini/{model} http {code}: {body[:200]}") from e
     except httpx.HTTPError as e:
         raise LLMError(f"gemini/{model} network: {e}") from e
     text = ""
@@ -153,18 +170,70 @@ def _groq_generate(prompt: str, *, system: str | None, max_tokens: int,
     try:
         with httpx.Client(timeout=HTTP_TIMEOUT) as c:
             r = c.post(url, headers={"Authorization": f"Bearer {key}"}, json=payload)
-            if r.status_code == 429:
-                raise LLMQuotaError(f"groq 429: {r.text[:200]}")
+            if r.status_code in (429, 500, 503, 504):
+                raise LLMQuotaError(f"groq {r.status_code}: {r.text[:200]}")
             r.raise_for_status()
             data = r.json()
     except httpx.HTTPStatusError as e:
         body = e.response.text or ""
-        if e.response.status_code == 429 or "rate" in body.lower():
-            raise LLMQuotaError(f"groq: {body[:200]}") from e
-        raise LLMError(f"groq http {e.response.status_code}: {body[:200]}") from e
+        code = e.response.status_code
+        if code in (429, 500, 503, 504) or "rate" in body.lower() or "unavailable" in body.lower() or "overloaded" in body.lower():
+            raise LLMQuotaError(f"groq {code}: {body[:200]}") from e
+        raise LLMError(f"groq http {code}: {body[:200]}") from e
     except httpx.HTTPError as e:
         raise LLMError(f"groq network: {e}") from e
     choices = data.get("choices") or []
     if not choices:
         raise LLMError("groq returned no choices")
     return (choices[0].get("message") or {}).get("content", "").strip()
+
+
+# ── OpenAI ────────────────────────────────────────────────────────────────
+
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MODEL_HIGH = os.environ.get("OPENAI_MODEL_HIGH", "gpt-4o-mini")
+
+
+def _openai_call(model: str, prompt: str, *, system: str | None, max_tokens: int,
+                 temperature: float) -> str:
+    key = os.environ.get("OPENAI_API_KEY")
+    if not key:
+        raise LLMError("OPENAI_API_KEY not set")
+    url = "https://api.openai.com/v1/chat/completions"
+    messages: list[dict[str, Any]] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    try:
+        with httpx.Client(timeout=HTTP_TIMEOUT) as c:
+            r = c.post(url, headers={"Authorization": f"Bearer {key}"}, json=payload)
+            if r.status_code in (429, 500, 503, 504):
+                raise LLMQuotaError(f"openai/{model} {r.status_code}: {r.text[:200]}")
+            r.raise_for_status()
+            data = r.json()
+    except httpx.HTTPStatusError as e:
+        body = e.response.text or ""
+        code = e.response.status_code
+        if code in (429, 500, 503, 504) or "rate" in body.lower() or "quota" in body.lower():
+            raise LLMQuotaError(f"openai/{model} {code}: {body[:200]}") from e
+        raise LLMError(f"openai/{model} http {code}: {body[:200]}") from e
+    except httpx.HTTPError as e:
+        raise LLMError(f"openai/{model} network: {e}") from e
+    choices = data.get("choices") or []
+    if not choices:
+        raise LLMError("openai returned no choices")
+    return (choices[0].get("message") or {}).get("content", "").strip()
+
+
+def _openai_mini_generate(prompt: str, **kw) -> str:
+    return _openai_call(OPENAI_MODEL, prompt, **kw)
+
+
+def _openai_generate(prompt: str, **kw) -> str:
+    return _openai_call(OPENAI_MODEL_HIGH, prompt, **kw)

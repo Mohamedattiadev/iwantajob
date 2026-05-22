@@ -10,6 +10,19 @@ const BACKEND = process.env.BACKEND_URL || "http://127.0.0.1:8000";
 const nextConfig: NextConfig = {
   compress: true,
   productionBrowserSourceMaps: false,
+  // Next 16 blocks cross-origin requests to /_next/* dev resources by
+  // default — including from LAN clients like the iPad. Without this,
+  // HMR + asset fetches from the tablet are blocked and the
+  // approval-toast WS round-trip never reaches the user. Wildcard the
+  // local /16 RFC1918 subnets so any LAN device works.
+  allowedDevOrigins: [
+    "10.*.*.*",
+    "192.168.*.*",
+    "172.16.*.*", "172.17.*.*", "172.18.*.*", "172.19.*.*",
+    "172.20.*.*", "172.21.*.*", "172.22.*.*", "172.23.*.*",
+    "172.24.*.*", "172.25.*.*", "172.26.*.*", "172.27.*.*",
+    "172.28.*.*", "172.29.*.*", "172.30.*.*", "172.31.*.*",
+  ],
   experimental: {
     optimizePackageImports: ["@base-ui/react", "@excalidraw/excalidraw"],
   },
