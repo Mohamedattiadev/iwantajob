@@ -440,6 +440,312 @@ export const TEMPLATES = {
     return els;
   },
 
+  // ─── Math ────────────────────────────────────────────────────────────────
+  // Coordinate grid — axes + quadrants + origin.
+  mathgrid: () => {
+    const els: Skel[] = [];
+    const ox = 400, oy = 260, span = 200;
+    // X axis
+    els.push({
+      type: "arrow", x: ox - span, y: oy, width: span * 2, height: 0,
+      points: [[0, 0], [span * 2, 0]], strokeColor: PAL.ink, strokeWidth: 2,
+      endArrowhead: "arrow", roughness: 0,
+    });
+    // Y axis (drawn upward; height negative not allowed → start at bottom)
+    els.push({
+      type: "arrow", x: ox, y: oy + span, width: 0, height: -span * 2,
+      points: [[0, 0], [0, -span * 2]], strokeColor: PAL.ink, strokeWidth: 2,
+      endArrowhead: "arrow", roughness: 0,
+    });
+    // Grid lines
+    for (let i = -3; i <= 3; i++) {
+      if (i === 0) continue;
+      const off = i * 50;
+      els.push({ type: "line", x: ox + off, y: oy - span, width: 0, height: span * 2, points: [[0, 0], [0, span * 2]], strokeColor: PAL.muted, strokeWidth: 1, strokeStyle: "dashed", roughness: 0 });
+      els.push({ type: "line", x: ox - span, y: oy + off, width: span * 2, height: 0, points: [[0, 0], [span * 2, 0]], strokeColor: PAL.muted, strokeWidth: 1, strokeStyle: "dashed", roughness: 0 });
+    }
+    els.push(text("tpl-mg-x", ox + span + 8, oy - 8, "x", PAL.ink, 16));
+    els.push(text("tpl-mg-y", ox + 8, oy - span - 24, "y", PAL.ink, 16));
+    els.push(text("tpl-mg-o", ox - 18, oy + 4, "O", PAL.ink, 14));
+    els.push(text("tpl-mg-q1", ox + 90, oy - 120, "Q I", PAL.cool, 14));
+    els.push(text("tpl-mg-q2", ox - 130, oy - 120, "Q II", PAL.warm, 14));
+    els.push(text("tpl-mg-q3", ox - 130, oy + 100, "Q III", PAL.bad, 14));
+    els.push(text("tpl-mg-q4", ox + 90, oy + 100, "Q IV", PAL.good, 14));
+    return els;
+  },
+
+  // Function plot — axes + linear function line + sample points.
+  mathplot: () => {
+    const els: Skel[] = [];
+    const ox = 360, oy = 320, w = 480, h = 280;
+    els.push({ type: "arrow", x: ox, y: oy, width: w, height: 0, points: [[0, 0], [w, 0]], strokeColor: PAL.ink, strokeWidth: 2, endArrowhead: "arrow", roughness: 0 });
+    els.push({ type: "arrow", x: ox, y: oy, width: 0, height: -h, points: [[0, 0], [0, -h]], strokeColor: PAL.ink, strokeWidth: 2, endArrowhead: "arrow", roughness: 0 });
+    // Curve y = x as a line.
+    els.push({
+      type: "line", x: ox, y: oy,
+      width: w - 20, height: -(h - 20),
+      points: [[0, 0], [w - 20, -(h - 20)]],
+      strokeColor: PAL.primary, strokeWidth: 2.5, roughness: 1,
+    });
+    els.push(text("tpl-mp-title", ox + 20, oy - h - 32, "f(x) = x", PAL.primary, 18));
+    els.push(text("tpl-mp-x", ox + w + 6, oy - 8, "x", PAL.ink, 16));
+    els.push(text("tpl-mp-y", ox + 6, oy - h - 22, "y", PAL.ink, 16));
+    return els;
+  },
+
+  // Geometry proof — right triangle + labels.
+  mathproof: () => {
+    const els: Skel[] = [];
+    // Triangle as 3 lines.
+    const ax = 120, ay = 420, bx = 460, cy = 120;
+    els.push({ type: "line", x: ax, y: ay, width: bx - ax, height: 0, points: [[0, 0], [bx - ax, 0]], strokeColor: PAL.ink, strokeWidth: 2, roughness: 1 });
+    els.push({ type: "line", x: ax, y: ay, width: 0, height: cy - ay, points: [[0, 0], [0, cy - ay]], strokeColor: PAL.ink, strokeWidth: 2, roughness: 1 });
+    els.push({ type: "line", x: bx, y: ay, width: ax - bx, height: cy - ay, points: [[0, 0], [ax - bx, cy - ay]], strokeColor: PAL.primary, strokeWidth: 2.5, roughness: 1 });
+    // Right-angle marker.
+    els.push({ type: "rectangle", x: ax, y: ay - 24, width: 24, height: 24, strokeColor: PAL.bad, backgroundColor: "transparent", fillStyle: "hachure", strokeWidth: 1.5, roughness: 0, roundness: null });
+    els.push(text("tpl-pf-a", ax - 18, ay + 6, "A", PAL.ink, 16));
+    els.push(text("tpl-pf-b", bx + 6, ay + 6, "B", PAL.ink, 16));
+    els.push(text("tpl-pf-c", ax - 18, cy - 8, "C", PAL.ink, 16));
+    els.push(text("tpl-pf-eq", 220, 60, "a² + b² = c²", PAL.primary, 22));
+    return els;
+  },
+
+  // Fraction bars — 1/2, 1/3, 1/4, 1/6.
+  mathfrac: () => {
+    const els: Skel[] = [];
+    const rows = [
+      { id: "tpl-fr-2", n: 2, label: "1/2" },
+      { id: "tpl-fr-3", n: 3, label: "1/3" },
+      { id: "tpl-fr-4", n: 4, label: "1/4" },
+      { id: "tpl-fr-6", n: 6, label: "1/6" },
+    ];
+    const x0 = 120, w = 480, h = 60, gap = 24;
+    rows.forEach((r, idx) => {
+      const y = 60 + idx * (h + gap);
+      const partW = w / r.n;
+      for (let i = 0; i < r.n; i++) {
+        els.push({
+          type: "rectangle", id: `${r.id}-p${i}`,
+          x: x0 + i * partW, y, width: partW, height: h,
+          strokeColor: PAL.ink, backgroundColor: i === 0 ? PAL.cool : "transparent",
+          fillStyle: "hachure", strokeWidth: 2, roughness: 1, roundness: null,
+        });
+      }
+      els.push(text(`${r.id}-lbl`, x0 - 60, y + 18, r.label, PAL.ink, 18));
+    });
+    return els;
+  },
+
+  // ─── DevOps ──────────────────────────────────────────────────────────────
+  // Kubernetes cluster — control plane + worker nodes.
+  k8s: () => {
+    const t: Box[] = [
+      { id: "tpl-k8-cp",  x:  40, y:  40, w: 220, h: 100, label: "Control plane\n— api-server\n— scheduler\n— etcd", color: PAL.primary },
+      { id: "tpl-k8-n1",  x: 320, y:  40, w: 220, h: 140, label: "Node 1\n— kubelet\n— pod: web\n— pod: web", color: PAL.cool },
+      { id: "tpl-k8-n2",  x: 600, y:  40, w: 220, h: 140, label: "Node 2\n— kubelet\n— pod: api\n— pod: api", color: PAL.warm },
+      { id: "tpl-k8-n3",  x: 320, y: 240, w: 220, h: 140, label: "Node 3\n— kubelet\n— pod: worker\n— pod: cache", color: PAL.good },
+      { id: "tpl-k8-ing", x: 600, y: 240, w: 220, h: 100, label: "Ingress\n— TLS / routes", color: PAL.bad },
+    ];
+    return [
+      ...t.map((b) => box(b)),
+      arrow(t[0], t[1]),
+      arrow(t[0], t[2]),
+      arrow(t[0], t[3]),
+      arrow(t[4], t[1]),
+      arrow(t[4], t[2]),
+    ];
+  },
+
+  // Docker stack — host + containers + volume + network.
+  docker: () => {
+    const host: Box = { id: "tpl-dk-host", x: 40, y: 40, w: 800, h: 360, label: "Docker host", color: PAL.muted };
+    const t: Box[] = [
+      { id: "tpl-dk-c1",  x:  80, y: 100, w: 200, h: 90, label: "web\n:80",        color: PAL.cool },
+      { id: "tpl-dk-c2",  x: 320, y: 100, w: 200, h: 90, label: "api\n:3000",      color: PAL.primary },
+      { id: "tpl-dk-c3",  x: 560, y: 100, w: 200, h: 90, label: "db\npostgres:15", color: PAL.warm },
+      { id: "tpl-dk-vol", x:  80, y: 240, w: 200, h: 80, label: "volume\npgdata",  color: PAL.good },
+      { id: "tpl-dk-net", x: 320, y: 240, w: 440, h: 80, label: "network: app-net (bridge)", color: PAL.bad },
+    ];
+    return [
+      box(host, { roughness: 0, fillStyle: "solid", backgroundColor: "transparent" }),
+      ...t.map((b) => box(b)),
+      arrow(t[0], t[1]),
+      arrow(t[1], t[2]),
+      arrow(t[2], t[3]),
+    ];
+  },
+
+  // Container registry flow — dev → build → push → registry → pull → cluster.
+  registry: () => {
+    const stages = ["Dev", "Build", "Push", "Registry", "Pull", "Cluster"];
+    const colors = [PAL.muted, PAL.cool, PAL.warm, PAL.primary, PAL.warm, PAL.good];
+    const t: Box[] = stages.map((s, i) => ({
+      id: `tpl-rg-${i}`, x: 40 + i * 170, y: 160, w: 150, h: 80,
+      label: s, color: colors[i],
+    }));
+    const arrows: Skel[] = [];
+    for (let i = 0; i < t.length - 1; i++) arrows.push(arrow(t[i], t[i + 1]));
+    return [...t.map((b) => box(b)), ...arrows];
+  },
+
+  // Monitoring stack — app → metrics → Prom → Grafana / Alertmgr → pager.
+  monitor: () => {
+    const t: Box[] = [
+      { id: "tpl-mn-app",   x:  40, y: 180, w: 180, h: 80, label: "App\n— /metrics",   color: PAL.cool },
+      { id: "tpl-mn-prom",  x: 280, y: 180, w: 180, h: 80, label: "Prometheus",        color: PAL.primary },
+      { id: "tpl-mn-graf",  x: 520, y:  60, w: 180, h: 80, label: "Grafana",           color: PAL.good },
+      { id: "tpl-mn-alert", x: 520, y: 180, w: 180, h: 80, label: "Alertmanager",      color: PAL.warm },
+      { id: "tpl-mn-page",  x: 760, y: 180, w: 180, h: 80, label: "PagerDuty",         color: PAL.bad },
+      { id: "tpl-mn-loki",  x: 280, y: 320, w: 180, h: 80, label: "Loki (logs)",       color: PAL.muted },
+    ];
+    return [
+      ...t.map((b) => box(b)),
+      arrow(t[0], t[1]),
+      arrow(t[1], t[2]),
+      arrow(t[1], t[3]),
+      arrow(t[3], t[4]),
+      arrow(t[0], t[5]),
+    ];
+  },
+
+  // ─── Web UI ──────────────────────────────────────────────────────────────
+  // Wireframe page — header, nav, hero, cards, footer.
+  wireframe: () => {
+    const els: Skel[] = [];
+    els.push(box({ id: "tpl-wf-header", x: 40, y:  20, w: 880, h:  60, label: "Header  ·  logo  ·  search  ·  user", color: PAL.ink }));
+    els.push(box({ id: "tpl-wf-nav",    x: 40, y:  90, w: 200, h: 480, label: "Nav\n— Home\n— Docs\n— Pricing\n— About", color: PAL.muted }));
+    els.push(box({ id: "tpl-wf-hero",   x: 260, y:  90, w: 660, h: 160, label: "Hero · headline · CTA", color: PAL.primary }));
+    for (let i = 0; i < 3; i++) {
+      els.push(box({ id: `tpl-wf-card-${i}`, x: 260 + i * 220, y: 270, w: 200, h: 220, label: `Card ${i + 1}`, color: PAL.cool }));
+    }
+    els.push(box({ id: "tpl-wf-footer", x: 40, y: 590, w: 880, h:  50, label: "Footer  ·  © · links", color: PAL.muted }));
+    return els;
+  },
+
+  // Form layout — title, fields, submit.
+  form: () => {
+    const els: Skel[] = [];
+    els.push(text("tpl-fm-title", 60, 30, "Sign up", PAL.primary, 22));
+    const labels = ["Name", "Email", "Password", "Confirm password"];
+    labels.forEach((l, i) => {
+      const y = 80 + i * 80;
+      els.push(text(`tpl-fm-l${i}`, 60, y, l, PAL.ink, 14));
+      els.push(box({ id: `tpl-fm-f${i}`, x: 60, y: y + 20, w: 360, h: 44, label: "", color: PAL.muted }));
+    });
+    els.push(box({ id: "tpl-fm-submit", x: 60, y: 80 + labels.length * 80 + 16, w: 160, h: 50, label: "Submit", color: PAL.good }));
+    return els;
+  },
+
+  // Card grid — 6 uniform cards.
+  cardgrid: () => {
+    const els: Skel[] = [];
+    const cols = 3, rows = 2;
+    const w = 240, h = 160, gap = 24;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const idx = r * cols + c + 1;
+        els.push(box({
+          id: `tpl-cg-${idx}`,
+          x: 40 + c * (w + gap), y: 40 + r * (h + gap),
+          w, h,
+          label: `Card ${idx}\n— title\n— body`,
+          color: idx % 2 === 0 ? PAL.cool : PAL.primary,
+        }));
+      }
+    }
+    return els;
+  },
+
+  // Modal dialog — backdrop hint + dialog + actions.
+  modal: () => {
+    const els: Skel[] = [];
+    els.push(box({ id: "tpl-md-bd", x: 40, y: 40, w: 800, h: 480, label: "Backdrop", color: PAL.muted }, { fillStyle: "hachure", strokeStyle: "dashed" }));
+    els.push(box({ id: "tpl-md-dlg", x: 220, y: 140, w: 440, h: 280, label: "", color: PAL.primary }, { roughness: 0, fillStyle: "solid", backgroundColor: "transparent" }));
+    els.push(text("tpl-md-title", 240, 160, "Confirm action", PAL.primary, 22));
+    els.push(text("tpl-md-body", 240, 210, "Are you sure you want to continue?", PAL.ink, 16));
+    els.push(box({ id: "tpl-md-cancel", x: 320, y: 340, w: 140, h: 50, label: "Cancel", color: PAL.muted }));
+    els.push(box({ id: "tpl-md-ok",     x: 480, y: 340, w: 140, h: 50, label: "Confirm", color: PAL.good }));
+    return els;
+  },
+
+  // ─── Diagrams+ ───────────────────────────────────────────────────────────
+  // Hexagonal architecture (ports & adapters).
+  hexarch: () => {
+    const t: Box[] = [
+      { id: "tpl-hx-core", x: 320, y: 200, w: 240, h: 140, label: "Domain core",     color: PAL.primary },
+      { id: "tpl-hx-in1",  x:  40, y: 100, w: 200, h:  80, label: "HTTP adapter",    color: PAL.cool },
+      { id: "tpl-hx-in2",  x:  40, y: 360, w: 200, h:  80, label: "CLI adapter",     color: PAL.cool },
+      { id: "tpl-hx-out1", x: 640, y: 100, w: 200, h:  80, label: "DB adapter",      color: PAL.warm },
+      { id: "tpl-hx-out2", x: 640, y: 360, w: 200, h:  80, label: "Email adapter",   color: PAL.warm },
+      { id: "tpl-hx-port1", x: 320, y:  60, w: 240, h:  60, label: "port: inbound",  color: PAL.muted },
+      { id: "tpl-hx-port2", x: 320, y: 420, w: 240, h:  60, label: "port: outbound", color: PAL.muted },
+    ];
+    return [
+      ...t.map((b) => box(b)),
+      arrow(t[1], t[0]),
+      arrow(t[2], t[0]),
+      arrow(t[0], t[3]),
+      arrow(t[0], t[4]),
+      arrow(t[5], t[0]),
+      arrow(t[0], t[6]),
+    ];
+  },
+
+  // Event storming — actor → command → aggregate → event → policy.
+  eventstorm: () => {
+    const t: Box[] = [
+      { id: "tpl-es-actor", x:  40, y: 200, w: 160, h: 70, label: "Actor",     color: PAL.ink },
+      { id: "tpl-es-cmd",   x: 220, y: 200, w: 160, h: 70, label: "Command",   color: PAL.cool },
+      { id: "tpl-es-agg",   x: 400, y: 200, w: 160, h: 70, label: "Aggregate", color: PAL.warm },
+      { id: "tpl-es-evt",   x: 580, y: 200, w: 160, h: 70, label: "Event",     color: PAL.primary },
+      { id: "tpl-es-pol",   x: 760, y: 200, w: 160, h: 70, label: "Policy",    color: PAL.bad },
+      { id: "tpl-es-rm",    x: 580, y:  60, w: 160, h: 70, label: "Read model", color: PAL.good },
+    ];
+    return [
+      ...t.map((b) => box(b)),
+      arrow(t[0], t[1]),
+      arrow(t[1], t[2]),
+      arrow(t[2], t[3]),
+      arrow(t[3], t[4]),
+      arrow(t[3], t[5]),
+      arrow(t[4], t[1]),
+    ];
+  },
+
+  // Layered architecture.
+  layered: () => {
+    const t: Box[] = [
+      { id: "tpl-ly-pres", x: 60, y:  40, w: 600, h: 80, label: "Presentation",  color: PAL.cool },
+      { id: "tpl-ly-app",  x: 60, y: 140, w: 600, h: 80, label: "Application",   color: PAL.primary },
+      { id: "tpl-ly-dom",  x: 60, y: 240, w: 600, h: 80, label: "Domain",        color: PAL.warm },
+      { id: "tpl-ly-inf",  x: 60, y: 340, w: 600, h: 80, label: "Infrastructure", color: PAL.muted },
+    ];
+    return [
+      ...t.map((b) => box(b)),
+      arrow(t[0], t[1]),
+      arrow(t[1], t[2]),
+      arrow(t[2], t[3]),
+    ];
+  },
+
+  // ER extended — 5 entities + FKs.
+  erext: () => {
+    const t: Box[] = [
+      { id: "tpl-ex-user",    x:  40, y:  60, w: 200, h: 130, label: "User\n— id (PK)\n— email\n— created_at", color: PAL.cool },
+      { id: "tpl-ex-order",   x: 280, y:  60, w: 200, h: 130, label: "Order\n— id (PK)\n— user_id (FK)\n— total", color: PAL.primary },
+      { id: "tpl-ex-item",    x: 520, y:  60, w: 200, h: 130, label: "OrderItem\n— id (PK)\n— order_id (FK)\n— product_id (FK)", color: PAL.warm },
+      { id: "tpl-ex-product", x: 760, y:  60, w: 200, h: 130, label: "Product\n— id (PK)\n— sku\n— price", color: PAL.good },
+      { id: "tpl-ex-pay",     x: 280, y: 240, w: 200, h: 130, label: "Payment\n— id (PK)\n— order_id (FK)\n— amount", color: PAL.bad },
+    ];
+    return [
+      ...t.map((b) => box(b, { roughness: 0, fillStyle: "solid", backgroundColor: "transparent" })),
+      arrow(t[0], t[1]),
+      arrow(t[1], t[2]),
+      arrow(t[2], t[3]),
+      arrow(t[1], t[4]),
+    ];
+  },
+
   // Use-case diagram — actor + system + use cases.
   usecase: () => {
     const els: Skel[] = [];
@@ -458,7 +764,7 @@ export const TEMPLATES = {
 };
 
 export type TemplateKey = keyof typeof TEMPLATES;
-export type TemplateCat = "general" | "architecture" | "uml" | "process" | "security" | "team";
+export type TemplateCat = "general" | "architecture" | "uml" | "process" | "security" | "team" | "math" | "devops" | "webui" | "diagrams";
 export const TEMPLATE_META: Record<TemplateKey, { label: string; desc: string; cat: TemplateCat }> = {
   mindmap:       { label: "Mind map",       desc: "Central idea + 4 branches", cat: "general" },
   flowchart:     { label: "Flowchart",      desc: "Start → Step → Decide → Done", cat: "general" },
@@ -482,4 +788,20 @@ export const TEMPLATE_META: Record<TemplateKey, { label: string; desc: string; c
   stride:        { label: "STRIDE",         desc: "Spoof/Tamper/Repud/Info/DoS/Elev", cat: "security" },
   retro4ls:      { label: "Retro 4Ls",      desc: "Liked / Learned / Lacked / Longed for", cat: "team" },
   sprint:        { label: "Sprint board",   desc: "Backlog → Sprint → IP → Review → Done", cat: "team" },
+  mathgrid:      { label: "Coord grid",     desc: "X/Y axes + 4 quadrants",                cat: "math" },
+  mathplot:      { label: "Function plot",  desc: "Axes + f(x)=x line",                    cat: "math" },
+  mathproof:     { label: "Geometry proof", desc: "Right triangle + a²+b²=c²",             cat: "math" },
+  mathfrac:      { label: "Fraction bars",  desc: "1/2, 1/3, 1/4, 1/6 bars",               cat: "math" },
+  k8s:           { label: "K8s cluster",    desc: "Control plane + nodes + ingress",       cat: "devops" },
+  docker:        { label: "Docker stack",   desc: "Host + containers + volume + net",      cat: "devops" },
+  registry:      { label: "Registry flow",  desc: "Dev → Build → Push → Pull → Cluster",   cat: "devops" },
+  monitor:       { label: "Monitoring",     desc: "App → Prom → Grafana / Alerts",         cat: "devops" },
+  wireframe:     { label: "Wireframe page", desc: "Header / nav / hero / cards / footer",  cat: "webui" },
+  form:          { label: "Form",           desc: "Title + inputs + submit",               cat: "webui" },
+  cardgrid:      { label: "Card grid",      desc: "3 × 2 uniform cards",                   cat: "webui" },
+  modal:         { label: "Modal dialog",   desc: "Backdrop + dialog + actions",           cat: "webui" },
+  hexarch:       { label: "Hexagonal arch", desc: "Core + ports + adapters",               cat: "diagrams" },
+  eventstorm:    { label: "Event storming", desc: "Actor → Cmd → Agg → Event → Policy",    cat: "diagrams" },
+  layered:       { label: "Layered arch",   desc: "Presentation / App / Domain / Infra",   cat: "diagrams" },
+  erext:         { label: "ER extended",    desc: "5 entities with FKs",                   cat: "diagrams" },
 };

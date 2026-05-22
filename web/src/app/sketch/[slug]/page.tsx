@@ -891,6 +891,11 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     const next = cur.map((p, i) => i === idx ? { ...p, paper: mode } : p);
     persistBookPages(next);
   }, [persistBookPages]);
+  const setBookPageBg = useCallback((idx: number, color: string | null) => {
+    const cur = Array.isArray(docMetaRef.current.bookPages) ? docMetaRef.current.bookPages! : [{ paper: "inherit" as const }];
+    const next = cur.map((p, i) => i === idx ? { ...p, bgColor: color } : p);
+    persistBookPages(next);
+  }, [persistBookPages]);
   // Snap to page 0 on entering book mode.
   useEffect(() => {
     if (!isBookMode || !excalReady) return;
@@ -1108,6 +1113,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
             onDeletePage={deleteBookPage}
             onReorder={reorderBookPage}
             onSetPagePaper={setBookPagePaper}
+            onSetPageBg={setBookPageBg}
             pages={bookPages}
             globalPaper={globalPaper}
             onToggleOutline={() => {}}

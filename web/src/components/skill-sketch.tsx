@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import type * as React from "react";
 import { memo, Fragment } from "react";
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   Maximize2, Minimize2, CheckCircle2,
   Sparkles, Link as LinkIcon, X,
@@ -16,6 +16,11 @@ import {
   Tablet, ExternalLink, Save, Users, ArrowLeft, RefreshCw, Plus, BookOpen,
   Layers, Boxes, Component, MessageSquare, RotateCw, Database, GitBranch,
   Key, Shield,
+  Sigma, LineChart, Triangle, PieChart,
+  Container, Package, Cloud, Activity,
+  Layout, FormInput, LayoutGrid,
+  Hexagon, Workflow,
+  Calculator, Wrench, Code2, Globe, Building2, Star,
 } from "lucide-react";
 import NextLink from "next/link";
 import { useTheme } from "next-themes";
@@ -47,10 +52,11 @@ type DrawingDoc = {
   paperMode?: "plain" | "grid" | "dots" | "lines";
   layoutMode?: "board" | "book";
   bookPageCount?: number;
-  bookPages?: { paper?: "plain" | "grid" | "dots" | "lines" | "inherit" }[];
+  bookPages?: { paper?: "plain" | "grid" | "dots" | "lines" | "inherit"; bgColor?: string | null }[];
   appState?: Record<string, unknown>;
   files?: Record<string, unknown>;
   title?: string;
+  canvasBg?: string | null;
 };
 
 function skillSlug(skill: string) {
@@ -63,6 +69,76 @@ function skillSlug(skill: string) {
 // → ≤700 ms end-to-end without WS.
 const DEBOUNCE_MS = 150;
 
+// Categories used by the LibraryFilterBar. Order MUST match the
+// updateLibrary seed loop so CSS nth-child ranges land on the right
+// library-units in the rendered grid.
+const LIB_CATS: Array<{ id: string; label: string; Icon: React.ComponentType<{ className?: string }>; file: string }> = [
+  { id: "math",   label: "Math",   Icon: Calculator, file: "math" },
+  { id: "devops", label: "DevOps", Icon: Wrench,     file: "devops" },
+  { id: "dev",    label: "Dev",    Icon: Code2,      file: "dev-icons" },
+  { id: "webui",  label: "Web UI", Icon: Globe,      file: "web-kit" },
+  { id: "cloud",  label: "Cloud",  Icon: Cloud,      file: "cloud" },
+  { id: "arch",   label: "Arch",   Icon: Building2,  file: "software-arch" },
+];
+
+// Preset canvas-background swatches surfaced in the Canvas sidebar
+// row. Mirrors Excalidraw's own `DEFAULT_CANVAS_BACKGROUND_PICKS`
+// (radix slate2 / blue2 / yellow2 / bronze2) plus a clear-to-theme
+// option and pure white. Trailing `+` opens a native color picker
+// for arbitrary hex.
+// Tiny module-scoped store for the Canvas swatch row. Lives outside
+// the React tree so the SwatchGrid can subscribe via
+// useSyncExternalStore and re-render in isolation — keeping the
+// memoised MainMenu element tree stable (touching it would re-attach
+// MM's own subscribers and trigger an infinite-update loop, as the
+// memo's note warns).
+const customBgStore = (() => {
+  let value: string | null = null;
+  const listeners = new Set<() => void>();
+  return {
+    subscribe(fn: () => void) { listeners.add(fn); return () => { listeners.delete(fn); }; },
+    getSnapshot() { return value; },
+    getServerSnapshot() { return null as string | null; },
+    set(next: string | null) {
+      if (value === next) return;
+      value = next;
+      listeners.forEach((l) => l());
+    },
+  };
+})();
+
+const CANVAS_BG_SWATCHES: ReadonlyArray<{ title: string; value: string | null }> = [
+  // Row 1 — clear + lights (kept so paper modes still read on light)
+  { title: "Clear (theme)", value: null },
+  { title: "Paper",      value: "#f5efe1" },
+  { title: "Cream",      value: "#e8dfc4" },
+  { title: "Sand",       value: "#c9b48a" },
+  // Row 2 — saturated mids (deeper than pastels)
+  { title: "Moss",       value: "#3f5b3a" },
+  { title: "Steel",      value: "#1e3a5f" },
+  { title: "Plum",       value: "#4a2c52" },
+  { title: "Slate",      value: "#27303e" },
+  // Row 3 — true darks (last slot is the picker)
+  { title: "Forest",     value: "#0d2018" },
+  { title: "Wine",       value: "#2a0e10" },
+  { title: "Onyx",       value: "#0b0d12" },
+];
+
+function sceneBBox(els: readonly unknown[]) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const raw of els) {
+    const e = raw as { x?: number; y?: number; width?: number; height?: number; isDeleted?: boolean } | null;
+    if (!e || e.isDeleted) continue;
+    if (typeof e.x !== "number" || typeof e.y !== "number") continue;
+    const w = typeof e.width === "number" ? e.width : 0;
+    const h = typeof e.height === "number" ? e.height : 0;
+    minX = Math.min(minX, e.x); minY = Math.min(minY, e.y);
+    maxX = Math.max(maxX, e.x + w); maxY = Math.max(maxY, e.y + h);
+  }
+  if (!isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY };
+}
+
 type ExcalApi = {
   getSceneElements: () => readonly unknown[];
   getAppState: () => Record<string, unknown>;
@@ -70,6 +146,12 @@ type ExcalApi = {
   updateScene: (data: { elements?: unknown[]; appState?: Record<string, unknown> }) => void;
   scrollToContent: (target?: unknown) => void;
   setActiveTool?: (tool: { type: string; locked?: boolean }) => void;
+  updateLibrary?: (opts: {
+    libraryItems: unknown[] | ((curr: Array<Record<string, unknown>>) => unknown[] | Promise<unknown[]>);
+    merge?: boolean;
+    openLibraryMenu?: boolean;
+    defaultStatus?: "published" | "unpublished";
+  }) => void;
 };
 
 export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscreenButton = false }: { skill: string; homeHref?: string; defaultFull?: boolean; hideFullscreenButton?: boolean }) {
@@ -100,6 +182,22 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
   // viewBackgroundColor when a non-plain mode is active so the pattern
   // shows through. Persisted in the saved doc under `paperMode`.
   const [paperMode, setPaperMode] = useState<PaperMode>("plain");
+  // User-chosen canvas color. `null` = wrapper falls back to its
+  // `bg-card` token. When a paper / book overlay is active we paint
+  // this on the wrapper div; in plain board mode we also push it
+  // into Excalidraw's viewBackgroundColor so the native canvas paints
+  // it. Owned entirely by our custom Canvas swatch row — Excalidraw's
+  // native swatch is left untouched so there's no race over who
+  // "wins" the picked color.
+  const [customBg, setCustomBg] = useState<string | null>(null);
+  const customBgRef = useRef<string | null>(null);
+  useEffect(() => {
+    customBgRef.current = customBg;
+    // Keep the module-scoped store in sync so SidebarSwatchGrid (which
+    // subscribes via useSyncExternalStore to avoid invalidating the
+    // memoised MainMenu tree) reflects the latest pick.
+    customBgStore.set(customBg);
+  }, [customBg]);
   // Layout mode — `board` is the default infinite canvas; `book`
   // is GoodNotes-style paged. In book mode entry, we snap the
   // viewport to fit page 0 and bind ←/→ to flip pages.
@@ -130,7 +228,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
   // Per-page paper mode array. Length === page count. Each entry is
   // either inherits-global (undefined / "inherit") or one of the
   // PaperMode variants. Default: one page that inherits global mode.
-  type BookPage = { paper?: PaperMode | "inherit" };
+  type BookPage = { paper?: PaperMode | "inherit"; bgColor?: string | null };
   const [bookPages, setBookPages] = useState<BookPage[]>([{ paper: "inherit" }]);
   const bookPagesRef = useRef<BookPage[]>([{ paper: "inherit" }]);
   useEffect(() => { bookPagesRef.current = bookPages; }, [bookPages]);
@@ -232,11 +330,15 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
     try {
       api.updateScene({
         appState: {
-          // In book mode the page divs paint the background; canvas
-          // MUST stay transparent so pages stay visible — even when
-          // the global paper mode is "plain".
-          viewBackgroundColor:
-            layoutMode === "book" || paperMode !== "plain" ? "transparent" : "#ffffff",
+          // Always paint canvas bg via the wrapper div (set below in
+          // the JSX style prop) instead of via Excalidraw's
+          // viewBackgroundColor. Excalidraw's own paint subtly
+          // lightens custom dark colors (looks like a tint pass), so
+          // plain-mode dark backgrounds came out paler than the same
+          // color in grid/dots/lines modes. Routing everything
+          // through the wrapper keeps the visual identical across
+          // paper modes.
+          viewBackgroundColor: "transparent",
         },
       });
       // Force Excalidraw to re-render the static canvas now. Without
@@ -404,6 +506,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
     excali?: () => void;
     setPaper?: (m: PaperMode) => void;
     setLayout?: (m: "board" | "book") => void;
+    setCanvasBg?: (c: string | null) => void;
   }>({});
 
   // Memoize the MainMenu subtree. Without this, every SkillSketch
@@ -457,6 +560,13 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
             <LayoutIcon mode="book" />
           </SidebarIconBtn>
         </SidebarRow>
+        <MM.Separator />
+        <SidebarSwatchGrid
+          label="Canvas"
+          swatches={CANVAS_BG_SWATCHES}
+          onPick={(c) => exportRef.current.setCanvasBg?.(c)}
+        />
+        <MM.Separator />
         <SidebarRow label="Export">
           <SidebarIconBtn title="Export PNG" onClick={() => exportRef.current.png?.()}><ImageIcon style={{ width: 14, height: 14 }} /></SidebarIconBtn>
           <SidebarIconBtn title="Export SVG" onClick={() => exportRef.current.svg?.()}><FileCode style={{ width: 14, height: 14 }} /></SidebarIconBtn>
@@ -464,13 +574,18 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
           <SidebarIconBtn title="Copy scene JSON" onClick={() => exportRef.current.json?.()}><Copy style={{ width: 14, height: 14 }} /></SidebarIconBtn>
         </SidebarRow>
         <MM.Separator />
-        <MM.DefaultItems.ChangeCanvasBackground />
-        <MM.DefaultItems.ToggleTheme />
-        <MM.Separator />
         <MM.DefaultItems.ClearCanvas />
       </MM>
     );
+    // NOTE: customBg intentionally NOT in deps — including it rebuilds
+    // the whole MainMenu element tree on every pick, which forces MM's
+    // useSyncExternalStore subscribers to re-attach mid-mutation and
+    // trips the "Maximum update depth" loop (same trap the comment on
+    // this memo warns about). SwatchGrid subscribes via the
+    // module-scoped customBgStore for its own live value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [excalMod, homeHref, paperMode, layoutMode]);
+
   const appliedFor = useRef<string>("");
   // Apply server scene ONCE per slug on first read. Subsequent SWR
   // polls don't push into Excalidraw — the realtime path is the WS
@@ -479,7 +594,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
   // internal store to emit while React was committing this same
   // tree, hence the recurring "Maximum update depth" stack ending
   // inside MainMenu's `Set.forEach` over its subscribers.
-  useEffect(() => {
+useEffect(() => {
     if (!doc || !excalReady) return;
     const api = excalRef.current;
     if (!api) return;
@@ -495,6 +610,13 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
       }
       if (doc.layoutMode && doc.layoutMode !== layoutMode) {
         setLayoutMode(doc.layoutMode);
+      }
+      // Only seed customBg from doc on FIRST apply per slug — the
+      // polling effect re-runs on every SWR refresh (new doc ref each
+      // time) and continuously setting state from doc would feedback
+      // with onChange → save → reload chain into an update loop.
+      if (firstApply && typeof doc.canvasBg === "string" && doc.canvasBg !== customBgRef.current) {
+        setCustomBg(doc.canvasBg);
       }
       if (Array.isArray(doc.bookPages)) {
         const remotePages = doc.bookPages as BookPage[];
@@ -560,7 +682,166 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
     }, 0);
     return () => clearTimeout(tid);
   }, [slug, doc, excalReady]);
+
+  // Insert a single library item's raw Excalidraw elements onto the canvas.
+  // The categorized stamp sidebar uses this; library items are already in
+  // final element form (not skeleton), so we just regen IDs + remap bindings
+  // + translate next to existing content. Without ID remapping the same
+  // stamp dropped twice would collide on element id.
+  const insertLibElements = useCallback(async (rawEls: ReadonlyArray<Record<string, unknown>>) => {
+    const api = excalRef.current;
+    if (!api || !rawEls.length) return;
+    const newId = () => "lib_" + Math.random().toString(36).slice(2, 10);
+    const idMap = new Map<string, string>();
+    for (const e of rawEls) {
+      const id = (e as { id?: string }).id;
+      if (typeof id === "string") idMap.set(id, newId());
+    }
+    const remap = (s: string | undefined): string | undefined => (s && idMap.get(s)) || s;
+    const groupRemap = new Map<string, string>();
+    const fresh = rawEls.map((src) => {
+      const e = { ...src } as Record<string, unknown>;
+      const oldId = e.id as string | undefined;
+      if (oldId) e.id = idMap.get(oldId) ?? newId();
+      e.seed = Math.floor(Math.random() * 2 ** 31);
+      if (Array.isArray(e.boundElements)) {
+        e.boundElements = (e.boundElements as Array<{ id?: string; type?: string }>).map((b) => ({ ...b, id: remap(b.id) ?? "" }));
+      }
+      const sb = e.startBinding as { elementId?: string } | undefined;
+      if (sb?.elementId) e.startBinding = { ...sb, elementId: remap(sb.elementId) };
+      const eb = e.endBinding as { elementId?: string } | undefined;
+      if (eb?.elementId) e.endBinding = { ...eb, elementId: remap(eb.elementId) };
+      if (typeof e.containerId === "string") e.containerId = remap(e.containerId);
+      if (Array.isArray(e.groupIds)) {
+        e.groupIds = (e.groupIds as string[]).map((g) => {
+          if (!groupRemap.has(g)) groupRemap.set(g, newId());
+          return groupRemap.get(g)!;
+        });
+      }
+      return e;
+    });
+    const bb = sceneBBox(fresh);
+    if (bb) {
+      const current = api.getSceneElements();
+      const sceneBB = sceneBBox(current);
+      const appState = api.getAppState() as { scrollX?: number; scrollY?: number; width?: number; height?: number; zoom?: { value?: number } };
+      let targetX: number, targetY: number;
+      if (sceneBB) {
+        targetX = sceneBB.maxX + 60;
+        targetY = sceneBB.minY;
+      } else if (typeof appState.scrollX === "number" && typeof appState.width === "number") {
+        const zoom = appState.zoom?.value ?? 1;
+        targetX = -appState.scrollX + (appState.width / zoom) / 2 - (bb.maxX - bb.minX) / 2;
+        targetY = -(appState.scrollY ?? 0) + ((appState.height ?? 0) / zoom) / 2 - (bb.maxY - bb.minY) / 2;
+      } else {
+        targetX = 100; targetY = 100;
+      }
+      const dx = targetX - bb.minX;
+      const dy = targetY - bb.minY;
+      for (const el of fresh) {
+        if (typeof el.x === "number") el.x = (el.x as number) + dx;
+        if (typeof el.y === "number") el.y = (el.y as number) + dy;
+      }
+    }
+    const current = api.getSceneElements();
+    api.updateScene({ elements: [...(current as unknown[]), ...fresh] });
+    try { api.scrollToContent(fresh as never); } catch {}
+  }, []);
   useEffect(() => { appliedFor.current = ""; lastBroadcastedOrReceivedSceneVersion.current = -1; }, [slug]);
+
+  // Seed Excalidraw's NATIVE library with our 6 vendored
+  // .excalidrawlib categories. Built-in library sidebar (book icon)
+  // renders them with native UX. Fighting withInternalFallback with a
+  // custom Sidebar always looped on "Maximum update depth".
+  //
+  // For category filtering: we track per-cat counts in state, then
+  // <LibraryFilterBar /> portals a tab strip into the library panel's
+  // header. Filter sets a data attribute on the items grid; CSS rules
+  // hide library-units outside the active cat by nth-child range.
+  const libSeededRef = useRef(false);
+  const [catCounts, setCatCounts] = useState<number[] | null>(null);
+  // Number of user-imported items sitting AHEAD of our seeded section
+  // in Excalidraw's library list (Excalidraw merges new items at the
+  // FRONT). Filter-bar nth-child ranges shift by this amount so a
+  // category click still hides/shows the right rows after imports.
+  const [frontOffset, setFrontOffset] = useState(0);
+  useEffect(() => {
+    if (!excalReady || libSeededRef.current) return;
+    const api = excalRef.current;
+    if (!api?.updateLibrary) return;
+    libSeededRef.current = true;
+    (async () => {
+      const lists = await Promise.all(LIB_CATS.map(async (c) => {
+        try {
+          const r = await fetch(`/sketch-libs/${c.file}.excalidrawlib`);
+          if (!r.ok) return [] as Array<Record<string, unknown>>;
+          const j = await r.json() as { libraryItems?: Array<Record<string, unknown>>; library?: unknown[][] };
+          // Use STABLE per-cat IDs so reloads see the same items
+          // already in the library and we can compute frontOffset by
+          // diffing live library vs. seeded ID set.
+          if (Array.isArray(j.libraryItems)) {
+            return j.libraryItems.map((it, i) => ({
+              ...it,
+              status: "unpublished",
+              id: `seed-${c.id}-${i}`,
+            }));
+          }
+          if (Array.isArray(j.library)) {
+            return j.library.map((els, i) => ({
+              status: "unpublished",
+              elements: els,
+              id: `seed-${c.id}-${i}`,
+              created: Date.now(),
+            }));
+          }
+          return [];
+        } catch { return []; }
+      }));
+      const counts = lists.map((l) => l.length);
+      const allSeed = lists.flat();
+      if (!allSeed.length) return;
+      const seedIdSet = new Set(allSeed.map((it) => (it as { id: string }).id));
+      try {
+        // Use the function form of updateLibrary so we can inspect the
+        // CURRENT library before merging. This lets us:
+        //   1. Compute how many user-imported items live at the front
+        //      of the library (Excalidraw places new items at index 0).
+        //   2. Skip seed items already present to avoid duplicate
+        //      churn after a reload.
+        // Reload user-imported items from localStorage so they
+        // survive a page refresh. Excalidraw's library is in-memory
+        // only — we own persistence via `onLibraryChange`.
+        const stored = (() => {
+          try {
+            const raw = localStorage.getItem(`sklib-imports-${slug}`);
+            if (!raw) return [] as Array<Record<string, unknown>>;
+            const arr = JSON.parse(raw) as Array<Record<string, unknown>>;
+            return Array.isArray(arr) ? arr : [];
+          } catch { return [] as Array<Record<string, unknown>>; }
+        })();
+        api.updateLibrary?.({
+          libraryItems: (curr: Array<{ id?: string }>) => {
+            const haveIds = new Set(curr.map((it) => it.id).filter(Boolean) as string[]);
+            // Order matters: imports BEFORE seed so they land at the
+            // front (matching Excalidraw's merge behavior — new items
+            // go to index 0 — so subsequent live imports keep stacking
+            // on top in the same relative order).
+            const additions = [
+              ...stored.filter((it) => !haveIds.has((it as { id?: string }).id ?? "")),
+              ...allSeed.filter((s) => !haveIds.has((s as { id: string }).id)),
+            ];
+            const frontCount = curr.filter((it) => !seedIdSet.has(it.id ?? "")).length
+              + stored.filter((it) => !haveIds.has((it as { id?: string }).id ?? "")).length;
+            setFrontOffset(frontCount);
+            return additions;
+          },
+          merge: true,
+          defaultStatus: "unpublished",
+        });
+        setCatCounts(counts);
+      } catch (e) { console.warn("updateLibrary failed", e); }
+    })();
+  }, [excalReady]);
 
   const initialData = useMemo(() => {
     if (!doc) return undefined;
@@ -583,8 +864,11 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
     // BookPagesOverlay / PaperBackdrop underneath stays hidden until the
     // post-mount effect at line ~229 runs — long enough for the user to
     // see a flash of "no pages".
-    const wantTransparent = doc.layoutMode === "book" || (doc.paperMode && doc.paperMode !== "plain");
-    if (wantTransparent) safeAppState.viewBackgroundColor = "transparent";
+    // Canvas bg is always painted by the wrapper div now (see
+    // viewBackgroundColor effect + JSX style prop), so Excalidraw's
+    // internal viewBackgroundColor stays transparent across all
+    // paper/layout modes. Keeps dark colors actually dark in plain.
+    safeAppState.viewBackgroundColor = "transparent";
     return {
       elements: elements as never,
       appState: { ...safeAppState, collaborators: new Map() } as never,
@@ -604,6 +888,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
       paperMode: paperModeRef.current,
       layoutMode: layoutModeRef.current,
       bookPages: bookPagesRef.current,
+      canvasBg: customBgRef.current,
     };
     const body = JSON.stringify({ data: merged });
     if (body === last.current) return;
@@ -643,6 +928,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
           paperMode: paperModeRef.current,
           layoutMode: layoutModeRef.current,
           bookPages: bookPagesRef.current,
+          canvasBg: customBgRef.current,
         },
       });
       const r = await fetch(`${API}/api/drawings/${slug}`, {
@@ -1165,22 +1451,6 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
     mutate();
   };
 
-  // Compute bbox of existing elements (skipping deleted/missing dims) so we can
-  // offset inserts to empty space and avoid the scrambled stack we got before.
-  const sceneBBox = (els: readonly unknown[]) => {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const raw of els) {
-      const e = raw as { x?: number; y?: number; width?: number; height?: number; isDeleted?: boolean } | null;
-      if (!e || e.isDeleted) continue;
-      if (typeof e.x !== "number" || typeof e.y !== "number") continue;
-      const w = typeof e.width === "number" ? e.width : 0;
-      const h = typeof e.height === "number" ? e.height : 0;
-      minX = Math.min(minX, e.x); minY = Math.min(minY, e.y);
-      maxX = Math.max(maxX, e.x + w); maxY = Math.max(maxY, e.y + h);
-    }
-    if (!isFinite(minX)) return null;
-    return { minX, minY, maxX, maxY };
-  };
 
   // Normalize skeleton through Excalidraw's converter, then translate so it
   // sits to the right of existing content (or at viewport center if empty).
@@ -1422,6 +1692,18 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
     exportRef.current.excali = exportExcalidraw;
     exportRef.current.setPaper = (m) => { lastMetaEditAtRef.current = Date.now(); setPaperMode(m); };
     exportRef.current.setLayout = (m) => { lastMetaEditAtRef.current = Date.now(); setLayoutMode(m); };
+    exportRef.current.setCanvasBg = (c) => {
+      lastMetaEditAtRef.current = Date.now();
+      setCustomBg(c);
+      // Wrapper div paints the bg in every mode now, so Excalidraw's
+      // canvas always stays transparent. No viewBackgroundColor push.
+      const api = excalRef.current;
+      if (!api) return;
+      try {
+        api.updateScene({ appState: { viewBackgroundColor: "transparent" } });
+        (api as { refresh?: () => void }).refresh?.();
+      } catch {}
+    };
   });
   useEffect(() => { paperModeRef.current = paperMode; }, [paperMode]);
   useEffect(() => { layoutModeRef.current = layoutMode; }, [layoutMode]);
@@ -1469,9 +1751,14 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
         ref={canvasWrapRef}
         data-paper-overlay={(layoutMode === "book" || paperMode !== "plain") ? "1" : undefined}
         className={`relative rounded-xl overflow-hidden border border-foreground/10 bg-card ${full ? "flex-1" : "h-[70vh]"}`}
+        // Wrapper paints canvas bg in ALL modes. No customBg → fall
+        // through to bg-card (theme color) so "Clear (theme)" behaves
+        // identically across paper modes (was rendering white in plain
+        // and theme-dark in dotted/grid/lined before).
+        style={customBg ? { background: customBg } : undefined}
       >
         {paperMode !== "plain" && layoutMode !== "book" && (
-          <PaperBackdrop mode={paperMode} appState={miniData.app} />
+          <PaperBackdrop mode={paperMode} appState={miniData.app} bgColor={customBg} />
         )}
         {layoutMode === "book" && (
           <>
@@ -1511,6 +1798,10 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
               onSetPagePaper={(idx, mode) => {
                 lastMetaEditAtRef.current = Date.now();
                 setBookPages((prev) => prev.map((p, i) => i === idx ? { ...p, paper: mode } : p));
+              }}
+              onSetPageBg={(idx, color) => {
+                lastMetaEditAtRef.current = Date.now();
+                setBookPages((prev) => prev.map((p, i) => i === idx ? { ...p, bgColor: color } : p));
               }}
               pages={bookPages}
               globalPaper={paperMode}
@@ -1594,12 +1885,13 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
                     out.width = PX_W; out.height = PX_H;
                     const ctx = out.getContext("2d");
                     if (!ctx) throw new Error("2d context unavailable");
-                    ctx.fillStyle = "#ffffff";
-                    ctx.fillRect(0, 0, PX_W, PX_H);
                     const pgMeta = bookPagesRef.current[i] ?? {};
+                    const pgBg = pgMeta.bgColor || "#ffffff";
+                    ctx.fillStyle = pgBg;
+                    ctx.fillRect(0, 0, PX_W, PX_H);
                     const effPaper: PaperMode =
                       (!pgMeta.paper || pgMeta.paper === "inherit") ? paperMode : pgMeta.paper;
-                    drawPaperPattern(ctx, PX_W, PX_H, effPaper, PX_W / BOOK_PAGE_W);
+                    drawPaperPattern(ctx, PX_W, PX_H, effPaper, PX_W / BOOK_PAGE_W, pgBg);
                     ctx.drawImage(canvas, 0, 0, PX_W, PX_H);
                     const dataUrl = out.toDataURL("image/png");
                     if (i > 0) pdf.addPage([PX_W, PX_H], "portrait");
@@ -1627,6 +1919,17 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
           key={slug}
           initialData={initialData}
           onChange={onChange}
+          onLibraryChange={(items) => {
+            // Persist ONLY non-seed items so reloads recover user
+            // imports without bloating storage with our static seed.
+            try {
+              const extras = (items as unknown as ReadonlyArray<Record<string, unknown>>).filter((it) => {
+                const id = (it as { id?: string }).id ?? "";
+                return !id.startsWith("seed-");
+              });
+              localStorage.setItem(`sklib-imports-${slug}`, JSON.stringify(extras));
+            } catch { /* quota/SecurityError → silently drop */ }
+          }}
           theme={resolvedTheme === "light" ? "light" : "dark"}
           aiEnabled={false}
           excalidrawAPI={excalApiCallback}
@@ -1790,8 +2093,251 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
           />
         )}
       </div>
+      {catCounts && <LibraryFilterBar counts={catCounts} excalRef={excalRef} frontOffset={frontOffset} onImported={(n) => setFrontOffset((o) => o + n)} />}
     </div>
   );
+}
+
+// Portals a category tab strip into Excalidraw's library panel
+// header (`.library-menu-items-container__header`). Filtering uses
+// nth-child CSS ranges computed from per-cat counts — the seeded
+// items appear in known order so we can hide the rest without
+// touching Excalidraw internals. User-added items (custom shapes)
+// sit at the END of the grid (any nth > total seeded) so we let
+// them through on every filter EXCEPT when the user explicitly
+// picks a category they were tagged with (right-click → category
+// is a future enhancement; for now custom shapes show in "All" only).
+function LibraryFilterBar({ counts, excalRef, frontOffset, onImported }: {
+  counts: number[];
+  excalRef: React.MutableRefObject<ExcalApi | null>;
+  frontOffset: number;
+  onImported: (newItemCount: number) => void;
+}) {
+  // We don't portal into header (Excalidraw orders title + 3-dots
+  // there and we need to sit ABOVE both). Instead we inject our own
+  // host div as the FIRST child of `.library-menu` and portal into it.
+  // Re-mounts whenever the library panel mounts/unmounts (book-icon
+  // toggle).
+  const [host, setHost] = useState<HTMLElement | null>(null);
+  const [grid, setGrid] = useState<HTMLElement | null>(null);
+  const [active, setActive] = useState<string>("all");
+  const [importing, setImporting] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importUrl, setImportUrl] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    let mountedHost: HTMLElement | null = null;
+
+    const sync = () => {
+      if (cancelled) return;
+      // `.library-menu` is the 3-dots DROPDOWN content (Open/Save/Reset);
+      // the actual panel root is `.library-menu-items-container`. We
+      // mount the host as its FIRST child so the tab strip lands above
+      // the header (which holds "Personal Library" + 3-dots).
+      const container = document.querySelector(".library-menu-items-container") as HTMLElement | null;
+      const g = document.querySelector(".library-menu-items-container__items") as HTMLElement | null;
+      setGrid(g);
+      if (!container) {
+        if (mountedHost && !mountedHost.isConnected) mountedHost = null;
+        setHost(null);
+        return;
+      }
+      if (mountedHost && mountedHost.parentElement === container) return;
+      const h = document.createElement("div");
+      h.className = "sklib-filterbar-host";
+      container.insertBefore(h, container.firstChild);
+      mountedHost = h;
+      setHost(h);
+    };
+    sync();
+    const obs = new MutationObserver(sync);
+    obs.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      cancelled = true;
+      obs.disconnect();
+      if (mountedHost && mountedHost.parentElement) mountedHost.parentElement.removeChild(mountedHost);
+    };
+  }, []);
+
+  // Apply filter by setting data-cat-filter on the items grid. The
+  // companion CSS rules (added below as a static <style> tag) hide
+  // library-units outside the active cat via nth-child ranges.
+  useEffect(() => {
+    if (!grid) return;
+    grid.setAttribute("data-cat-filter", active);
+  }, [grid, active]);
+
+  // Inject the nth-child filter CSS based on actual counts + the
+  // front-offset (number of items imported AHEAD of the seeded set).
+  useEffect(() => {
+    const id = "sklib-cat-filter-rules";
+    let from = frontOffset;
+    const rules: string[] = [];
+    LIB_CATS.forEach((c, i) => {
+      const n = counts[i] ?? 0;
+      if (!n) return;
+      const start = from + 1;
+      const end = from + n;
+      // Hide every seeded library-unit OUTSIDE [start..end] when this
+      // filter is active. User-added items (past the seeded section,
+      // OR imported ones in front) are also hidden under a specific
+      // cat filter — they remain visible under "All".
+      rules.push(`.library-menu-items-container__items[data-cat-filter="${c.id}"] .library-unit:not(:nth-child(n+${start}):nth-child(-n+${end})) { display: none !important; }`);
+      from = end;
+    });
+    // "all" filter: show everything (including past total). Nothing
+    // to add — absence of a rule = no hide.
+    let el = document.getElementById(id) as HTMLStyleElement | null;
+    if (!el) {
+      el = document.createElement("style");
+      el.id = id;
+      document.head.appendChild(el);
+    }
+    el.textContent = rules.join("\n");
+    return () => {
+      // Keep the style tag across re-mounts — same rules apply for
+      // the whole session.
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [counts.join(","), frontOffset]);
+
+  const onImport = useCallback(async () => {
+    const api = excalRef.current;
+    if (!api?.updateLibrary) return;
+    const raw = importUrl.trim();
+    if (!raw) return;
+    setImporting(true);
+    try {
+      const items = await fetchExcalLibrary(raw);
+      if (!items.length) { toast.error("No items found at that URL."); return; }
+      const stamped = items.map((it, i) => ({
+        ...it,
+        status: "unpublished" as const,
+        id: (it as { id?: string }).id ?? `import-${Date.now()}-${i}`,
+      }));
+      api.updateLibrary({ libraryItems: stamped, merge: true, defaultStatus: "unpublished" });
+      onImported(stamped.length);
+      toast.success(`Imported ${stamped.length} item${stamped.length === 1 ? "" : "s"}.`);
+      setImportUrl("");
+      setImportOpen(false);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Import failed.");
+    } finally {
+      setImporting(false);
+    }
+  }, [excalRef, importUrl]);
+
+  if (!host) return null;
+
+  return createPortal(
+    <>
+      <div className="sklib-filterbar" role="tablist" aria-label="Library categories">
+        <button
+          type="button" role="tab"
+          aria-selected={active === "all"}
+          data-active={active === "all" ? "1" : undefined}
+          className="sklib-filterbtn"
+          title="All"
+          onClick={() => setActive("all")}
+        >
+          <Star className="sklib-fi" />
+        </button>
+        {LIB_CATS.map((c, i) => (
+          (counts[i] ?? 0) > 0 ? (
+            <button
+              key={c.id}
+              type="button" role="tab"
+              aria-selected={active === c.id}
+              data-active={active === c.id ? "1" : undefined}
+              className="sklib-filterbtn"
+              title={`${c.label} (${counts[i]})`}
+              onClick={() => setActive(c.id)}
+            >
+              <c.Icon className="sklib-fi" />
+            </button>
+          ) : null
+        ))}
+        <button
+          type="button"
+          className="sklib-filterbtn sklib-import-toggle"
+          title="Import from Excalidraw library URL"
+          data-active={importOpen ? "1" : undefined}
+          onClick={() => setImportOpen((v) => !v)}
+        >
+          <Plus className="sklib-fi" />
+        </button>
+      </div>
+      {importOpen && (
+        <div className="sklib-importrow">
+          <input
+            className="sklib-importinput"
+            type="url"
+            value={importUrl}
+            placeholder="Paste libraries.excalidraw.com URL…"
+            onChange={(e) => setImportUrl(e.currentTarget.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && !importing) onImport(); }}
+            autoFocus
+          />
+          <button
+            type="button"
+            className="sklib-importgo"
+            disabled={importing || !importUrl.trim()}
+            onClick={onImport}
+          >
+            {importing ? "…" : "Add"}
+          </button>
+        </div>
+      )}
+    </>,
+    host,
+  );
+}
+
+// Accepts:
+//   • Direct .excalidrawlib URL (fetched as-is)
+//   • libraries.excalidraw.com share URL (slug pulled from `#hash`,
+//     resolved against the public GitHub mirror which serves the file
+//     with CORS open)
+// Returns a flat libraryItems array (v1 `library` arrays auto-wrapped).
+async function fetchExcalLibrary(raw: string): Promise<Array<Record<string, unknown>>> {
+  let target = raw;
+  try {
+    const u = new URL(raw);
+    // libraries.excalidraw.com puts the library slug in the hash.
+    // Files live at /libraries/{author}/{name}.excalidrawlib but the
+    // share URL only gives us `{author}-{name}` — author may itself
+    // contain hyphens, so we resolve via libraries.json (CORS-open).
+    if (u.hostname.includes("libraries.excalidraw.com")) {
+      const slug = u.hash.replace(/^#/, "").trim();
+      if (!slug) throw new Error("URL missing library slug (#…).");
+      const idx = await fetch("https://libraries.excalidraw.com/libraries.json");
+      if (!idx.ok) throw new Error(`Index fetch failed (${idx.status}).`);
+      const list = await idx.json() as Array<{ source?: string }>;
+      const hit = list.find((e) => {
+        const s = (e.source ?? "").replace(/\.excalidrawlib$/, "").replace(/\//g, "-");
+        return s === slug;
+      });
+      if (!hit?.source) throw new Error(`Library "${slug}" not found in Excalidraw index.`);
+      target = `https://libraries.excalidraw.com/libraries/${hit.source}`;
+    }
+  } catch (e) {
+    if (e instanceof Error && /missing library slug|not found|Index fetch/.test(e.message)) throw e;
+    if (e instanceof TypeError) throw new Error("Invalid URL.");
+    throw e;
+  }
+  const r = await fetch(target);
+  if (!r.ok) throw new Error(`Fetch failed (${r.status}).`);
+  const j = await r.json() as { libraryItems?: Array<Record<string, unknown>>; library?: unknown[][] };
+  if (Array.isArray(j.libraryItems)) return j.libraryItems;
+  if (Array.isArray(j.library)) {
+    return j.library.map((els, i) => ({
+      elements: els,
+      id: `lib-${Date.now()}-${i}`,
+      created: Date.now(),
+    }));
+  }
+  return [];
 }
 
 function triggerDownload(blob: Blob, name: string) {
@@ -1822,16 +2368,103 @@ export function SketchPreloader() {
 // default MM.Item-per-option layout.
 // Native-looking row inside Excalidraw MainMenu — uses their own
 // CSS vars so the styling tracks light/dark mode + theme changes.
+// 4-column swatch grid for the Canvas-color picker row. Last cell is
+// always a native color picker for arbitrary hex. Swatches use
+// Excalidraw's own `color-picker__button` class but with the dark-mode
+// `--theme-filter` neutralised — the wrapper paints raw colors
+// outside Excalidraw's filter, so swatches must too or the preview
+// won't match the applied result.
+function SidebarSwatchGrid({
+  label, swatches, onPick,
+}: {
+  label: string;
+  swatches: ReadonlyArray<{ title: string; value: string | null }>;
+  onPick: (c: string | null) => void;
+}) {
+  // Subscribe to the module-scoped store rather than taking `value`
+  // via props — that lets the parent's mainMenuNode memo stay stable
+  // across customBg changes (touching that memo re-attaches MM's own
+  // subscribers and triggers an infinite-update loop).
+  const value = useSyncExternalStore(
+    customBgStore.subscribe,
+    customBgStore.getSnapshot,
+    customBgStore.getServerSnapshot,
+  );
+  // Debounce native color-input drag → avoid re-rendering MainMenu on
+  // every pixel of hue slider movement.
+  const pickerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onColorInput = useCallback((next: string) => {
+    if (pickerTimer.current) clearTimeout(pickerTimer.current);
+    pickerTimer.current = setTimeout(() => onPick(next), 80);
+  }, [onPick]);
+  return (
+    <div style={{ padding: "2px 8px 6px" }}>
+      <div className="dropdown-menu-group-title" style={{ margin: "6px 0 4px", fontSize: 14, fontWeight: 500, color: "var(--color-on-surface)", opacity: 0.7 }}>
+        {label}
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4, 1.625rem)",
+          gap: 6,
+          justifyContent: "start",
+        }}
+      >
+        {swatches.map((c) => {
+          const isActive = value === c.value;
+          const isClear = c.value === null;
+          return (
+            <button
+              key={c.value ?? "clear"}
+              type="button"
+              title={c.title}
+              aria-pressed={isActive}
+              onClick={() => onPick(c.value)}
+              className={`color-picker__button${isActive ? " active" : ""}${isClear ? " is-transparent" : ""}`}
+              style={{
+                // Cancel Excalidraw's dark-mode invert so the swatch
+                // shows the literal color we'll paint on the wrapper.
+                filter: "none",
+                ...(isClear ? {} : { ["--swatch-color" as string]: c.value } as React.CSSProperties),
+              }}
+            >
+              {isActive && <div className="color-picker__button-outline" style={{ filter: "none" }} />}
+            </button>
+          );
+        })}
+        <label
+          title="Pick any color"
+          className="color-picker__button"
+          style={{
+            cursor: "pointer",
+            display: "inline-grid", placeItems: "center",
+            borderStyle: "dashed",
+            background: "conic-gradient(from 0deg, #ff4136, #ffdc00, #2ecc40, #0074d9, #b10dc9, #ff4136)",
+            filter: "none",
+          }}
+        >
+          <input
+            type="color"
+            defaultValue={value ?? "#ffffff"}
+            onInput={(e) => onColorInput((e.target as HTMLInputElement).value)}
+            onChange={(e) => onColorInput((e.target as HTMLInputElement).value)}
+            style={{ opacity: 0, width: 0, height: 0, position: "absolute" }}
+          />
+        </label>
+      </div>
+    </div>
+  );
+}
+
 function SidebarRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div
-      style={{
-        display: "flex", alignItems: "center", gap: 8, padding: "6px 10px",
-        fontSize: 12, color: "var(--text-primary-color)",
-      }}
-    >
-      <span style={{ minWidth: 48, opacity: 0.75 }}>{label}</span>
-      <div style={{ display: "inline-flex", gap: 4 }}>{children}</div>
+    <div style={{ padding: "2px 8px 6px" }}>
+      <div className="dropdown-menu-group-title" style={{ margin: "6px 0 4px", fontSize: 14, fontWeight: 500, color: "var(--color-on-surface)", opacity: 0.7 }}>
+        {label}
+      </div>
+      <div style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -1848,14 +2481,15 @@ function SidebarIconBtn({
       onClick={onClick}
       style={{
         display: "inline-flex", alignItems: "center", justifyContent: "center",
-        width: 28, height: 28, borderRadius: 8,
-        border: "1px solid var(--button-bg, color-mix(in oklab, var(--foreground) 10%, transparent))",
+        width: "1.625rem", height: "1.625rem", borderRadius: "0.5rem",
+        border: "none",
         background: active
           ? "var(--color-primary-light, color-mix(in oklab, var(--color-primary, #6965db) 22%, transparent))"
-          : "var(--island-bg-color, transparent)",
-        color: active ? "var(--color-primary, #6965db)" : "var(--text-primary-color, currentColor)",
+          : "transparent",
+        color: active ? "var(--color-primary, #6965db)" : "var(--color-on-surface, currentColor)",
         cursor: "pointer",
-        transition: "background 120ms ease, border-color 120ms ease, color 120ms ease",
+        padding: 0,
+        transition: "background 120ms ease, color 120ms ease",
       }}
       onMouseEnter={(e) => {
         if (active) return;
@@ -1864,8 +2498,7 @@ function SidebarIconBtn({
       }}
       onMouseLeave={(e) => {
         if (active) return;
-        (e.currentTarget as HTMLButtonElement).style.background =
-          "var(--island-bg-color, transparent)";
+        (e.currentTarget as HTMLButtonElement).style.background = "transparent";
       }}
     >
       {children}
@@ -1893,11 +2526,16 @@ function drawPaperPattern(
   h: number,
   mode: PaperMode,
   scale: number,
+  bgColor?: string | null,
 ) {
   if (mode === "plain") return;
   ctx.save();
-  ctx.fillStyle = "rgba(27,27,31,0.32)";
-  ctx.strokeStyle = "rgba(27,27,31,0.32)";
+  // Contrast-aware stroke — dark on light paper, light on dark paper.
+  const ink = isLightHex(bgColor)
+    ? "rgba(27,27,31,0.42)"
+    : "rgba(255,255,255,0.55)";
+  ctx.fillStyle = ink;
+  ctx.strokeStyle = ink;
   if (mode === "grid") {
     const sz = 32 * scale;
     ctx.lineWidth = Math.max(1, scale);
@@ -1924,8 +2562,13 @@ function drawPaperPattern(
   }
   ctx.restore();
 }
-function pagePaperBackgroundCss(mode: PaperMode, zoom: number): React.CSSProperties {
-  const lineColor = "color-mix(in oklab, #1b1b1f 24%, transparent)";
+function pagePaperBackgroundCss(mode: PaperMode, zoom: number, bgColor?: string | null): React.CSSProperties {
+  // Pick pattern stroke color based on page background brightness so
+  // dots/lines stay visible regardless of paper color (dark dots on
+  // light paper, light dots on dark paper).
+  const lineColor = isLightHex(bgColor)
+    ? "rgba(20, 20, 24, 0.42)"
+    : "rgba(255, 255, 255, 0.55)";
   if (mode === "plain") return {};
   if (mode === "grid") {
     const sz = 32 * zoom;
@@ -1958,7 +2601,9 @@ export function BookPagesOverlay({ appState, pages, globalPaper }: { appState: R
     const top = bookPageTop(i);
     const p = pages[i];
     const eff = (!p.paper || p.paper === "inherit") ? globalPaper : p.paper;
-    const paperBg = pagePaperBackgroundCss(eff, zoom);
+    const pageBg = p.bgColor || "#ffffff";
+    const paperBg = pagePaperBackgroundCss(eff, zoom, pageBg);
+    const labelInk = isLightHex(pageBg) ? "#1b1b1f" : "rgba(255,255,255,0.85)";
     out.push(
       <div
         key={i}
@@ -1969,7 +2614,7 @@ export function BookPagesOverlay({ appState, pages, globalPaper }: { appState: R
           width: BOOK_PAGE_W * zoom,
           height: BOOK_PAGE_H * zoom,
           borderRadius: 4 * zoom,
-          background: "#ffffff",  // page is white paper, like GoodNotes.
+          background: pageBg,
           border: `${Math.max(1, 1.5 * zoom)}px solid rgba(255,255,255,0.85)`,
           boxShadow:
             "0 6px 18px rgba(0,0,0,0.45), 0 1px 2px rgba(0,0,0,0.4)",
@@ -1977,22 +2622,18 @@ export function BookPagesOverlay({ appState, pages, globalPaper }: { appState: R
           overflow: "hidden",
         }}
       >
-        {/* Per-page paper pattern (grid/dots/lines) — drawn on the
-            page surface, inherits scrolling via the parent's
-            translate. */}
         {(paperBg.backgroundImage as string | undefined) && (
           <div
             aria-hidden
-            style={{ position: "absolute", inset: 0, ...paperBg, opacity: 0.55, color: "#1b1b1f" }}
+            style={{ position: "absolute", inset: 0, ...paperBg, opacity: 0.9 }}
           />
         )}
-        {/* Page number badge */}
         <div
           style={{
             position: "absolute",
             top: 8 * zoom, right: 12 * zoom,
             fontSize: 11 * zoom, opacity: 0.5,
-            color: "#1b1b1f",
+            color: labelInk,
           }}
         >{i + 1}</div>
       </div>,
@@ -2006,7 +2647,7 @@ export function BookPagesOverlay({ appState, pages, globalPaper }: { appState: R
 }
 
 function PageListPopover({
-  page, pages, globalPaper, onJump, onDelete, onReorder, onSetPaper,
+  page, pages, globalPaper, onJump, onDelete, onReorder, onSetPaper, onSetBg,
 }: {
   page: number;
   pages: BookPageMeta[];
@@ -2015,6 +2656,7 @@ function PageListPopover({
   onDelete: (i: number) => void;
   onReorder: (from: number, to: number) => void;
   onSetPaper: (i: number, mode: PaperMode | "inherit") => void;
+  onSetBg: (i: number, color: string | null) => void;
 }) {
   const [dragFrom, setDragFrom] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState<number | null>(null);
@@ -2218,6 +2860,33 @@ function PageListPopover({
                 </div>
               )}
             </div>
+            <label
+              title={p.bgColor ? `Page color: ${p.bgColor} (right-click to clear)` : "Set page color"}
+              style={{
+                position: "relative",
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                width: 22, height: 22, borderRadius: 4,
+                border: "1px solid var(--default-border-color, rgba(255,255,255,0.1))",
+                background: p.bgColor || "transparent",
+                cursor: "pointer",
+                overflow: "hidden",
+              }}
+              onContextMenu={(e) => { e.preventDefault(); onSetBg(i, null); }}
+            >
+              {!p.bgColor && (
+                <span style={{ fontSize: 12, opacity: 0.55, lineHeight: 1 }}>🎨</span>
+              )}
+              <input
+                type="color"
+                value={p.bgColor || "#ffffff"}
+                onChange={(e) => onSetBg(i, e.currentTarget.value)}
+                style={{
+                  position: "absolute", inset: 0, opacity: 0,
+                  width: "100%", height: "100%", cursor: "pointer",
+                  border: "none", padding: 0,
+                }}
+              />
+            </label>
             <button
               onClick={() => onDelete(i)}
               disabled={pages.length <= 1}
@@ -2262,9 +2931,9 @@ function LayoutIcon({ mode }: { mode: "board" | "book" }) {
 // other. Anchored bottom-left when the frame strip is at center, so
 // they no longer stack on top of each other.
 export type PaperMode = "plain" | "grid" | "dots" | "lines";
-export type BookPageMeta = { paper?: PaperMode | "inherit" };
+export type BookPageMeta = { paper?: PaperMode | "inherit"; bgColor?: string | null };
 export function BookNavWidget({
-  page, pageCount, onPrev, onNext, onJump, onAddPage, onDeletePage, onReorder, onSetPagePaper, onExportPdf, onToggleOutline, outlineOpen, framePresenting, pages, globalPaper,
+  page, pageCount, onPrev, onNext, onJump, onAddPage, onDeletePage, onReorder, onSetPagePaper, onSetPageBg, onExportPdf, onToggleOutline, outlineOpen, framePresenting, pages, globalPaper,
 }: {
   page: number; pageCount: number;
   onPrev: () => void; onNext: () => void;
@@ -2273,6 +2942,7 @@ export function BookNavWidget({
   onDeletePage: (idx: number) => void;
   onReorder: (from: number, to: number) => void;
   onSetPagePaper: (idx: number, mode: PaperMode | "inherit") => void;
+  onSetPageBg: (idx: number, color: string | null) => void;
   onExportPdf: () => void;
   onToggleOutline: () => void;
   outlineOpen: boolean;
@@ -2308,6 +2978,7 @@ export function BookNavWidget({
             onDelete={onDeletePage}
             onReorder={onReorder}
             onSetPaper={onSetPagePaper}
+            onSetBg={onSetPageBg}
           />
         )}
       </div>
@@ -2318,6 +2989,45 @@ export function BookNavWidget({
       <button onClick={onAddPage} className="excal-present-btn" title="Add page">
         <Plus className="h-4 w-4" />
       </button>
+      <label
+        className="excal-present-btn"
+        title="Set color for all pages at once (right-click to clear all)"
+        style={{ position: "relative", cursor: "pointer", padding: 0, width: 32, height: 32, display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          pages.forEach((_, i) => onSetPageBg(i, null));
+        }}
+      >
+        <span
+          aria-hidden
+          style={{
+            display: "inline-block",
+            width: 16, height: 16,
+            borderRadius: 4,
+            border: "1px solid var(--default-border-color, rgba(255,255,255,0.18))",
+            background: (() => {
+              // Show current uniform color if all pages share one; otherwise multi-stripe.
+              const colors = pages.map((p) => p.bgColor || "#ffffff");
+              const uniform = colors.every((c) => c === colors[0]);
+              if (uniform) return colors[0];
+              return "linear-gradient(135deg, #ffffff 0 33%, #c4b5fd 33% 66%, #1f2937 66% 100%)";
+            })(),
+          }}
+        />
+        <input
+          type="color"
+          aria-label="Set color for all pages"
+          onChange={(e) => {
+            const c = e.currentTarget.value;
+            pages.forEach((_, i) => onSetPageBg(i, c));
+          }}
+          style={{
+            position: "absolute", inset: 0, opacity: 0,
+            width: "100%", height: "100%", cursor: "pointer",
+            border: "none", padding: 0,
+          }}
+        />
+      </label>
       <button onClick={onToggleOutline} className={`excal-present-btn ${outlineOpen ? "is-active" : ""}`} title="Outline (text per page)">
         <BookOpen className="h-4 w-4" />
       </button>
@@ -2524,10 +3234,11 @@ function PaperModeIcon({ mode }: { mode: "plain" | "grid" | "dots" | "lines" }) 
 }
 
 export function PaperBackdrop({
-  mode, appState,
+  mode, appState, bgColor,
 }: {
   mode: "grid" | "dots" | "lines";
   appState: Record<string, unknown>;
+  bgColor?: string | null;
 }) {
   const s = appState as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
   const zoom = s.zoom?.value ?? 1;
@@ -2544,10 +3255,14 @@ export function PaperBackdrop({
     zIndex: 0,
     opacity: 0.85,
   };
-  // Tailwind tokens via CSS vars defined in globals.css. Bumped to 32%
-  // mix so the pattern stays readable through Excalidraw's translucent
-  // canvas layers on iPad's lower-contrast viewing angle.
-  const lineColor = "color-mix(in oklab, var(--foreground) 32%, transparent)";
+  // Auto-flip pattern stroke based on wrapper bg brightness so dots
+  // stay visible on both cream/sand light bgs and forest/charcoal
+  // darks. Falls back to `--foreground` token when no explicit bg is
+  // set (the theme handles contrast itself).
+  const isLight = isLightHex(bgColor);
+  const lineColor = bgColor
+    ? (isLight ? "rgba(20, 20, 24, 0.45)" : "rgba(255, 255, 255, 0.45)")
+    : "color-mix(in oklab, var(--foreground) 32%, transparent)";
   if (mode === "grid") {
     const sz = baseGrid * zoom;
     style.backgroundImage = `linear-gradient(to right, ${lineColor} 1px, transparent 1px), linear-gradient(to bottom, ${lineColor} 1px, transparent 1px)`;
@@ -2569,6 +3284,21 @@ export function PaperBackdrop({
 
 function clampNum(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
+}
+
+// Cheap luminance check for #rrggbb / #rgb. Returns true when the
+// color reads "light" so PaperBackdrop can flip its stroke to dark.
+function isLightHex(c?: string | null): boolean {
+  if (!c || typeof c !== "string") return true;
+  let hex = c.trim().replace(/^#/, "");
+  if (hex.length === 3) hex = hex.split("").map((x) => x + x).join("");
+  if (hex.length !== 6) return true;
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return true;
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.55;
 }
 
 // Inject free-range sliders into Excalidraw's right-side properties
@@ -2800,6 +3530,22 @@ const TEMPLATE_ICONS: Record<TemplateKey, React.ReactNode> = {
   stride:        <Shield className="h-4 w-4" />,
   retro4ls:      <Grid2x2 className="h-4 w-4" />,
   sprint:        <Columns3 className="h-4 w-4" />,
+  mathgrid:      <Sigma className="h-4 w-4" />,
+  mathplot:      <LineChart className="h-4 w-4" />,
+  mathproof:     <Triangle className="h-4 w-4" />,
+  mathfrac:      <PieChart className="h-4 w-4" />,
+  k8s:           <Cloud className="h-4 w-4" />,
+  docker:        <Container className="h-4 w-4" />,
+  registry:      <Package className="h-4 w-4" />,
+  monitor:       <Activity className="h-4 w-4" />,
+  wireframe:     <Layout className="h-4 w-4" />,
+  form:          <FormInput className="h-4 w-4" />,
+  cardgrid:      <LayoutGrid className="h-4 w-4" />,
+  modal:         <MessageSquare className="h-4 w-4" />,
+  hexarch:       <Hexagon className="h-4 w-4" />,
+  eventstorm:    <Workflow className="h-4 w-4" />,
+  layered:       <Layers className="h-4 w-4" />,
+  erext:         <Database className="h-4 w-4" />,
 };
 function TemplateGrid({ onTemplate }: { onTemplate: (k: TemplateKey) => void }) {
   const cats: Array<{ key: string; title: string }> = [
@@ -2809,6 +3555,10 @@ function TemplateGrid({ onTemplate }: { onTemplate: (k: TemplateKey) => void }) 
     { key: "process", title: "Process" },
     { key: "security", title: "Security" },
     { key: "team", title: "Team" },
+    { key: "math", title: "Math" },
+    { key: "devops", title: "DevOps" },
+    { key: "webui", title: "Web UI" },
+    { key: "diagrams", title: "Diagrams+" },
   ];
   return (
     <>

@@ -1747,3 +1747,189 @@ html.sketch-fullscreen .ambient-bg { display: none !important; }
   right: 0;
   min-width: 200px;
 }
+
+/* Library filter bar — injected as the FIRST child of .library-menu
+   so the tab strip sits ABOVE "Personal Library" + the 3-dots menu.
+   Centered, full-width row with ToolIcon-style category buttons. */
+.sklib-filterbar-host {
+  display: block;
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid var(--default-border-color, rgba(0,0,0,0.08));
+  margin-bottom: 6px;
+  position: relative;
+  z-index: 2;
+  background: var(--island-bg-color, transparent);
+}
+.sklib-filterbar::before {
+  /* Visual separator before the import (+) button. Drawn via a pseudo
+     element on the bar so the separator doesn't interfere with the
+     trigger button's hover/active rounded corners. */
+  content: none;
+}
+.sklib-import-toggle {
+  margin-left: 4px;
+  position: relative;
+}
+.sklib-import-toggle::before {
+  content: "";
+  position: absolute;
+  left: -4px;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--default-border-color, rgba(0,0,0,0.12));
+}
+/* Hide the "Excalidraw Library" section when empty. The "No items
+   added yet" div has no class — only inline styles — so we identify
+   the empty state by the absence of a sibling `.library-menu-items-container__grid`. */
+.excalidraw .library-menu-items-container__header--excal:not(:has(+ .library-menu-items-container__grid)) {
+  display: none !important;
+}
+.excalidraw .library-menu-items-container__header--excal + div:not(.library-menu-items-container__grid) {
+  display: none !important;
+}
+
+/* Excalidraw positions the 3-dots dropdown absolute top:1rem,
+   right:.75rem inside `.layer-ui__library` and that selector beats a
+   single-class override. Push it down past our filter bar (host ~50px
+   tall) so it lands inline with "Personal Library" instead of over
+   the tab icons. */
+.excalidraw .layer-ui__library .library-menu-dropdown-container--in-heading {
+  top: 64px !important;
+}
+.sklib-filterbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.sklib-filterbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--border-radius-md, 8px);
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  color: var(--icon-fill-color, var(--text-primary-color, inherit));
+  opacity: 0.78;
+  transition: background-color 120ms ease, border-color 120ms ease, opacity 120ms ease, color 120ms ease;
+}
+.sklib-filterbtn:hover {
+  background: var(--button-hover-bg, rgba(105,101,219,0.08));
+  opacity: 1;
+}
+.sklib-filterbtn[data-active="1"] {
+  background: var(--color-surface-primary-container, rgba(105,101,219,0.18));
+  color: var(--color-on-primary-container, var(--color-primary, #6965db));
+  opacity: 1;
+}
+.sklib-fi {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.75;
+}
+.sklib-importrow {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  align-items: center;
+}
+.sklib-importinput {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--default-border-color, rgba(0,0,0,0.18));
+  background: var(--input-bg-color, var(--island-bg-color, #fff));
+  color: var(--text-primary-color, inherit);
+}
+.sklib-importinput:focus {
+  outline: none;
+  border-color: var(--color-primary, #6965db);
+}
+.sklib-importgo {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid var(--color-primary, #6965db);
+  background: var(--color-primary, #6965db);
+  color: #fff;
+  cursor: pointer;
+}
+.sklib-importgo:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ─── Stamp library sidebar (custom Excalidraw <Sidebar name="lib-tabs">) ─── */
+/* Uses Excalidraw's own CSS vars so the panel looks native in both themes. */
+.sklib-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--color-primary, #6965db);
+  padding: 4px 0;
+}
+.sklib-empty {
+  padding: 16px;
+  font-size: 13px;
+  color: var(--text-primary-color, #1b1b1f);
+  opacity: 0.55;
+  text-align: center;
+}
+.sklib-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 8px;
+  overflow-y: auto;
+}
+.sklib-tile {
+  aspect-ratio: 1 / 1;
+  display: grid;
+  place-items: center;
+  padding: 6px;
+  background: var(--island-bg-color, #ffffff);
+  border: 1px solid var(--default-border-color, rgba(0,0,0,0.08));
+  border-radius: var(--border-radius-md, 8px);
+  cursor: grab;
+  transition: transform 100ms ease, background-color 100ms ease, border-color 100ms ease;
+  overflow: hidden;
+}
+.sklib-tile:hover {
+  background: var(--button-hover-bg, rgba(105,101,219,0.08));
+  border-color: var(--color-primary, #6965db);
+  transform: translateY(-1px);
+}
+.sklib-tile:active { cursor: grabbing; transform: translateY(0); }
+.sklib-thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.sklib-thumb svg {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+.sklib-skel {
+  display: block;
+  width: 60%;
+  height: 60%;
+  border-radius: 6px;
+  background: linear-gradient(90deg, transparent 0%, rgba(127,127,127,0.18) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: sklib-shimmer 1.2s linear infinite;
+}
+@keyframes sklib-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}

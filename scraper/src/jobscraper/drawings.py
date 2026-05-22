@@ -173,7 +173,7 @@ def save(name: str, data: dict[str, Any]) -> None:
     # laptop-authored paper template + book layout on every autosave.
     # Backstop here so any client that forgets these fields doesn't
     # destroy them.
-    for key in ("layoutMode", "paperMode", "bookPages", "bookPageCount"):
+    for key in ("layoutMode", "paperMode", "bookPages", "bookPageCount", "canvasBg"):
         if key not in merged and key in existing_doc:
             merged[key] = existing_doc[key]
 
