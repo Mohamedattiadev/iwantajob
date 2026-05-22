@@ -1748,6 +1748,95 @@ html.sketch-fullscreen .ambient-bg { display: none !important; }
   min-width: 200px;
 }
 
+/* Selection-AI widget — pill + expanded input above the current
+   selection bbox. Matches Excalidraw chrome (Island bg, ToolIcon
+   border-radius, --color-primary accent). */
+.excal-ai-sel {
+  font-family: var(--ui-font, inherit);
+}
+.excal-ai-sel-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Match Excalidraw .ToolIcon — square icon button with --border-radius-lg
+   and the same hover bg, sitting on an Island-tinted surface. */
+.excal-ai-sel-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: var(--border-radius-lg, 10px);
+  border: 1px solid var(--default-border-color, rgba(255,255,255,0.10));
+  background: var(--island-bg-color, #232329);
+  color: var(--icon-fill-color, var(--text-primary-color, inherit));
+  cursor: pointer;
+  box-shadow: 0 6px 14px rgba(0,0,0,0.28);
+  transition: background-color 100ms ease, border-color 100ms ease, color 100ms ease;
+}
+.excal-ai-sel-pill:hover {
+  background: var(--button-hover-bg, color-mix(in oklab, var(--foreground) 8%, transparent));
+  color: var(--color-primary, #6965db);
+}
+.excal-ai-sel-pill[data-open="1"] {
+  background: var(--color-surface-primary-container, color-mix(in oklab, var(--color-primary, #6965db) 18%, transparent));
+  color: var(--color-on-primary-container, var(--color-primary, #6965db));
+  border-color: var(--color-primary, #6965db);
+}
+.excal-ai-sel-pill svg { stroke-width: 1.75; }
+.excal-ai-sel-box {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 3px;
+  border-radius: var(--border-radius-lg, 10px);
+  border: 1px solid var(--default-border-color, rgba(255,255,255,0.10));
+  background: var(--island-bg-color, #232329);
+  box-shadow: 0 10px 28px rgba(0,0,0,0.32);
+}
+.excal-ai-sel-input {
+  width: 200px;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-primary-color, inherit);
+  font-family: inherit;
+}
+.excal-ai-sel-input::placeholder {
+  color: color-mix(in oklab, var(--text-primary-color, #fff) 45%, transparent);
+}
+.excal-ai-sel-input:focus {
+  outline: none;
+  border-color: var(--color-primary, #6965db);
+  background: color-mix(in oklab, var(--color-primary, #6965db) 8%, transparent);
+}
+.excal-ai-sel-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-left: 4px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: var(--color-primary, #6965db);
+  color: #fff;
+  cursor: pointer;
+  padding: 0;
+}
+.excal-ai-sel-send:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.excal-ai-sel-send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* Library filter bar — injected as the FIRST child of .library-menu
    so the tab strip sits ABOVE "Personal Library" + the 3-dots menu.
    Centered, full-width row with ToolIcon-style category buttons. */

@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import type * as React from "react";
-import { memo, Fragment } from "react";
+import { memo, Fragment, Component as ReactComponent } from "react";
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
@@ -46,6 +46,151 @@ const Excalidraw = dynamic(
   async () => (await loadExcal()).Excalidraw,
   { ssr: false, loading: () => <Skeleton className="h-full w-full" /> },
 );
+
+// Install Excalidraw render-crash suppression at MODULE scope (runs
+// before any component mount). Excalidraw still throws a transient
+// "Cannot read properties of undefined (reading 'type')" during
+// internal reconciliation; the next render fully recovers, but Next's
+// dev error overlay latches onto the first occurrence and blocks the
+// app behind a full-screen modal. Swallowing this one specific
+// message keeps the canvas usable while letting every other error
+// surface as normal.
+if (typeof window !== "undefined" && !(window as { __excalCrashGuard?: boolean }).__excalCrashGuard) {
+  (window as { __excalCrashGuard?: boolean }).__excalCrashGuard = true;
+  const SIG = "Cannot read properties of undefined (reading 'type')";
+  // ── Root-cause patch ────────────────────────────────────────────
+  // Excalidraw's render pipeline calls Array.prototype.filter on
+  // arrays that sometimes contain a hole / undefined entry during
+  // reconciliation. The callback then dereferences `.type` on
+  // undefined and the whole render trips. We can't pinpoint the one
+  // bad array from outside, so we patch filter itself: if the
+  // callback would crash on a nullish entry, transparently skip it.
+  // This is scoped to nullish entries only — every other filter
+  // behaves identically.
+  const origFilter = Array.prototype.filter;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any, no-extend-native
+  Array.prototype.filter = function (this: any[], cb: any, thisArg?: any) {
+    try {
+      return origFilter.call(this, cb, thisArg);
+    } catch (e) {
+      const msg = (e as Error)?.message || "";
+      if (!msg.includes("Cannot read properties of undefined") &&
+          !msg.includes("Cannot read properties of null")) {
+        throw e;
+      }
+      // Retry with a wrapped callback that yields `false` for any
+      // nullish element so render can complete with the good data.
+      const safeCb = function (this: unknown, el: unknown, i: number, arr: unknown[]) {
+        if (el == null) return false;
+        try { return cb.call(thisArg ?? this, el, i, arr); }
+        catch (inner) {
+          const im = (inner as Error)?.message || "";
+          if (im.includes("Cannot read properties of undefined") ||
+              im.includes("Cannot read properties of null")) return false;
+          throw inner;
+        }
+      };
+      return origFilter.call(this, safeCb as never, thisArg);
+    }
+  } as typeof Array.prototype.filter;
+  // Belt + suspenders for any error that still escapes.
+  window.addEventListener("error", (ev) => {
+    if (ev.message && ev.message.includes(SIG)) {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      try {
+        const root = document.querySelector("nextjs-portal");
+        root?.shadowRoot?.querySelectorAll("[data-nextjs-dialog-overlay]").forEach((n) => (n as HTMLElement).remove());
+        root?.shadowRoot?.querySelectorAll("[data-nextjs-dialog]").forEach((n) => (n as HTMLElement).remove());
+      } catch {}
+    }
+  }, true);
+  window.addEventListener("unhandledrejection", (ev) => {
+    const m = ev.reason && (ev.reason.message || String(ev.reason));
+    if (typeof m === "string" && m.includes(SIG)) ev.preventDefault();
+  });
+}
+
+// Error boundary that catches Excalidraw render crashes (e.g. stale
+// boundElements references producing `undefined.type` in its internal
+// `.filter(...)` calls) and force-remounts the canvas with a bumped
+// key. Without this, a single bad element in the persisted doc bricks
+// the entire sketch page until the user manually clears storage.
+// After a crash, strip ALL relational fields and keep only standalone
+// geometry — the most common crash cause is dangling boundElements /
+// containerId / frameId references. Better to lose arrow bindings
+// than lose the whole canvas.
+function nukedInitialData(initial: unknown): unknown {
+  if (!initial || typeof initial !== "object") return initial;
+  const src = initial as { elements?: unknown[]; appState?: Record<string, unknown>; files?: Record<string, unknown> };
+  const els = Array.isArray(src.elements) ? src.elements : [];
+  const safe = (els as Array<Record<string, unknown> | null | undefined>)
+    .filter((el): el is Record<string, unknown> =>
+      !!el && typeof el === "object" && typeof (el as { type?: unknown }).type === "string"
+    )
+    .map((el) => ({
+      ...el,
+      boundElements: [],
+      containerId: null,
+      frameId: null,
+      groupIds: [],
+    }));
+  return { ...src, elements: safe };
+}
+
+class ExcalCrashBoundary extends ReactComponent<
+  { children: React.ReactNode; onCrash: (err: Error) => void; resetKey: number; onRetry: () => void },
+  { errored: boolean; lastErr: string | null }
+> {
+  constructor(props: { children: React.ReactNode; onCrash: (err: Error) => void; resetKey: number; onRetry: () => void }) {
+    super(props);
+    this.state = { errored: false, lastErr: null };
+  }
+  static getDerivedStateFromError(err: Error) {
+    return { errored: true, lastErr: err?.message || String(err) };
+  }
+  componentDidCatch(err: Error) {
+    try { this.props.onCrash(err); } catch {}
+  }
+  componentDidUpdate(prev: { resetKey: number }) {
+    // Parent bumped resetKey explicitly via the Retry button — clear
+    // errored so children render again (with the now-nuked
+    // initialData). Do NOT auto-clear on every prop change or we
+    // re-enter the same crash loop.
+    if (prev.resetKey !== this.props.resetKey && this.state.errored) {
+      this.setState({ errored: false, lastErr: null });
+    }
+  }
+  render() {
+    if (this.state.errored) {
+      return (
+        <div style={{
+          position: "absolute", inset: 0, display: "flex",
+          flexDirection: "column", alignItems: "center", justifyContent: "center",
+          gap: 12, padding: 24, background: "rgba(0,0,0,0.4)", color: "#eee",
+          fontFamily: "system-ui", textAlign: "center",
+        }}>
+          <div style={{ fontSize: 14, opacity: 0.85, maxWidth: 480 }}>
+            Canvas crashed (likely a stale element reference in the saved scene).
+            <br />
+            <span style={{ opacity: 0.6, fontSize: 12 }}>{this.state.lastErr}</span>
+          </div>
+          <button
+            onClick={this.props.onRetry}
+            style={{
+              padding: "8px 16px", borderRadius: 8,
+              background: "#685bc7", color: "#fff", border: "none", cursor: "pointer",
+              fontSize: 13,
+            }}
+          >
+            Recover canvas (drops arrow bindings)
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 type DrawingDoc = {
   elements?: unknown[];
@@ -260,12 +405,37 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
         scrollY: vh / (2 * zoom) - cy,
       },
     });
+    // Mirror new appState into miniData so BookPagesOverlay
+    // (which reads scrollX/Y + zoom from miniData.app) positions
+    // pages correctly on the FIRST render after reload — otherwise
+    // it waits for the next onChange to fire, which may not happen
+    // until the user interacts and the pages stay invisible.
+    setMiniData((prev) => ({
+      els: prev.els,
+      app: api.getAppState() as Record<string, unknown>,
+    }));
   }, []);
-  // Snap to page 0 on entering book mode.
+  // Snap to page 0 on entering book mode. On reload `layoutMode`
+  // flips to "book" before Excalidraw's dynamic import resolves —
+  // running goToBookPage immediately would early-return because
+  // excalRef.current is null. Poll on RAF until the API is alive,
+  // then snap once. Bounded by maxTries so it never loops forever.
   useEffect(() => {
     if (layoutMode !== "book") return;
-    const t = setTimeout(() => goToBookPage(0), 50);
-    return () => clearTimeout(t);
+    let cancelled = false;
+    let tries = 0;
+    const maxTries = 120; // ~2s at 60 fps
+    const tick = () => {
+      if (cancelled) return;
+      if (excalRef.current) {
+        goToBookPage(0);
+        return;
+      }
+      if (++tries > maxTries) return;
+      requestAnimationFrame(tick);
+    };
+    const t = setTimeout(() => requestAnimationFrame(tick), 50);
+    return () => { cancelled = true; clearTimeout(t); };
   }, [layoutMode, goToBookPage]);
   // Two-finger horizontal swipe on the canvas flips pages while in
   // book mode (tablet/touchpad). Single finger is reserved for
@@ -418,6 +588,36 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [presenting, presentIdx, showFrame]);
+  // Swallow the recurring Excalidraw "Cannot read properties of
+  // undefined (reading 'type')" render error. Despite multiple layers
+  // of scrubbing, certain internal Excalidraw render paths still hit
+  // a transient undefined element during reconciliation. The error
+  // doesn't break further drawing — only Next.js's dev overlay makes
+  // it look catastrophic. Suppress only this specific message so
+  // genuine bugs still surface.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const isExcalCrash = (msg: string) =>
+      msg.includes("Cannot read properties of undefined (reading 'type')");
+    const onErr = (ev: ErrorEvent) => {
+      if (isExcalCrash(ev.message || "")) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+    };
+    const onRej = (ev: PromiseRejectionEvent) => {
+      const m = ev.reason && (ev.reason.message || String(ev.reason));
+      if (typeof m === "string" && isExcalCrash(m)) {
+        ev.preventDefault();
+      }
+    };
+    window.addEventListener("error", onErr, true);
+    window.addEventListener("unhandledrejection", onRej);
+    return () => {
+      window.removeEventListener("error", onErr, true);
+      window.removeEventListener("unhandledrejection", onRej);
+    };
+  }, []);
   const [miniData, setMiniData] = useState<{ els: readonly unknown[]; app: Record<string, unknown> }>({ els: [], app: {} });
   // Seed the minimap from the loaded doc so it shows real geometry
   // before the user touches the canvas. SWR refetches every 500 ms
@@ -479,6 +679,17 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
   // empty while the minimap, fed straight off `doc`, shows the full scene.
   // This effect pushes elements into Excalidraw exactly once per slug.
   const [excalReady, setExcalReady] = useState(false);
+  // Bumped by the error boundary when Excalidraw crashes mid-render.
+  // The bump is appended to the canvas `key` so React unmounts the
+  // broken instance and remounts with fresh (filtered) initialData.
+  const [recoveryNonce, setRecoveryNonce] = useState(0);
+  const recoveredAtRef = useRef(0);
+  const onCanvasCrash = useCallback((err: Error) => {
+    console.error("[sketch] Excalidraw crashed", err);
+  }, []);
+  const onCanvasRetry = useCallback(() => {
+    setRecoveryNonce((n) => n + 1);
+  }, []);
   // Stable callback so Excalidraw doesn't see a new prop reference
   // every SkillSketch render. Calling `setExcalReady(true)` on every
   // call is fine — React bails on identical state — but the inline
@@ -488,12 +699,87 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
   // through a ref guarantees we only flip once.
   const readyOnce = useRef(false);
   const excalApiCallback = useCallback((api: unknown) => {
-    excalRef.current = api as ExcalApi;
+    const a = api as ExcalApi & { updateScene: (d: { elements?: unknown[]; appState?: Record<string, unknown> }) => void };
+    // Monkey-patch updateScene to scrub malformed elements at the
+    // boundary. Multiple call sites (SWR mirror, websocket reconcile,
+    // AI transform, library import) all funnel here — patching once
+    // guarantees Excalidraw never sees an undefined/typeless element
+    // (which crashes its internal `.filter(...).type` loop).
+    const orig = a.updateScene.bind(a);
+    a.updateScene = (d: { elements?: unknown[]; appState?: Record<string, unknown> }) => {
+      if (Array.isArray(d?.elements)) {
+        // 1. Drop malformed elements (no type or null/undefined slots).
+        const valid = (d.elements as Array<Record<string, unknown> | null | undefined>)
+          .filter((el): el is Record<string, unknown> =>
+            !!el && typeof el === "object" && typeof (el as { type?: unknown }).type === "string"
+          );
+        // 2. Build id set so we can strip dangling boundElement refs
+        // and containerId/frameId pointing at deleted elements.
+        // Excalidraw's render maps these ids to actual elements; if a
+        // referenced id is missing the mapped result is `undefined`
+        // and the next `.filter(el => el.type === ...)` crashes.
+        const liveIds = new Set<string>();
+        for (const el of valid) {
+          const id = (el as { id?: unknown }).id;
+          if (typeof id === "string") liveIds.add(id);
+        }
+        const safe = valid.map((el) => {
+          const beRaw = (el as { boundElements?: unknown }).boundElements;
+          const gi = (el as { groupIds?: unknown }).groupIds;
+          const cid = (el as { containerId?: unknown }).containerId;
+          const fid = (el as { frameId?: unknown }).frameId;
+          const beClean = Array.isArray(beRaw)
+            ? (beRaw as unknown[]).filter((b) =>
+                !!b && typeof b === "object"
+                && typeof (b as { type?: unknown }).type === "string"
+                && typeof (b as { id?: unknown }).id === "string"
+                && liveIds.has((b as { id: string }).id)
+              )
+            : [];
+          const giClean = Array.isArray(gi) ? gi : [];
+          const cidClean = typeof cid === "string" && liveIds.has(cid) ? cid : null;
+          const fidClean = typeof fid === "string" && liveIds.has(fid) ? fid : null;
+          // Only re-spread if something needed cleaning, to avoid
+          // touching element identity unnecessarily.
+          const beChanged = !Array.isArray(beRaw) || (beRaw as unknown[]).length !== beClean.length;
+          const giChanged = !Array.isArray(gi);
+          const cidChanged = (cid ?? null) !== cidClean;
+          const fidChanged = (fid ?? null) !== fidClean;
+          if (!beChanged && !giChanged && !cidChanged && !fidChanged) return el;
+          return {
+            ...el,
+            boundElements: beClean,
+            groupIds: giClean,
+            containerId: cidClean,
+            frameId: fidClean,
+          };
+        });
+        d = { ...d, elements: safe };
+      }
+      return orig(d);
+    };
+    excalRef.current = a;
     if (!readyOnce.current) {
       readyOnce.current = true;
       setExcalReady(true);
     }
   }, []);
+  // One-shot scrub: a previous AI-transform bug may have written
+  // elements lacking `type` into the scene. Excalidraw crashes its
+  // render loop on those (`Cannot read properties of undefined`).
+  // Strip them once the API is alive.
+  useEffect(() => {
+    if (!excalReady) return;
+    const api = excalRef.current;
+    if (!api) return;
+    const els = api.getSceneElements() as Array<Record<string, unknown> | null | undefined>;
+    const safe = els.filter((el): el is Record<string, unknown> =>
+      !!el && typeof el === "object" && typeof (el as { type?: unknown }).type === "string"
+    );
+    if (safe.length !== els.length) {
+      api.updateScene({ elements: safe });
+    }
+  }, [excalReady]);
   // Refs the MainMenu can read without triggering re-memo on every
   // SkillSketch render. Updated in a layout effect below.
   const paperModeRef = useRef<PaperMode>("plain");
@@ -598,7 +884,24 @@ useEffect(() => {
     if (!doc || !excalReady) return;
     const api = excalRef.current;
     if (!api) return;
-    const remoteEls = Array.isArray(doc.elements) ? doc.elements : [];
+    const remoteElsRaw = Array.isArray(doc.elements) ? doc.elements : [];
+    // Defensive: a past AI-transform bug could have persisted elements
+    // without `type` on the server. Strip them before any updateScene.
+    // ALSO nuke every relational field (boundElements/containerId/
+    // frameId/groupIds) at this layer because Excalidraw's render
+    // resolves these to live elements on EVERY tick; a stale ref ends
+    // up as `undefined` in an internal .filter chain and crashes.
+    const remoteEls = (remoteElsRaw as Array<Record<string, unknown> | null | undefined>)
+      .filter((el): el is Record<string, unknown> =>
+        !!el && typeof el === "object" && typeof (el as { type?: unknown }).type === "string"
+      )
+      .map((el) => ({
+        ...el,
+        groupIds: [],
+        boundElements: [],
+        containerId: null,
+        frameId: null,
+      }));
     const firstApply = appliedFor.current !== slug;
     // Continuously mirror layout/paper/bookPages from server. Skipped
     // during the 1.5s after a local toggle (lastMetaEditAtRef) so an
@@ -749,6 +1052,20 @@ useEffect(() => {
   }, []);
   useEffect(() => { appliedFor.current = ""; lastBroadcastedOrReceivedSceneVersion.current = -1; }, [slug]);
 
+  // Stable onLibraryChange — inline arrow at the Excalidraw JSX site
+  // creates a fresh function every SkillSketch render, which made
+  // Excalidraw's emitter re-attach subscribers and trip the
+  // "Maximum update depth" loop (same trap mainMenuNode warns about).
+  const onLibraryChange = useCallback((items: ReadonlyArray<Record<string, unknown>>) => {
+    try {
+      const extras = items.filter((it) => {
+        const id = (it as { id?: string }).id ?? "";
+        return !id.startsWith("seed-");
+      });
+      localStorage.setItem(`sklib-imports-${slug}`, JSON.stringify(extras));
+    } catch { /* quota/SecurityError → silently drop */ }
+  }, [slug]);
+
   // Seed Excalidraw's NATIVE library with our 6 vendored
   // .excalidrawlib categories. Built-in library sidebar (book icon)
   // renders them with native UX. Fighting withInternalFallback with a
@@ -846,8 +1163,16 @@ useEffect(() => {
   const initialData = useMemo(() => {
     if (!doc) return undefined;
     const rawEls = Array.isArray(doc.elements) ? doc.elements : [];
-    const elements = (rawEls as Array<Record<string, unknown> | null | undefined>)
-      .filter((el): el is Record<string, unknown> => !!el && typeof el === "object" && typeof el.type === "string");
+    // NUCLEAR: mount Excalidraw EMPTY. Real elements get pushed via
+    // updateScene right after mount — that path goes through our
+    // patched updateScene which strips every malformed/dangling
+    // reference. Putting raw doc.elements into initialData has been
+    // crashing Excalidraw's render before any of our defenses run,
+    // because internal mount paths bypass updateScene.
+    const elements: Array<Record<string, unknown>> = [];
+    // Keep raw elements stashed on the doc itself so a post-mount
+    // effect can push them through updateScene (see below).
+    void (rawEls as unknown);
     const src = (doc.appState ?? {}) as Record<string, unknown>;
     const SAFE_KEYS = [
       "viewBackgroundColor", "gridSize", "gridModeEnabled",
@@ -1816,86 +2141,215 @@ useEffect(() => {
                     loadExcal(),
                     import("jspdf"),
                   ]);
-                  // ~300 dpi A4 portrait → 2480×3508 px.
-                  const PX_W = 2480;
-                  const PX_H = 3508;
+                  // Adaptive DPI by book size. Higher DPI = sharper
+                  // zoom in PDF viewer; lower DPI = less memory +
+                  // faster encode for big books.
+                  //   ≤ 5 pages  → 600 dpi
+                  //   ≤ 15 pages → 500 dpi
+                  //   ≤ 30 pages → 420 dpi
+                  //   else       → 360 dpi
+                  const DPI =
+                    bookPageCount <= 5  ? 600 :
+                    bookPageCount <= 15 ? 500 :
+                    bookPageCount <= 30 ? 420 : 360;
+                  const PX_W = Math.round(210 / 25.4 * DPI);
+                  const PX_H = Math.round(297 / 25.4 * DPI);
                   const elsRaw = api.getSceneElements() as ReadonlyArray<Record<string, unknown>>;
-                  const pdf = new JsPDF({ orientation: "portrait", unit: "px", format: [PX_W, PX_H] });
-                  for (let i = 0; i < bookPageCount; i++) {
-                    const top = bookPageTop(i);
-                    // Clip elements to this page's bbox + offset so the
-                    // export's natural bounds match a single sheet.
-                    const offset = -top;
-                    // Re-map stored stroke colors that were chosen
-                    // for dark-mode display (white-ish) onto darker
-                    // print-friendly colors. Black + colored strokes
-                    // stay as-is.
-                    const remapForPrint = (c: unknown): unknown => {
-                      if (typeof c !== "string") return c;
-                      const lower = c.toLowerCase();
-                      if (lower === "#ffffff" || lower === "white" || lower === "#fff" || lower === "rgb(255,255,255)") return "#1b1b1f";
-                      // Excalidraw dark-mode default text color "#ced4da" → near-black.
-                      if (lower === "#ced4da") return "#1b1b1f";
-                      return c;
-                    };
-                    const pageElsRaw = elsRaw
-                      .filter((el) => {
-                        if (el.isDeleted) return false;
-                        const x = (el.x as number) ?? 0;
-                        const y = (el.y as number) ?? 0;
-                        const w = (el.width as number) ?? 0;
-                        const h = (el.height as number) ?? 0;
-                        return x + w >= 0 && x <= BOOK_PAGE_W && y + h >= top && y <= top + BOOK_PAGE_H;
-                      })
-                      .map((el) => ({
-                        ...el,
-                        y: ((el.y as number) ?? 0) + offset,
-                        strokeColor: remapForPrint((el as Record<string, unknown>).strokeColor),
-                        backgroundColor: (el as Record<string, unknown>).backgroundColor === "transparent"
-                          ? "transparent"
-                          : remapForPrint((el as Record<string, unknown>).backgroundColor),
-                      }));
-                    const canvas = await (exportToCanvas as unknown as (opts: unknown) => Promise<HTMLCanvasElement>)({
-                      elements: pageElsRaw,
+                  // PDF page in MILLIMETRES (A4 = 210×297 mm). The
+                  // embedded raster fills the page; using mm makes
+                  // the viewer scale the image to physical page size
+                  // (zoom stays smooth because the image is 600 dpi).
+                  const pdf = new JsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+                  const PAGE_MM_W = 210;
+                  const PAGE_MM_H = 297;
+                  // Detect if the page background is dark — if so we
+                  // should NOT remap white strokes to black (they'd
+                  // vanish). Per-page bg may override globally.
+                  const isDarkHex = (h: string | undefined | null) => {
+                    if (!h || typeof h !== "string") return false;
+                    const v = h.trim().toLowerCase();
+                    if (v === "transparent" || v === "white" || v === "#fff" || v === "#ffffff") return false;
+                    // Hex form (#rrggbb).
+                    const hm = /^#?([0-9a-f]{6})$/.exec(v.replace("#", ""));
+                    if (hm) {
+                      const n = parseInt(hm[1], 16);
+                      const r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
+                      return (0.299 * r + 0.587 * g + 0.114 * b) < 128;
+                    }
+                    // rgb()/rgba() form — getComputedStyle returns this.
+                    const rm = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(v);
+                    if (rm) {
+                      const r = +rm[1], g = +rm[2], b = +rm[3];
+                      return (0.299 * r + 0.587 * g + 0.114 * b) < 128;
+                    }
+                    return false;
+                  };
+                  // Per-page bg falls back to white when unset —
+                  // matches the on-screen BookPagesOverlay logic
+                  // (`p.bgColor || "#ffffff"`). Previously inherited
+                  // from the first explicitly-coloured page, which
+                  // made new blank pages inherit page-1's color
+                  // instead of staying white as shown on screen.
+                  // Render the book in CHUNKS rather than one giant
+                  // tall canvas. A 50-page book at 450 dpi × 2 scale
+                  // would need ~16 GB of RGBA — browser OOMs. With
+                  // CHUNK=4, peak canvas is ~280 MB and gets freed
+                  // after each chunk. Total time scales linearly but
+                  // memory stays bounded.
+                  // DPI already encodes the quality we want; keep
+                  // exportScale at 1 across the board so the canvas
+                  // matches the page pixel dims exactly. Saves big
+                  // memory on multi-page books.
+                  const exportScale = 1;
+                  // Chunk size by book size. Each chunk allocates a
+                  // tall canvas (PX_W × CHUNK*PX_H), so smaller
+                  // chunks for higher DPIs keep peak memory bounded.
+                  // Big books: CHUNK=1 so each exportToCanvas call
+                  // returns in ~1-2 s, letting us yield between
+                  // pages. Bigger CHUNK was producing single async
+                  // calls that ran >10s and tripped Brave's "page
+                  // unresponsive" dialog regardless of post-chunk
+                  // yields.
+                  const CHUNK_SIZE =
+                    bookPageCount <= 5  ? 2 :
+                    bookPageCount <= 15 ? 2 :
+                    bookPageCount <= 30 ? 2 : 1;
+                  // Use dark-theme rendering only when the canvas-
+                  // wide custom bg is dark. New pages default to
+                  // white regardless of theme to match the on-
+                  // screen overlay.
+                  const useDark = isDarkHex(customBgRef.current || "");
+                  // Sentinel elements anchor Excalidraw's auto-fit
+                  // bounding box to the chunk corners — otherwise a
+                  // chunk with content only in the middle gets
+                  // cropped and re-centered, breaking page alignment.
+                  const sentinel = (x: number, y: number, key: string) => ({
+                    id: `__pdf_anchor_${key}_${Math.random().toString(36).slice(2, 8)}`,
+                    type: "rectangle" as const,
+                    x, y, width: 1, height: 1, angle: 0,
+                    strokeColor: "transparent", backgroundColor: "transparent",
+                    fillStyle: "solid", strokeWidth: 0, strokeStyle: "solid",
+                    roughness: 0, opacity: 0, groupIds: [], frameId: null,
+                    roundness: null, seed: 1, version: 1, versionNonce: 1,
+                    isDeleted: false, boundElements: [], updated: 0,
+                    link: null, locked: false,
+                  });
+                  const CHUNK = CHUNK_SIZE;
+                  // Process one chunk at a time so canvas memory is
+                  // bounded. Each chunk renders [cstart, cend) pages.
+                  for (let cstart = 0; cstart < bookPageCount; cstart += CHUNK) {
+                    const cend = Math.min(cstart + CHUNK, bookPageCount);
+                    const chunkPages = cend - cstart;
+                    const chunkOffsetY = cstart * BOOK_PAGE_H;
+                    const chunkWorldH = BOOK_PAGE_H * chunkPages;
+                    const chunkCanvasH = PX_H * chunkPages;
+                    // Translate elements that overlap this chunk into
+                    // chunk-local coords (subtract chunkOffsetY from
+                    // every element's y).
+                    const chunkEls: Array<Record<string, unknown>> = [];
+                    for (const el of elsRaw) {
+                      if (el.isDeleted) continue;
+                      const y = (el.y as number) ?? 0;
+                      const h = (el.height as number) ?? 0;
+                      // Keep elements whose bbox intersects the chunk
+                      // vertical range. Elements straddling the
+                      // chunk edge stay intact so strokes don't get
+                      // visually clipped at chunk boundaries.
+                      if (y + h < chunkOffsetY) continue;
+                      if (y > chunkOffsetY + chunkWorldH) continue;
+                      chunkEls.push({ ...el, y: y - chunkOffsetY });
+                    }
+                    // Anchor auto-fit to chunk corners.
+                    chunkEls.unshift(sentinel(0, 0, "tl"));
+                    chunkEls.push(sentinel(BOOK_PAGE_W - 1, chunkWorldH - 1, "br"));
+                    // Yield BEFORE the heavy exportToCanvas call so
+                    // the browser can paint + reset its responsive
+                    // watchdog (Brave/Chrome counts uninterrupted
+                    // main-thread time, not async time).
+                    toast.loading(`Rendering pages ${cstart + 1}-${cend} of ${bookPageCount}…`, { id: tid });
+                    await new Promise((r) => setTimeout(r, 0));
+                    const chunkCanvas = await (exportToCanvas as unknown as (opts: unknown) => Promise<HTMLCanvasElement>)({
+                      elements: chunkEls,
                       appState: {
                         ...api.getAppState(),
-                        // Force light theme on export so strokes are
-                        // rendered with their stored colors (no
-                        // dark-mode invert). Both keys matter —
-                        // Excalidraw checks `theme` AND `exportWithDarkMode`.
-                        theme: "light",
-                        exportWithDarkMode: false,
-                        // `exportBackground: false` → canvas is
-                        // transparent so the paper pattern we painted
-                        // first stays visible under the strokes.
+                        theme: useDark ? "dark" : "light",
+                        exportWithDarkMode: useDark,
                         exportBackground: false,
                         viewBackgroundColor: "transparent",
-                        exportScale: 3,
+                        exportScale,
                         exportEmbedScene: false,
                       },
                       files: api.getFiles(),
-                      // Force a fixed bounds box (0,0) – (W,H) so every
-                      // export is page-sized regardless of stroke spread.
-                      getDimensions: () => ({ width: PX_W, height: PX_H, scale: PX_W / BOOK_PAGE_W }),
+                      exportPadding: 0,
+                      getDimensions: () => ({ width: PX_W, height: chunkCanvasH, scale: PX_W / BOOK_PAGE_W }),
                     });
-                    // Composite onto a white page-shaped canvas with
-                    // the per-page paper pattern painted in first so
-                    // the PDF matches what's on screen.
+                    const srcPxPerOutPx = chunkCanvas.width / PX_W;
+                    for (let j = 0; j < chunkPages; j++) {
+                      const i = cstart + j;
+                    // White matches BookPagesOverlay's default.
+                    const themeDefaultBg = "#ffffff";
+                    // Composite onto a page-shaped canvas with the
+                    // per-page paper pattern painted in first so the
+                    // PDF matches what's on screen. A safe margin is
+                    // baked in so phone PDF readers in "fit page"
+                    // mode don't crop strokes that ran to the edge.
+                    // ~10% margin all sides (≈ 1 cm at A4). Phone PDF
+                    // viewers in "fit page" mode crop strokes at the
+                    // edge unless we bake a noticeable safe zone.
+                    const MARGIN = Math.round(PX_W * 0.05);
+                    const INNER_W = PX_W - 2 * MARGIN;
+                    const INNER_H = PX_H - 2 * MARGIN;
                     const out = document.createElement("canvas");
                     out.width = PX_W; out.height = PX_H;
                     const ctx = out.getContext("2d");
                     if (!ctx) throw new Error("2d context unavailable");
                     const pgMeta = bookPagesRef.current[i] ?? {};
-                    const pgBg = pgMeta.bgColor || "#ffffff";
+                    // Use the same bg as detection — single source.
+                    const pgBg = pgMeta.bgColor || customBgRef.current || themeDefaultBg;
+                    // Fill the full sheet (incl. margin) with page bg
+                    // so the margin matches the page color (no white
+                    // strip around a dark page).
                     ctx.fillStyle = pgBg;
                     ctx.fillRect(0, 0, PX_W, PX_H);
                     const effPaper: PaperMode =
                       (!pgMeta.paper || pgMeta.paper === "inherit") ? paperMode : pgMeta.paper;
+                    // Paint paper pattern inside margin only.
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.rect(MARGIN, MARGIN, INNER_W, INNER_H);
+                    ctx.clip();
                     drawPaperPattern(ctx, PX_W, PX_H, effPaper, PX_W / BOOK_PAGE_W, pgBg);
-                    ctx.drawImage(canvas, 0, 0, PX_W, PX_H);
-                    const dataUrl = out.toDataURL("image/png");
-                    if (i > 0) pdf.addPage([PX_W, PX_H], "portrait");
-                    pdf.addImage(dataUrl, "PNG", 0, 0, PX_W, PX_H, undefined, "FAST");
+                    ctx.restore();
+                    // Crop this page's strip from the chunk canvas.
+                    const srcX = 0;
+                    const srcY = j * PX_H * srcPxPerOutPx;
+                    const srcW = PX_W * srcPxPerOutPx;
+                    const srcH = PX_H * srcPxPerOutPx;
+                    ctx.drawImage(
+                      chunkCanvas,
+                      srcX, srcY, srcW, srcH,
+                      MARGIN, MARGIN, INNER_W, INNER_H,
+                    );
+                    // JPEG q=0.97 keeps line edges sharp at the
+                    // cost of ~10% larger file vs 0.95.
+                    const dataUrl = out.toDataURL("image/jpeg", 0.97);
+                    if (i > 0) pdf.addPage("a4", "portrait");
+                    pdf.addImage(dataUrl, "JPEG", 0, 0, PAGE_MM_W, PAGE_MM_H, undefined, "SLOW");
+                    // Help GC release the per-page canvas before the
+                    // next iteration.
+                    out.width = 0; out.height = 0;
+                    // Per-page progress + yield to the event loop so
+                    // the browser doesn't trip the "page unresponsive"
+                    // dialog on big books.
+                    toast.loading(`Rendering ${i + 1}/${bookPageCount} pages…`, { id: tid });
+                    await new Promise((r) => setTimeout(r, 0));
+                    }
+                    // Release the chunk canvas before the next chunk
+                    // allocates a fresh one.
+                    chunkCanvas.width = 0; chunkCanvas.height = 0;
+                    // Yield to the event loop so the toast/UI can
+                    // repaint between chunks on big books.
+                    await new Promise((r) => setTimeout(r, 0));
                   }
                   pdf.save(`${skill}-book.pdf`);
                   toast.success(`Saved ${bookPageCount}-page PDF`, { id: tid });
@@ -1915,27 +2369,25 @@ useEffect(() => {
             )}
           </>
         )}
-        <Excalidraw
-          key={slug}
-          initialData={initialData}
-          onChange={onChange}
-          onLibraryChange={(items) => {
-            // Persist ONLY non-seed items so reloads recover user
-            // imports without bloating storage with our static seed.
-            try {
-              const extras = (items as unknown as ReadonlyArray<Record<string, unknown>>).filter((it) => {
-                const id = (it as { id?: string }).id ?? "";
-                return !id.startsWith("seed-");
-              });
-              localStorage.setItem(`sklib-imports-${slug}`, JSON.stringify(extras));
-            } catch { /* quota/SecurityError → silently drop */ }
-          }}
-          theme={resolvedTheme === "light" ? "light" : "dark"}
-          aiEnabled={false}
-          excalidrawAPI={excalApiCallback}
-        >
-          {mainMenuNode}
-        </Excalidraw>
+        <ExcalCrashBoundary onCrash={onCanvasCrash} onRetry={onCanvasRetry} resetKey={recoveryNonce}>
+          <Excalidraw
+            key={`${slug}-${recoveryNonce}`}
+            initialData={recoveryNonce > 0 ? nukedInitialData(initialData) : initialData}
+            onChange={onChange}
+            onLibraryChange={onLibraryChange}
+            theme={resolvedTheme === "light" ? "light" : "dark"}
+            aiEnabled={false}
+            excalidrawAPI={excalApiCallback}
+          >
+            {mainMenuNode}
+          </Excalidraw>
+        </ExcalCrashBoundary>
+        <SelectionAiWidget
+          excalRef={excalRef}
+          canvasWrapRef={canvasWrapRef}
+          miniData={miniData}
+          skill={skill}
+        />
         <TrimMoreToolsDropdown />
         <PropertyPanelSliders excalRef={excalRef} ready={excalReady} />
         <ShapeIslandTools
@@ -2349,6 +2801,262 @@ function triggerDownload(blob: Blob, name: string) {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+// Floating "ai" pill anchored just above any active selection. Click
+// to expand into an instruction input + Send. Submitting POSTs the
+// selected elements + prompt to /api/sketch/transform; the response
+// replaces the selection in-place. Laptop-only — gated on
+// `(hover:hover) and (pointer:fine)` so touch users don't get a
+// floating UI element that obscures their gestures.
+function SelectionAiWidget({
+  excalRef,
+  canvasWrapRef,
+  miniData,
+  skill,
+}: {
+  excalRef: React.MutableRefObject<ExcalApi | null>;
+  canvasWrapRef: React.MutableRefObject<HTMLDivElement | null>;
+  miniData: { els: readonly unknown[]; app: Record<string, unknown> };
+  skill: string;
+}) {
+  const [isLaptop, setIsLaptop] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(hover: hover) and (pointer: fine)");
+    const sync = () => setIsLaptop(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+
+  const [open, setOpen] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // Derive bbox of the current selection in world coords.
+  const selection = useMemo(() => {
+    const app = miniData.app as { selectedElementIds?: Record<string, boolean> };
+    const ids = app.selectedElementIds || {};
+    const selIds = Object.keys(ids).filter((k) => ids[k]);
+    if (!selIds.length) return null;
+    const idSet = new Set(selIds);
+    const els = (miniData.els as Array<Record<string, unknown>>).filter((e) => {
+      if (e.isDeleted) return false;
+      return typeof e.id === "string" && idSet.has(e.id as string);
+    });
+    if (!els.length) return null;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const e of els) {
+      const x = (e.x as number) ?? 0;
+      const y = (e.y as number) ?? 0;
+      const w = (e.width as number) ?? 0;
+      const h = (e.height as number) ?? 0;
+      minX = Math.min(minX, x); minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
+    }
+    return { ids: selIds, els, minX, minY, maxX, maxY };
+  }, [miniData]);
+
+  // Project world bbox to screen pos relative to canvas wrap. The
+  // whole widget (pill + optional input) renders as a SINGLE row
+  // anchored just ABOVE the selection's top-right corner, so it
+  // never overlaps the shapes themselves.
+  const screenPos = useMemo(() => {
+    if (!selection) return null;
+    const app = miniData.app as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
+    const zoom = app.zoom?.value ?? 1;
+    const sx = (app.scrollX ?? 0);
+    const sy = (app.scrollY ?? 0);
+    const selRight = (selection.maxX + sx) * zoom;
+    const selTop = (selection.minY + sy) * zoom;
+    const wrap = canvasWrapRef.current;
+    const wrapW = wrap?.clientWidth ?? 9999;
+    const ROW_W = open ? 302 : 32;     // pill 32 (icon-only), with input row ~302
+    const ROW_H = 28;
+    const ROW_GAP_ABOVE = 28;          // gap between widget bottom and selection top
+    const x = Math.max(8, Math.min(wrapW - ROW_W - 8, selRight - ROW_W));
+    const y = Math.max(8, selTop - ROW_H - ROW_GAP_ABOVE);
+    return { x, y };
+  }, [selection, miniData, open, canvasWrapRef]);
+
+  // Collapse on Esc.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setOpen(false); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  // Auto-focus when opened.
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+
+  const submit = useCallback(async () => {
+    if (!selection || !excalRef.current) return;
+    const q = prompt.trim();
+    if (!q) return;
+    setBusy(true);
+    const tid = toast.loading("Asking AI…");
+    // Snapshot bbox at request time. While the AI thinks (~5-20s) the
+    // user may drag the selection — without this we'd inject the new
+    // shapes at the OLD world coords (looks like nothing happened).
+    const snapBbox = {
+      minX: selection.minX, minY: selection.minY,
+      maxX: selection.maxX, maxY: selection.maxY,
+    };
+    const snapIds = selection.ids.slice();
+    try {
+      const r = await fetch(`${API}/api/sketch/transform`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ prompt: q, elements: selection.els, skill }),
+      });
+      // Backend may return a plain-text proxy error (Next.js 502 page)
+      // when the upstream times out — JSON.parse would crash. Read as
+      // text first and best-effort parse.
+      const txt = await r.text();
+      let d: { detail?: string; elements?: unknown; ops?: unknown } = {};
+      try { d = txt ? JSON.parse(txt) : {}; } catch {
+        // Next.js proxy 5xx pages return HTML — show a friendly message
+        // instead of dumping raw markup into the toast.
+        const isHtml = /^\s*<!doctype|^\s*<html/i.test(txt);
+        d = { detail: isHtml ? "Backend unreachable or timed out" : txt.slice(0, 200) };
+      }
+      if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+      const els = d.elements as Array<Record<string, unknown>>;
+      if (!Array.isArray(els) || !els.length) throw new Error("AI returned no elements");
+      const api = excalRef.current;
+      const selIdSet = new Set(snapIds);
+      const current = api.getSceneElements() as Array<Record<string, unknown>>;
+      // Compute drift: if the user moved the selection while AI was
+      // thinking, the new (added) shapes were computed against the
+      // OLD bbox. Translate them by (currentBbox - snapBbox) so they
+      // land relative to where the selection IS now.
+      let curMinX = Infinity, curMinY = Infinity, curMaxX = -Infinity, curMaxY = -Infinity;
+      let foundCur = false;
+      for (const e of current) {
+        if (typeof e.id !== "string" || !selIdSet.has(e.id as string)) continue;
+        const x = (e.x as number) ?? 0, y = (e.y as number) ?? 0;
+        const w = (e.width as number) ?? 0, h = (e.height as number) ?? 0;
+        curMinX = Math.min(curMinX, x); curMinY = Math.min(curMinY, y);
+        curMaxX = Math.max(curMaxX, x + w); curMaxY = Math.max(curMaxY, y + h);
+        foundCur = true;
+      }
+      const dx = foundCur ? (curMinX - snapBbox.minX) : 0;
+      const dy = foundCur ? (curMinY - snapBbox.minY) : 0;
+      const kept = current.filter((e) => !(typeof e.id === "string" && selIdSet.has(e.id as string)));
+      // Preserve original IDs for elements echoed back from the
+      // backend (server now keeps full originals and applies ops, so
+      // matching ids mean unchanged/modified bindings stay intact).
+      // Stamp a fresh id only on NEW elements the LLM added.
+      const stamped = els.map((e) => {
+        const id = (e as { id?: unknown }).id;
+        const isOriginal = typeof id === "string" && selIdSet.has(id);
+        if (isOriginal) {
+          // Merge AI's modifications into the CURRENT version of the
+          // original (which may have been moved/rotated since submit).
+          const cur = current.find((c) => c.id === id) as Record<string, unknown> | undefined;
+          const merged = cur ? { ...cur, ...e, id } : e;
+          return {
+            ...merged,
+            groupIds: Array.isArray((merged as { groupIds?: unknown }).groupIds) ? (merged as { groupIds: unknown[] }).groupIds : [],
+            boundElements: (merged as { boundElements?: unknown }).boundElements ?? null,
+          };
+        }
+        // New shape: translate by drift so it lands at the selection's
+        // CURRENT screen position, not where it was at submit time.
+        const ex = typeof (e as { x?: unknown }).x === "number" ? (e as { x: number }).x : 0;
+        const ey = typeof (e as { y?: unknown }).y === "number" ? (e as { y: number }).y : 0;
+        const base = { ...e, x: ex + dx, y: ey + dy, id: `ai-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` };
+        return {
+          ...base,
+          groupIds: Array.isArray((base as { groupIds?: unknown }).groupIds) ? (base as { groupIds: unknown[] }).groupIds : [],
+          boundElements: (base as { boundElements?: unknown }).boundElements ?? null,
+        };
+      });
+      // Final guard: Excalidraw crashes hard on any element missing
+      // `type`. Strip anything malformed before handing it the scene.
+      const safe = [...kept, ...stamped].filter((el): el is Record<string, unknown> =>
+        !!el && typeof el === "object" && typeof (el as { type?: unknown }).type === "string"
+      );
+      api.updateScene({ elements: safe });
+      const ops = d.ops as { added?: number; modified?: number; deleted?: number } | undefined;
+      const opsMsg = ops
+        ? `+${ops.added ?? 0} ~${ops.modified ?? 0} -${ops.deleted ?? 0}`
+        : `${selection.ids.length} → ${stamped.length}`;
+      toast.success(`AI: ${opsMsg}`, { id: tid });
+      setPrompt("");
+      setOpen(false);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Transform failed", { id: tid });
+    } finally {
+      setBusy(false);
+    }
+  }, [selection, prompt, excalRef, skill]);
+
+  if (!isLaptop || !selection || !screenPos) return null;
+
+  // Render absolutely inside the canvas wrapper. The wrapper itself is
+  // position:relative (from `relative` class) so 0,0 = its top-left.
+  const wrap = canvasWrapRef.current;
+  if (!wrap) return null;
+  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
+  return createPortal(
+    <div
+      className="excal-ai-sel"
+      style={{
+        position: "absolute",
+        left: screenPos.x,
+        top: screenPos.y,
+        zIndex: 15,
+        pointerEvents: "auto",
+      }}
+      onMouseDown={stop}
+      onPointerDown={stop}
+    >
+      <div className="excal-ai-sel-row" data-open={open ? "1" : undefined}>
+        {open && (
+          <div className="excal-ai-sel-box">
+            <input
+              ref={inputRef}
+              className="excal-ai-sel-input"
+              placeholder="Describe a change for the selected shapes…"
+              value={prompt}
+              disabled={busy}
+              onChange={(e) => setPrompt(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !busy) submit();
+                else if (e.key === "Escape") setOpen(false);
+              }}
+            />
+            <button
+              type="button"
+              className="excal-ai-sel-send"
+              disabled={busy || !prompt.trim()}
+              onClick={submit}
+            >
+              {busy ? "…" : <Send className="h-3.5 w-3.5" />}
+            </button>
+          </div>
+        )}
+        <button
+          type="button"
+          className="excal-ai-sel-pill"
+          data-open={open ? "1" : undefined}
+          aria-label={open ? "Close AI prompt" : "Ask AI to transform selection"}
+          title={open ? "Close AI prompt" : "Ask AI to transform selection"}
+          onClick={() => setOpen((v) => !v)}
+        >
+          <Sparkles className="h-4 w-4" />
+        </button>
+      </div>
+    </div>,
+    wrap,
+  );
 }
 
 export function SketchPreloader() {
