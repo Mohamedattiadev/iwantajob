@@ -108,7 +108,10 @@ export function useSketchGestures({ getApi }: GestureApi) {
         const z = ((api?.getAppState() as { zoom?: { value?: number } })?.zoom?.value) ?? 1;
         pinchStartZoom = z;
       }
-      if (n === 3) {
+      // Arm the radial whenever a 3rd finger touches down (not just when
+      // 3 fingers land simultaneously) so a 2-finger pinch that adds a
+      // 3rd still arms rotation detection.
+      if (n >= 3) {
         radialBaselineAngle = avgAngle();
         radialArmedAt = performance.now();
       }
@@ -137,13 +140,14 @@ export function useSketchGestures({ getApi }: GestureApi) {
         }
       }
 
-      // 3-finger rotation → open radial.
-      if (n === 3 && performance.now() - radialArmedAt < 1500 && !radial) {
+      // 3-finger rotation → open radial. Threshold lowered (0.18 rad ≈ 10°)
+      // since natural wrist rotation rarely exceeds 15° before fingers lift.
+      if (n >= 3 && performance.now() - radialArmedAt < 1500 && !radial) {
         const cur = avgAngle();
         let delta = cur - radialBaselineAngle;
         while (delta > Math.PI) delta -= 2 * Math.PI;
         while (delta < -Math.PI) delta += 2 * Math.PI;
-        if (Math.abs(delta) > 0.25) {
+        if (Math.abs(delta) > 0.18) {
           const c = centroid();
           setRadial({ x: c.x, y: c.y });
           radialArmedAt = 0;
@@ -175,11 +179,19 @@ export function useSketchGestures({ getApi }: GestureApi) {
       if (touches.size === 0) {
         const isDrift = performance.now() < suppressTapUntil;
         const dt = multiStart > 0 ? performance.now() - multiStart : 9999;
+        const last = ending[ending.length - 1];
         multiStart = 0;
         peakDuringGesture = 0;
         if (!isDrift && dt < 500 && wasPeak >= 2) {
-          if (wasPeak === 2) undo();
-          else if (wasPeak === 3) redo();
+          // 2-finger tap → undo, 3+ finger tap → open the radial tool
+          // wheel (was "redo"; redo lives inside the wheel now).
+          if (wasPeak === 2) {
+            undo();
+          } else if (wasPeak >= 3) {
+            const cx = last ? last.x : window.innerWidth / 2;
+            const cy = last ? last.y : window.innerHeight / 2;
+            setRadial({ x: cx, y: cy });
+          }
         }
       }
     };

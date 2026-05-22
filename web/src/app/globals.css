@@ -641,6 +641,24 @@
 /* Hide the floating "?" help button — we expose the menu via MainMenu. */
 .excalidraw .help-icon { display: none !important; }
 
+/* Free-range sliders we inject inside the strokeWidth / fontSize
+   fieldsets of Excalidraw's right-side properties panel. They reuse
+   Excalidraw's own Range markup (`control-label` → `range-wrapper`
+   → `range-input` + `value-bubble` + `zero-label`) so the visual
+   styling already loaded from Excalidraw's CSS bundle applies. We
+   only add a hair of breathing room under the chip row + hide the
+   redundant text label (the existing fieldset legend already names
+   the control). */
+.excal-extra-slider {
+  width: 100%;
+  padding-top: 8px;
+}
+.excal-extra-slider-label {
+  font-size: 0;
+}
+.excal-extra-slider-label .range-wrapper { font-size: 12px; }
+
+
 /* Top-right injected toolbar (renderTopRightUI) inherits Excalidraw colors. */
 .excal-tools { font-family: inherit; }
 .excal-tools .excal-btn {
@@ -922,15 +940,47 @@
   }
   html.sketch-fullscreen.ipad-mode .excalidraw { touch-action: none; }
 
-  /* Hide Excalidraw's selection-properties side panel (Stroke / Background
-     / Stroke width / Opacity / Layers). It eats the entire left side of
-     the iPad screen. Our custom control panel below covers the same use
-     cases with touch-friendly controls. */
+  /* Hide Excalidraw's selection-properties side panel on iPad — we
+     proxy its controls (stroke style, opacity, color, layers) through
+     the unified ipad-ctrl rail so the tablet shows ONE sidebar instead
+     of two overlapping ones. */
   html.sketch-fullscreen.ipad-mode .excalidraw .App-menu_top__left,
   html.sketch-fullscreen.ipad-mode .excalidraw .layer-ui__wrapper__top-left,
   html.sketch-fullscreen.ipad-mode .excalidraw .App-menu__left {
     display: none !important;
   }
+
+  /* Force every Excalidraw wrapper + canvas element transparent on iPad
+     so the sibling BookPagesOverlay / PaperBackdrop underneath actually
+     shows through. The dark theme paints the outer `.App` and inner
+     canvases opaque even when `viewBackgroundColor` is set transparent
+     in appState. */
+  html.sketch-fullscreen.ipad-mode .excalidraw,
+  html.sketch-fullscreen.ipad-mode .excalidraw .App,
+  html.sketch-fullscreen.ipad-mode .excalidraw .layer-ui__wrapper,
+  html.sketch-fullscreen.ipad-mode .excalidraw .excalidraw__canvases,
+  html.sketch-fullscreen.ipad-mode .excalidraw canvas {
+    background: transparent !important;
+    background-color: transparent !important;
+  }
+}
+
+/* Same problem on laptop view: when paper pattern or book mode is
+   active, Excalidraw's dark theme paints `.App` + canvases opaque even
+   though appState.viewBackgroundColor is set transparent — hiding the
+   sibling BookPagesOverlay / PaperBackdrop AND the wrapper's chosen
+   bg color. Gated by `[data-paper-overlay="1"]` on the wrapper so
+   board+plain mode keeps Excalidraw's native canvas painting. */
+[data-paper-overlay="1"] .excalidraw,
+[data-paper-overlay="1"] .excalidraw .App,
+[data-paper-overlay="1"] .excalidraw .layer-ui__wrapper,
+[data-paper-overlay="1"] .excalidraw .excalidraw__canvases,
+[data-paper-overlay="1"] .excalidraw canvas {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+@media (pointer: coarse) {
 
   /* Hide the "Library" trigger on iPad — not used for sketching. Keeps the
      top-right cluster clean alongside the live/peers pill. */
@@ -943,8 +993,21 @@
      and hiding the left column collapses it, shifting center off-axis.
      Decouple center from the grid via absolute positioning relative to
      the layer-ui wrapper, so it always lands at exact screen midpoint. */
+  /* Centered top toolbar — force the parent wrapper to span the full
+     canvas width and absolutely-center the toolbar inside it. Without
+     forcing width:100%, hiding the left grid column collapsed the
+     wrapper and shifted its 50% reference off-axis. */
   html.sketch-fullscreen.ipad-mode .excalidraw .layer-ui__wrapper__top {
     position: relative !important;
+    width: 100% !important;
+    left: 0 !important;
+    right: 0 !important;
+    display: block !important;
+  }
+  html.sketch-fullscreen.ipad-mode .excalidraw .App-menu_top {
+    display: block !important;
+    width: 100% !important;
+    grid-template-columns: none !important;
   }
   html.sketch-fullscreen.ipad-mode .excalidraw .App-menu_top__center {
     position: absolute !important;
@@ -953,12 +1016,6 @@
     transform: translateX(-50%) !important;
     margin: 0 !important;
     z-index: 3;
-  }
-  html.sketch-fullscreen.ipad-mode .excalidraw .App-menu_top {
-    justify-content: flex-end !important;
-  }
-  html.sketch-fullscreen.ipad-mode .excalidraw .App-toolbar {
-    margin: 0 !important;
   }
 }
 

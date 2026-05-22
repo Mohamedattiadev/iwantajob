@@ -7,8 +7,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeft, Eye, Pencil, CheckCircle2, Save, AlertTriangle, BookOpen, Plus, X,
-  Eraser, MousePointer2, Hand, Type, Sliders, Undo2, Redo2,
-  PenTool, Highlighter, Brush, Feather, Palette,
+  Sliders, PenTool, Highlighter, Brush, Feather, Palette,
 } from "lucide-react";
 import { toast } from "sonner";
 import { API, fetcher, primeEtag } from "@/lib/api";
@@ -17,7 +16,18 @@ import {
   sceneFingerprint, patchFreedrawForPen, shouldApplyIncomingScene,
   computeFitAllAppState, PEN_PROFILES, PEN_KEYS, type PenKey,
 } from "@/lib/sketch";
-import { Minimap } from "@/components/skill-sketch";
+import {
+  Minimap,
+  BookPagesOverlay,
+  BookNavWidget,
+  PaperBackdrop,
+  BOOK_PAGE_W,
+  BOOK_PAGE_H,
+  bookPageTop,
+  type PaperMode,
+  type BookPageMeta,
+} from "@/components/skill-sketch";
+import { Grid3x3, Minus, Circle, Square } from "lucide-react";
 import { useSketchGestures } from "@/components/sketch-gestures";
 import "@excalidraw/excalidraw/index.css";
 
@@ -67,6 +77,9 @@ type DrawingDoc = {
   appState?: Record<string, unknown>;
   files?: Record<string, unknown>;
   title?: string;
+  layoutMode?: "board" | "book";
+  paperMode?: PaperMode;
+  bookPages?: BookPageMeta[];
 };
 
 type ExcalApi = {
@@ -105,6 +118,13 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     for (const k of ["viewBackgroundColor", "gridSize", "gridModeEnabled", "zoom", "scrollX", "scrollY"]) {
       if (src[k] !== undefined) safe[k] = src[k];
     }
+    // Force transparent canvas at mount when book mode or a paper pattern
+    // is active. Otherwise Excalidraw mounts with whatever (possibly
+    // stale-white) `viewBackgroundColor` the previous save persisted,
+    // painting over BookPagesOverlay / PaperBackdrop until the post-mount
+    // effect runs — long enough to look like "book/grid not working".
+    const wantTransparent = data?.layoutMode === "book" || (data?.paperMode && data.paperMode !== "plain");
+    if (wantTransparent) safe.viewBackgroundColor = "transparent";
     return {
       elements: elements as never,
       appState: {
@@ -221,8 +241,57 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   const [savedTick, setSavedTick] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  // Preserve book-mode fields the laptop owns. PUT is a full replace
+  // on the backend, so leaving these out of the iPad save wipes the
+  // laptop-authored layout (paper pattern, page list) the moment the
+  // tablet autosaves. Carry them forward from the latest doc.
+  const docMetaRef = useRef<{ layoutMode?: "board" | "book"; paperMode?: PaperMode; bookPages?: BookPageMeta[] }>({});
+  // Local override window. When user toggles layout/paper/pages, we
+  // pin the optimistic values for ~1.5s so any SWR poll that returns
+  // pre-PUT body (race window between mutate and PUT completion) can't
+  // revert the UI back. After the window the SWR data wins.
+  const [pinnedMeta, setPinnedMeta] = useState<{
+    layoutMode?: "board" | "book";
+    paperMode?: PaperMode;
+    bookPages?: BookPageMeta[];
+    until?: number;
+  } | null>(null);
+  const pinMeta = useCallback((meta: { layoutMode?: "board" | "book"; paperMode?: PaperMode; bookPages?: BookPageMeta[] }) => {
+    const until = Date.now() + 1500;
+    setPinnedMeta({ ...meta, until });
+    window.setTimeout(() => {
+      setPinnedMeta((cur) => (cur && cur.until === until ? null : cur));
+    }, 1600);
+  }, []);
+  useEffect(() => {
+    // Server-truth sync — only when no fresh local override is pinned.
+    const pinActive = pinnedMeta && pinnedMeta.until && Date.now() < pinnedMeta.until;
+    if (pinActive) return;
+    docMetaRef.current = {
+      layoutMode: data?.layoutMode,
+      paperMode: data?.paperMode,
+      bookPages: data?.bookPages,
+    };
+  }, [data?.layoutMode, data?.paperMode, data?.bookPages, pinnedMeta]);
   const save = useCallback(async (payload: object) => {
-    const body = JSON.stringify({ data: { ...payload, title: data?.title ?? slug } });
+    const meta = docMetaRef.current;
+    // viewBackgroundColor is derived from layoutMode/paperMode at mount
+    // time; persisting whatever Excalidraw currently has would freeze a
+    // (possibly transparent) value into the doc and break the next
+    // client that opens it with a different paper template.
+    const p = payload as { appState?: Record<string, unknown> };
+    if (p.appState && "viewBackgroundColor" in p.appState) {
+      const { viewBackgroundColor: _drop, ...restApp } = p.appState;
+      void _drop;
+      p.appState = restApp;
+    }
+    // Critical: the etag-cache prime MUST be seeded with the SAME body
+    // we just PUT (payload + title + meta). Earlier we primed with only
+    // `payload`, so the next SWR 304 returned a cached body missing
+    // layoutMode/paperMode/bookPages — flipping isBookMode / globalPaper
+    // off mid-session and making book/paper modes blink in & out.
+    const primedBody = { ...payload, title: data?.title ?? slug, ...meta };
+    const body = JSON.stringify({ data: primedBody });
     if (body === lastBody.current) return;
     lastBody.current = body;
     const r = await fetch(`${API}/api/drawings/${encodeURIComponent(slug)}`, {
@@ -232,7 +301,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
       setSavedTick(true);
       setTimeout(() => setSavedTick(false), 1200);
       const newEtag = r.headers.get("etag");
-      if (newEtag) primeEtag(`/api/drawings/${encodeURIComponent(slug)}`, newEtag, payload);
+      if (newEtag) primeEtag(`/api/drawings/${encodeURIComponent(slug)}`, newEtag, primedBody);
       mutate();
     }
   }, [data?.title, mutate, slug]);
@@ -244,12 +313,17 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
     setSaving(true);
     try {
       lastBody.current = "";
+      const meta = docMetaRef.current;
+      const appState = api.getAppState() as Record<string, unknown>;
+      const { viewBackgroundColor: _drop, ...appStateClean } = appState;
+      void _drop;
       const body = JSON.stringify({
         data: {
           title: data?.title ?? slug,
           elements: [...api.getSceneElements()],
-          appState: api.getAppState(),
+          appState: appStateClean,
           files: api.getFiles(),
+          ...meta,
         },
       });
       const r = await fetch(`${API}/api/drawings/${encodeURIComponent(slug)}`, {
@@ -362,6 +436,11 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   }, []);
 
   const onChange = useCallback((elements: readonly unknown[], appState: unknown, files: Record<string, unknown>) => {
+    // Mirror appState into bookAppState so BookPagesOverlay / PaperBackdrop
+    // follow scroll + zoom in lock-step instead of lagging behind the 1s
+    // fallback tick. Runs even before approval/applied gates so the
+    // initial paint stays aligned with the canvas.
+    setBookAppState(appState as Record<string, unknown>);
     if (!editMode) return;
     // Pad is not yet approved by host — drop all edits (Excalidraw still
     // updates visually because viewModeEnabled is the real lock; we keep
@@ -652,6 +731,173 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
   const title = data?.title ?? slug;
   const displayName = title.startsWith("skill-") ? title.slice(6) : title;
 
+  // Book mode mirror — the laptop side stores layoutMode/bookPages/paperMode
+  // on the doc. We render the same page overlay + page-nav on the iPad so
+  // the tablet sees the GoodNotes-style pages instead of a single infinite
+  // board. iPad doesn't author layout (no add/delete-page UI here); it
+  // follows whatever the laptop wrote.
+  // Effective meta = pinned override (recently-toggled) if active, else
+  // SWR data. Pinning shields the UI from a brief SWR poll that may
+  // return pre-PUT body during the toggle round-trip.
+  const pinActive = !!(pinnedMeta && pinnedMeta.until && Date.now() < pinnedMeta.until);
+  const effLayoutMode = pinActive && pinnedMeta?.layoutMode ? pinnedMeta.layoutMode : data?.layoutMode;
+  const effPaperMode = pinActive && pinnedMeta?.paperMode ? pinnedMeta.paperMode : data?.paperMode;
+  const effBookPagesRaw = pinActive && pinnedMeta?.bookPages ? pinnedMeta.bookPages : data?.bookPages;
+  const isBookMode = effLayoutMode === "book";
+  const bookPages: BookPageMeta[] = useMemo(
+    () => (Array.isArray(effBookPagesRaw) && effBookPagesRaw.length > 0
+      ? (effBookPagesRaw as BookPageMeta[])
+      : [{ paper: "inherit" }]),
+    [effBookPagesRaw],
+  );
+  const globalPaper: PaperMode = (effPaperMode ?? "plain") as PaperMode;
+  const [bookPage, setBookPage] = useState(0);
+  const bookPageRef = useRef(0);
+  useEffect(() => { bookPageRef.current = bookPage; }, [bookPage]);
+  // Reactive snapshot of appState for the page/paper overlays. Polled
+  // whenever Excalidraw is ready so scrolling/zooming the canvas keeps
+  // page borders + paper pattern aligned even with no element edits.
+  const [bookAppState, setBookAppState] = useState<Record<string, unknown>>({});
+  // bookAppState is sourced from Excalidraw's onChange below (book/paper
+  // overlays follow scroll/zoom in lock-step). A low-rate fallback tick
+  // also runs so the initial paint is correct before the first onChange
+  // and so external zoom shortcuts (gestures, fit-all) still resync.
+  useEffect(() => {
+    if (!excalReady) return;
+    const needsPoll = isBookMode || globalPaper !== "plain";
+    if (!needsPoll) return;
+    const tick = () => {
+      const api = excalRef.current;
+      if (api) {
+        try { setBookAppState(api.getAppState() as Record<string, unknown>); } catch {}
+      }
+    };
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [excalReady, isBookMode, globalPaper]);
+  // Force Excalidraw's canvas background transparent whenever a paper
+  // pattern is visible — either book mode (BookPagesOverlay paints
+  // pages) or a non-plain paperMode in board mode (PaperBackdrop
+  // paints behind Excalidraw). Otherwise paper pattern is hidden by
+  // the canvas's solid fill. Laptop does the same.
+  useEffect(() => {
+    if (!excalReady) return;
+    const api = excalRef.current;
+    if (!api) return;
+    const wantTransparent = isBookMode || globalPaper !== "plain";
+    try {
+      api.updateScene({
+        appState: { viewBackgroundColor: wantTransparent ? "transparent" : "#ffffff" },
+      });
+      (api as { refresh?: () => void }).refresh?.();
+    } catch {}
+  }, [isBookMode, globalPaper, excalReady]);
+  // Push a new paperMode to the server-side doc so other peers (and
+  // future iPad reloads) pick it up. iPad doesn't own layoutMode here
+  // — that's still laptop-driven — but it can change the paper texture.
+  const setPaperModeOnDoc = useCallback((next: PaperMode) => {
+    docMetaRef.current = { ...docMetaRef.current, paperMode: next };
+    pinMeta({ ...docMetaRef.current });
+    mutate((prev) => prev ? { ...prev, paperMode: next } : prev, false);
+    const api = excalRef.current;
+    if (!api) return;
+    save({
+      elements: [...api.getSceneElements()],
+      appState: api.getAppState() as Record<string, unknown>,
+      files: api.getFiles(),
+    });
+  }, [mutate, save, pinMeta]);
+  // Toggle book/board layout from the tablet. Mirrors the laptop's
+  // sidebar control. When entering book mode with no pages list, seed
+  // one blank page so BookPagesOverlay has something to render.
+  const setLayoutModeOnDoc = useCallback((next: "board" | "book") => {
+    const existingPages = Array.isArray(docMetaRef.current.bookPages) && docMetaRef.current.bookPages!.length > 0
+      ? docMetaRef.current.bookPages
+      : [{ paper: "inherit" as const }];
+    docMetaRef.current = { ...docMetaRef.current, layoutMode: next, bookPages: existingPages };
+    pinMeta({ ...docMetaRef.current });
+    mutate((prev) => prev ? { ...prev, layoutMode: next, bookPages: existingPages } : prev, false);
+    const api = excalRef.current;
+    if (!api) return;
+    save({
+      elements: [...api.getSceneElements()],
+      appState: api.getAppState() as Record<string, unknown>,
+      files: api.getFiles(),
+    });
+  }, [mutate, save, pinMeta]);
+  const goToBookPage = useCallback((idx: number) => {
+    const total = bookPages.length;
+    const clamped = Math.max(0, Math.min(total - 1, idx));
+    setBookPage(clamped);
+    const api = excalRef.current;
+    if (!api) return;
+    const app = api.getAppState() as { width?: number; height?: number };
+    const vw = app.width ?? window.innerWidth;
+    const vh = app.height ?? window.innerHeight;
+    const padding = 24;
+    const top = bookPageTop(clamped);
+    const zoom = Math.max(0.05, Math.min(2,
+      (vw - padding * 2) / BOOK_PAGE_W,
+      (vh - padding * 2) / BOOK_PAGE_H,
+    ));
+    const cx = BOOK_PAGE_W / 2;
+    const cy = top + BOOK_PAGE_H / 2;
+    try {
+      api.updateScene({
+        appState: {
+          zoom: { value: zoom },
+          scrollX: vw / (2 * zoom) - cx,
+          scrollY: vh / (2 * zoom) - cy,
+        },
+      });
+    } catch {}
+  }, [bookPages.length]);
+  const persistBookPages = useCallback((nextPages: BookPageMeta[]) => {
+    docMetaRef.current = { ...docMetaRef.current, bookPages: nextPages };
+    pinMeta({ ...docMetaRef.current });
+    mutate((prev) => prev ? { ...prev, bookPages: nextPages } : prev, false);
+    const api = excalRef.current;
+    if (!api) return;
+    save({
+      elements: [...api.getSceneElements()],
+      appState: api.getAppState() as Record<string, unknown>,
+      files: api.getFiles(),
+    });
+  }, [mutate, save, pinMeta]);
+  const addBookPage = useCallback(() => {
+    const cur = Array.isArray(docMetaRef.current.bookPages) ? docMetaRef.current.bookPages! : [{ paper: "inherit" as const }];
+    const next = [...cur, { paper: "inherit" as const }];
+    persistBookPages(next);
+    setTimeout(() => goToBookPage(next.length - 1), 0);
+  }, [persistBookPages, goToBookPage]);
+  const deleteBookPage = useCallback((idx: number) => {
+    const cur = Array.isArray(docMetaRef.current.bookPages) ? docMetaRef.current.bookPages! : [{ paper: "inherit" as const }];
+    if (cur.length <= 1) return;
+    const next = cur.filter((_, i) => i !== idx);
+    persistBookPages(next);
+    setTimeout(() => goToBookPage(Math.max(0, Math.min(next.length - 1, idx))), 0);
+  }, [persistBookPages, goToBookPage]);
+  const reorderBookPage = useCallback((from: number, to: number) => {
+    if (from === to) return;
+    const cur = Array.isArray(docMetaRef.current.bookPages) ? [...docMetaRef.current.bookPages!] : [{ paper: "inherit" as const }];
+    const [moved] = cur.splice(from, 1);
+    cur.splice(to, 0, moved);
+    persistBookPages(cur);
+    setTimeout(() => goToBookPage(to), 0);
+  }, [persistBookPages, goToBookPage]);
+  const setBookPagePaper = useCallback((idx: number, mode: PaperMode | "inherit") => {
+    const cur = Array.isArray(docMetaRef.current.bookPages) ? docMetaRef.current.bookPages! : [{ paper: "inherit" as const }];
+    const next = cur.map((p, i) => i === idx ? { ...p, paper: mode } : p);
+    persistBookPages(next);
+  }, [persistBookPages]);
+  // Snap to page 0 on entering book mode.
+  useEffect(() => {
+    if (!isBookMode || !excalReady) return;
+    const t = setTimeout(() => goToBookPage(bookPageRef.current ?? 0), 60);
+    return () => clearTimeout(t);
+  }, [isBookMode, excalReady, goToBookPage]);
+
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-background" style={{ touchAction: "none", WebkitUserSelect: "none", userSelect: "none" }}>
       <header className={`relative flex items-center px-4 py-2 border-b border-border/50 bg-card/60 backdrop-blur shrink-0 ${penMode ? "h-12" : "justify-between"}`}>
@@ -756,6 +1002,16 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
         )}
       </header>
       <div className="flex-1 min-h-0 relative">
+        {!isBookMode && globalPaper !== "plain" && (
+          <PaperBackdrop mode={globalPaper} appState={bookAppState} />
+        )}
+        {isBookMode && (
+          <BookPagesOverlay
+            appState={bookAppState}
+            pages={bookPages}
+            globalPaper={globalPaper}
+          />
+        )}
         <Excalidraw
           initialData={initialData}
           viewModeEnabled={!editMode || (penMode && approval !== "approved")}
@@ -777,6 +1033,7 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
           <Minimap
             size="lg"
             defaultCorner={penMode ? "tr" : "br"}
+            topOffset={penMode ? 56 : 0}
             elements={miniData.els}
             appState={miniData.app}
             open={miniOpen}
@@ -820,6 +1077,11 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
           <IpadCtrlRail
             getApi={() => excalRef.current}
             onPenChange={(k) => { penRef.current = k; }}
+            paperMode={globalPaper}
+            onPaperMode={setPaperModeOnDoc}
+            layoutMode={isBookMode ? "book" : "board"}
+            onToggleLayout={() => setLayoutModeOnDoc(isBookMode ? "board" : "book")}
+            onAddBookPage={addBookPage}
             readMode={readMode}
             onToggleReadMode={() => {
               setReadMode((v) => {
@@ -834,6 +1096,25 @@ export default function SharedSketchPage({ params }: { params: Promise<{ slug: s
           />
         )}
         {editMode && penMode && <GestureLayer getApi={() => excalRef.current} />}
+        {isBookMode && (
+          <BookNavWidget
+            page={bookPage}
+            pageCount={bookPages.length}
+            framePresenting={false}
+            onPrev={() => goToBookPage(bookPage - 1)}
+            onNext={() => goToBookPage(bookPage + 1)}
+            onJump={goToBookPage}
+            onAddPage={addBookPage}
+            onDeletePage={deleteBookPage}
+            onReorder={reorderBookPage}
+            onSetPagePaper={setBookPagePaper}
+            pages={bookPages}
+            globalPaper={globalPaper}
+            onToggleOutline={() => {}}
+            outlineOpen={false}
+            onExportPdf={() => toast.message("PDF export — use laptop")}
+          />
+        )}
         {editMode && !penMode && <ThicknessSlider getApi={() => excalRef.current} />}
         {editMode && !penMode && (
           // Laptop view keeps the floating badge cluster top-right.
@@ -925,12 +1206,20 @@ const PEN_PRESETS: PenPreset[] = PEN_KEYS.map((key) => ({
   defaultColor: PEN_PROFILES[key].defaultColor,
 }));
 
-// iPad-native control rail — pen variants + tool + colors + custom width.
-function IpadCtrlRail({ getApi, onToggleReadMode, readMode, onPenChange }: {
+// iPad-native control rail — pen variants + colors + width + paper.
+// Duplicates of Excalidraw's native top toolbar (eraser/selection/hand/
+// text/undo/redo) intentionally omitted to avoid two affordances for
+// the same action.
+function IpadCtrlRail({ getApi, onToggleReadMode, readMode, onPenChange, paperMode, onPaperMode, layoutMode, onToggleLayout, onAddBookPage }: {
   getApi: () => ExcalApi | null;
   onToggleReadMode: () => void;
   readMode: boolean;
   onPenChange?: (k: PenPreset["key"]) => void;
+  paperMode: PaperMode;
+  onPaperMode: (m: PaperMode) => void;
+  layoutMode: "board" | "book";
+  onToggleLayout: () => void;
+  onAddBookPage: () => void;
 }) {
   const colors = [
     "#ffffff", "#d4d4d8", "#71717a", "#1f2937",
@@ -940,16 +1229,68 @@ function IpadCtrlRail({ getApi, onToggleReadMode, readMode, onPenChange }: {
     "#d946ef", "#ec4899",
   ];
   const [color, setColor] = useState("#ffffff");
-  const [tool, setTool] = useState<"freedraw" | "eraser" | "selection" | "hand" | "text">("freedraw");
   const [pen, setPen] = useState<PenPreset["key"]>("ballpoint");
   const [thickOpen, setThickOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paperOpen, setPaperOpen] = useState(false);
+  const [styleOpen, setStyleOpen] = useState(false);
   const [width, setWidth] = useState(1.5);
+  const [strokeStyle, setStrokeStyle] = useState<"solid" | "dashed" | "dotted">("solid");
+  const [opacity, setOpacity] = useState(100);
+
+  // Bump version + versionNonce so Excalidraw's collab reconciler treats
+  // our edit as newer than the polled remote copy. Without this, the
+  // SWR poll's reconcile-by-version step can revert our change a beat
+  // later — the "stroke style sometimes sticks, sometimes doesn't" bug.
+  const bumpVersion = (el: Record<string, unknown>): Record<string, unknown> => {
+    const v = typeof el.version === "number" ? el.version : 0;
+    return {
+      ...el,
+      version: v + 1,
+      versionNonce: Math.floor(Math.random() * 2 ** 31),
+      updated: Date.now(),
+    };
+  };
+  const applyStrokeStyle = (s: "solid" | "dashed" | "dotted") => {
+    setStrokeStyle(s);
+    const api = getApi();
+    if (!api) return;
+    try {
+      api.updateScene({ appState: { currentItemStrokeStyle: s } });
+      const app = api.getAppState() as { selectedElementIds?: Record<string, boolean> };
+      const selectedIds = app.selectedElementIds ?? {};
+      const selectedKeys = Object.keys(selectedIds).filter((k) => selectedIds[k]);
+      if (selectedKeys.length > 0) {
+        const els = api.getSceneElements() as Array<Record<string, unknown>>;
+        const updated = els.map((el) =>
+          selectedKeys.includes(el.id as string) ? bumpVersion({ ...el, strokeStyle: s }) : el
+        );
+        (api.updateScene as unknown as (d: { elements?: unknown[] }) => void)({ elements: updated });
+      }
+    } catch {}
+  };
+  const applyOpacity = (v: number) => {
+    setOpacity(v);
+    const api = getApi();
+    if (!api) return;
+    try {
+      api.updateScene({ appState: { currentItemOpacity: v } });
+      const app = api.getAppState() as { selectedElementIds?: Record<string, boolean> };
+      const selectedIds = app.selectedElementIds ?? {};
+      const selectedKeys = Object.keys(selectedIds).filter((k) => selectedIds[k]);
+      if (selectedKeys.length > 0) {
+        const els = api.getSceneElements() as Array<Record<string, unknown>>;
+        const updated = els.map((el) =>
+          selectedKeys.includes(el.id as string) ? bumpVersion({ ...el, opacity: v }) : el
+        );
+        (api.updateScene as unknown as (d: { elements?: unknown[] }) => void)({ elements: updated });
+      }
+    } catch {}
+  };
 
   const applyPen = (p: PenPreset) => {
     setPen(p.key);
     onPenChange?.(p.key);
-    setTool("freedraw");
     setWidth(p.width);
     const api = getApi();
     if (!api) return;
@@ -980,7 +1321,7 @@ function IpadCtrlRail({ getApi, onToggleReadMode, readMode, onPenChange }: {
         const els = api.getSceneElements() as Array<Record<string, unknown>>;
         const updated = els.map((el) => {
           if (selectedKeys.includes(el.id as string)) {
-            return { ...el, strokeColor: c };
+            return bumpVersion({ ...el, strokeColor: c });
           }
           return el;
         });
@@ -989,21 +1330,12 @@ function IpadCtrlRail({ getApi, onToggleReadMode, readMode, onPenChange }: {
       }
     } catch {}
   };
-  const applyTool = (t: typeof tool) => {
-    setTool(t);
-    const api = getApi();
-    if (!api) return;
-    try { api.setActiveTool?.({ type: t }); } catch {}
-  };
   const applyWidth = (v: number) => {
     setWidth(v);
     const api = getApi();
     if (!api) return;
     try { api.updateScene({ appState: { currentItemStrokeWidth: v } }); } catch {}
   };
-  const undo = () => document.querySelector<HTMLButtonElement>('.excalidraw button[aria-label="Undo"]')?.click();
-  const redo = () => document.querySelector<HTMLButtonElement>('.excalidraw button[aria-label="Redo"]')?.click();
-
   return (
     <>
       <div className="ipad-ctrl">
@@ -1011,27 +1343,13 @@ function IpadCtrlRail({ getApi, onToggleReadMode, readMode, onPenChange }: {
         {PEN_PRESETS.map((p) => (
           <button
             key={p.key}
-            className={`ipad-ctrl-btn ${tool === "freedraw" && pen === p.key ? "is-active" : ""}`}
+            className={`ipad-ctrl-btn ${pen === p.key ? "is-active" : ""}`}
             onClick={() => applyPen(p)}
             title={p.label}
           >
             {p.icon}
           </button>
         ))}
-        <div className="ipad-ctrl-sep" />
-        {/* Other tools */}
-        <button className={`ipad-ctrl-btn ${tool === "eraser" ? "is-active" : ""}`} onClick={() => applyTool("eraser")} title="Eraser">
-          <Eraser size={18} />
-        </button>
-        <button className={`ipad-ctrl-btn ${tool === "selection" ? "is-active" : ""}`} onClick={() => applyTool("selection")} title="Lasso">
-          <MousePointer2 size={18} />
-        </button>
-        <button className={`ipad-ctrl-btn ${tool === "hand" ? "is-active" : ""}`} onClick={() => applyTool("hand")} title="Pan">
-          <Hand size={18} />
-        </button>
-        <button className={`ipad-ctrl-btn ${tool === "text" ? "is-active" : ""}`} onClick={() => applyTool("text")} title="Text">
-          <Type size={18} />
-        </button>
         <div className="ipad-ctrl-sep" />
         {/* Color current + palette opener */}
         <button
@@ -1054,6 +1372,33 @@ function IpadCtrlRail({ getApi, onToggleReadMode, readMode, onPenChange }: {
         <button className={`ipad-ctrl-btn ${thickOpen ? "is-active" : ""}`} onClick={() => setThickOpen((v) => !v)} title="Thickness">
           <Sliders size={18} />
         </button>
+        {/* Stroke style (solid / dashed / dotted) */}
+        <button
+          className={`ipad-ctrl-btn ${styleOpen ? "is-active" : ""}`}
+          onClick={() => setStyleOpen((v) => !v)}
+          title={`Stroke style · ${strokeStyle}`}
+        >
+          <svg width={18} height={18} viewBox="0 0 18 18" aria-hidden>
+            <line
+              x1={2} y1={9} x2={16} y2={9}
+              stroke="currentColor" strokeWidth={2} strokeLinecap="round"
+              strokeDasharray={strokeStyle === "dashed" ? "4 3" : strokeStyle === "dotted" ? "1 3" : "none"}
+            />
+          </svg>
+        </button>
+        <div className="ipad-ctrl-sep" />
+        {/* Paper template picker */}
+        <button
+          className={`ipad-ctrl-btn ${paperOpen ? "is-active" : ""}`}
+          onClick={() => setPaperOpen((v) => !v)}
+          title={`Paper · ${paperMode}`}
+          style={{ position: "relative" }}
+        >
+          {paperMode === "grid"  ? <Grid3x3 size={18} />
+           : paperMode === "dots" ? <Circle size={18} />
+           : paperMode === "lines" ? <Minus size={18} />
+           : <Square size={18} />}
+        </button>
         <div className="ipad-ctrl-sep" />
         {/* Read mode */}
         <button
@@ -1064,9 +1409,49 @@ function IpadCtrlRail({ getApi, onToggleReadMode, readMode, onPenChange }: {
           <Eye size={18} />
         </button>
         <div className="ipad-ctrl-sep" />
-        <button className="ipad-ctrl-btn" onClick={undo} title="Undo"><Undo2 size={18} /></button>
-        <button className="ipad-ctrl-btn" onClick={redo} title="Redo"><Redo2 size={18} /></button>
+        {/* Layout: board ↔ book */}
+        <button
+          className={`ipad-ctrl-btn ${layoutMode === "book" ? "is-active" : ""}`}
+          onClick={onToggleLayout}
+          title={layoutMode === "book" ? "Switch to infinite board" : "Switch to paged book"}
+        >
+          <BookOpen size={18} />
+        </button>
+        {layoutMode === "book" && (
+          <button
+            className="ipad-ctrl-btn"
+            onClick={onAddBookPage}
+            title="Add page"
+          >
+            <Plus size={18} />
+          </button>
+        )}
       </div>
+      {paperOpen && (
+        <div className="ipad-thick" style={{ top: "55%", padding: 10, width: 180 }} onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] font-mono uppercase tracking-wider opacity-70">Paper</span>
+            <button onClick={() => setPaperOpen(false)} className="h-6 w-6 grid place-items-center rounded-md hover:bg-foreground/5">
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+          <div className="grid grid-cols-4 gap-1.5">
+            {(["plain","grid","dots","lines"] as PaperMode[]).map((m) => {
+              const Ico = m === "grid" ? Grid3x3 : m === "dots" ? Circle : m === "lines" ? Minus : Square;
+              return (
+                <button
+                  key={m}
+                  onClick={() => { onPaperMode(m); }}
+                  className={`h-10 rounded-md border grid place-items-center ${paperMode === m ? "border-primary bg-primary/10 text-primary" : "border-foreground/15 hover:bg-foreground/5"}`}
+                  title={m}
+                >
+                  <Ico size={16} />
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {paletteOpen && (
         <div className="ipad-thick" style={{ top: "30%", padding: 10, width: 232 }} onClick={(e) => e.stopPropagation()}>
           <div className="flex items-center justify-between mb-2">
@@ -1120,6 +1505,48 @@ function IpadCtrlRail({ getApi, onToggleReadMode, readMode, onPenChange }: {
           <div className="h-8 rounded-md bg-foreground/5 grid place-items-center">
             <div className="rounded-full" style={{ width: `${Math.min(160, width * 6)}px`, height: `${Math.max(1, width)}px`, background: color }} />
           </div>
+          <div className="mt-3 flex items-center gap-2">
+            <span className="text-[10px] font-mono uppercase tracking-wider opacity-70 w-14">Opacity</span>
+            <input
+              type="range"
+              min={5}
+              max={100}
+              step={5}
+              value={opacity}
+              onChange={(e) => applyOpacity(parseInt(e.target.value, 10))}
+              className="flex-1 accent-violet-400"
+            />
+            <span className="text-xs font-mono w-8 tabular-nums text-right">{opacity}</span>
+          </div>
+        </div>
+      )}
+      {styleOpen && (
+        <div className="ipad-thick" style={{ top: "45%", padding: 10, width: 200 }} onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] font-mono uppercase tracking-wider opacity-70">Stroke style</span>
+            <button onClick={() => setStyleOpen(false)} className="h-6 w-6 grid place-items-center rounded-md hover:bg-foreground/5">
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+          <div className="grid grid-cols-3 gap-1.5">
+            {([
+              { k: "solid",  d: "none"  },
+              { k: "dashed", d: "6 4"   },
+              { k: "dotted", d: "1.5 4" },
+            ] as const).map((s) => (
+              <button
+                key={s.k}
+                onClick={() => applyStrokeStyle(s.k)}
+                className={`h-10 rounded-md border grid place-items-center ${strokeStyle === s.k ? "border-primary bg-primary/10 text-primary" : "border-foreground/15 hover:bg-foreground/5"}`}
+                title={s.k}
+              >
+                <svg width={48} height={6} aria-hidden>
+                  <line x1={2} y1={3} x2={46} y2={3} stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeDasharray={s.d} />
+                </svg>
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-[10px] opacity-60 font-mono">applies to next stroke + any selected shape</p>
         </div>
       )}
     </>

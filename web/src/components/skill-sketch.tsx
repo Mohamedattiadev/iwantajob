@@ -13,7 +13,7 @@ import {
   Eye, Pencil, Image as ImageIcon, FileCode, Copy,
   Network, ArrowDown, Columns3, Grid2x2, Play, Square,
   PanelRightOpen, ZoomIn, ZoomOut,
-  Tablet, ExternalLink, Save, Users, ArrowLeft, RefreshCw, Plus, BookOpen, Zap,
+  Tablet, ExternalLink, Save, Users, ArrowLeft, RefreshCw, Plus, BookOpen,
   Layers, Boxes, Component, MessageSquare, RotateCw, Database, GitBranch,
   Key, Shield,
 } from "lucide-react";
@@ -107,16 +107,15 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("board");
   const [bookPage, setBookPage] = useState(0);
   const [bookOutlineOpen, setBookOutlineOpen] = useState(false);
-  // Laser-lock — the user keeps using Excalidraw's actual laser
-  // tool (which still renders the fading red trail). While locked,
-  // we capture the pointer path ourselves and, on pointerup, also
-  // commit a permanent freedraw element with the same points so the
-  // stroke "stays" after the laser fades. Unlocking lets the laser
-  // fade like normal — and any persisted freedraw strokes are
-  // tracked so we can wipe them on unlock.
-  const [laserLock, setLaserLock] = useState(false);
-  const laserLockRef = useRef(false);
-  useEffect(() => { laserLockRef.current = laserLock; }, [laserLock]);
+  // Laser-lock — presentation mode where laser-red strokes persist
+  // until the user toggles off. Implementation: we flip the active
+  // tool to freedraw with a red/low-roughness preset while locked, so
+  // the user gets a "laser" feel but the strokes are real elements.
+  // Every new element added while locked is tracked, and toggling
+  // off wipes those elements + restores the previous appState +
+  // tool. The fading laser tool itself can't persist (Excalidraw
+  // clears it after ~700 ms regardless of caller intent), so we
+  // simulate the look with freedraw instead.
   // View-only mode — toggles Excalidraw's `viewModeEnabled` so the
   // canvas becomes read-only (useful when presenting frames so a
   // stray click doesn't move shapes).
@@ -126,130 +125,6 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
     if (!a) return;
     try { a.updateScene({ appState: { viewModeEnabled: viewOnly } }); } catch {}
   }, [viewOnly]);
-  const persistedLaserIdsRef = useRef<Set<string>>(new Set());
-  const toggleLaserLock = useCallback(() => {
-    const a = excalRef.current;
-    if (!a) { toast.error("Canvas not ready"); return; }
-    if (!laserLock) {
-      try { a.setActiveTool?.({ type: "laser" }); } catch {}
-      setLaserLock(true);
-      toast.success("Laser locked — strokes will persist");
-    } else {
-      // Sweep every freedraw we materialised while locked.
-      const ids = persistedLaserIdsRef.current;
-      if (ids.size > 0) {
-        try {
-          const els = a.getSceneElements() as ReadonlyArray<Record<string, unknown>>;
-          const next = els.map((e) =>
-            typeof e.id === "string" && ids.has(e.id) ? { ...e, isDeleted: true } : e,
-          );
-          a.updateScene({ elements: next as never });
-        } catch {}
-        ids.clear();
-      }
-      setLaserLock(false);
-      toast.message("Laser unlocked — trails cleared");
-    }
-  }, [laserLock]);
-  // Pointer capture: track laser strokes while locked. On pointerup,
-  // emit a freedraw element matching the captured trail. Coordinates
-  // are converted from CSS px → world coords using current zoom +
-  // scroll. We restrict to the canvas wrap so toolbar clicks don't
-  // get caught.
-  // Pointer-trail capture for laser-lock. Uses Excalidraw's own
-  // `onPointerUpdate` callback (wired via the `<Excalidraw>` prop
-  // below) so we get reliable world-coord pointer samples without
-  // having to fight setPointerCapture on the native canvas.
-  const laserPtsRef = useRef<Array<[number, number]>>([]);
-  const laserBaseRef = useRef<[number, number]>([0, 0]);
-  const laserDrawingRef = useRef(false);
-  const handleLaserPointerUpdate = useCallback((payload: {
-    pointer: { x: number; y: number; tool: "pointer" | "laser" };
-    button: "down" | "up";
-  }) => {
-    if (!laserLockRef.current) return;
-    if (payload.pointer.tool !== "laser") return;
-    const { x, y } = payload.pointer;
-    const wasDown = laserDrawingRef.current;
-    const isDown = payload.button === "down";
-    if (isDown && !wasDown) {
-      // First sample of a new stroke.
-      laserDrawingRef.current = true;
-      laserBaseRef.current = [x, y];
-      laserPtsRef.current = [[0, 0]];
-      return;
-    }
-    if (isDown && wasDown) {
-      laserPtsRef.current.push([x - laserBaseRef.current[0], y - laserBaseRef.current[1]]);
-      return;
-    }
-    if (!isDown && wasDown) {
-      // Stroke ended — also record the final sample so the tail
-      // lands on the persisted freedraw, not in the air.
-      laserPtsRef.current.push([x - laserBaseRef.current[0], y - laserBaseRef.current[1]]);
-      laserDrawingRef.current = false;
-      const pts = laserPtsRef.current.slice();
-      laserPtsRef.current = [];
-      if (pts.length < 2) return;
-      const a = excalRef.current;
-      if (!a) return;
-      const baseX = laserBaseRef.current[0];
-      const baseY = laserBaseRef.current[1];
-      const id = (typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID() : `laser-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
-      const xs = pts.map((p) => p[0]);
-      const ys = pts.map((p) => p[1]);
-      const minX = Math.min(...xs);
-      const minY = Math.min(...ys);
-      const maxX = Math.max(...xs);
-      const maxY = Math.max(...ys);
-      const stroke = {
-        id,
-        type: "freedraw",
-        x: baseX + minX,
-        y: baseY + minY,
-        width: maxX - minX,
-        height: maxY - minY,
-        points: pts.map(([px, py]) => [px - minX, py - minY] as [number, number]),
-        strokeColor: "#ef4444",
-        backgroundColor: "transparent",
-        fillStyle: "solid",
-        strokeWidth: 2,
-        strokeStyle: "solid",
-        roughness: 0,
-        opacity: 85,
-        groupIds: [],
-        roundness: null,
-        seed: Math.floor(Math.random() * 0x7fffffff),
-        version: 1,
-        versionNonce: Math.floor(Math.random() * 0x7fffffff),
-        isDeleted: false,
-        boundElements: [],
-        updated: Date.now(),
-        link: null,
-        locked: false,
-        simulatePressure: false,
-        lastCommittedPoint: pts[pts.length - 1],
-        pressures: [],
-      };
-      try {
-        const mod = excalModRef.current as { convertToExcalidrawElements?: (els: unknown[], opts?: { regenerateIds?: boolean }) => unknown[] } | null;
-        let finalStroke: unknown = stroke;
-        if (mod?.convertToExcalidrawElements) {
-          const conv = mod.convertToExcalidrawElements([stroke], { regenerateIds: false });
-          if (Array.isArray(conv) && conv.length) finalStroke = conv[0];
-        }
-        const els = a.getSceneElements() as readonly unknown[];
-        a.updateScene({ elements: [...els, finalStroke] as never });
-        persistedLaserIdsRef.current.add(id);
-      } catch (err) {
-        // Surface failure so we can tell whether it's a permissions
-        // issue vs a malformed element vs the API not being ready.
-        // eslint-disable-next-line no-console
-        console.warn("[laser-lock] could not persist stroke", err);
-      }
-    }
-  }, []);
   const bookPageRef = useRef(0);
   useEffect(() => { bookPageRef.current = bookPage; }, [bookPage]);
   // Per-page paper mode array. Length === page count. Each entry is
@@ -364,6 +239,11 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
             layoutMode === "book" || paperMode !== "plain" ? "transparent" : "#ffffff",
         },
       });
+      // Force Excalidraw to re-render the static canvas now. Without
+      // this, the appState change can sit unrendered until the next
+      // user input — leaving the canvas opaque-painted from its
+      // previous viewBackgroundColor and hiding BookPagesOverlay.
+      (api as { refresh?: () => void }).refresh?.();
     } catch {}
   }, [paperMode, layoutMode]);
   const [saved, setSaved] = useState(false);
@@ -515,6 +395,8 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
   // Refs the MainMenu can read without triggering re-memo on every
   // SkillSketch render. Updated in a layout effect below.
   const paperModeRef = useRef<PaperMode>("plain");
+  const layoutModeRef = useRef<LayoutMode>("board");
+  const lastMetaEditAtRef = useRef(0);
   const exportRef = useRef<{
     png?: () => void;
     svg?: () => void;
@@ -603,20 +485,31 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
     if (!api) return;
     const remoteEls = Array.isArray(doc.elements) ? doc.elements : [];
     const firstApply = appliedFor.current !== slug;
-    if (firstApply) {
-      appliedFor.current = slug;
+    // Continuously mirror layout/paper/bookPages from server. Skipped
+    // during the 1.5s after a local toggle (lastMetaEditAtRef) so an
+    // SWR poll returning pre-PUT body can't revert the user's choice.
+    const skipMetaSync = Date.now() - lastMetaEditAtRef.current < 1500;
+    if (!skipMetaSync) {
       if (doc.paperMode && doc.paperMode !== paperMode) {
         setPaperMode(doc.paperMode);
       }
       if (doc.layoutMode && doc.layoutMode !== layoutMode) {
         setLayoutMode(doc.layoutMode);
       }
-      if (Array.isArray(doc.bookPages) && doc.bookPages.length) {
-        setBookPages(doc.bookPages as BookPage[]);
-      } else if (typeof doc.bookPageCount === "number" && doc.bookPageCount > 0) {
+      if (Array.isArray(doc.bookPages)) {
+        const remotePages = doc.bookPages as BookPage[];
+        const localPagesJson = JSON.stringify(bookPagesRef.current);
+        const remotePagesJson = JSON.stringify(remotePages);
+        if (remotePages.length > 0 && remotePagesJson !== localPagesJson) {
+          setBookPages(remotePages);
+        }
+      } else if (firstApply && typeof doc.bookPageCount === "number" && doc.bookPageCount > 0) {
         // Backward compat: expand old `bookPageCount` to inherit-pages.
         setBookPages(Array.from({ length: doc.bookPageCount }, () => ({ paper: "inherit" as const })));
       }
+    }
+    if (firstApply) {
+      appliedFor.current = slug;
       // Defer the very first updateScene off the React commit phase
       // too. Excalidraw's internal store fires its subscriber set
       // synchronously inside updateScene; running that while React
@@ -685,6 +578,13 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
     ] as const;
     const safeAppState: Record<string, unknown> = {};
     for (const k of SAFE_KEYS) if (src[k] !== undefined) safeAppState[k] = src[k];
+    // Force initial viewBackgroundColor to match the layoutMode/paperMode
+    // about to be applied. Otherwise the canvas mounts white and any
+    // BookPagesOverlay / PaperBackdrop underneath stays hidden until the
+    // post-mount effect at line ~229 runs — long enough for the user to
+    // see a flash of "no pages".
+    const wantTransparent = doc.layoutMode === "book" || (doc.paperMode && doc.paperMode !== "plain");
+    if (wantTransparent) safeAppState.viewBackgroundColor = "transparent";
     return {
       elements: elements as never,
       appState: { ...safeAppState, collaborators: new Map() } as never,
@@ -694,23 +594,32 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
   }, [slug, !!doc]);
 
   const save = useCallback(async (payload: object) => {
-    const body = JSON.stringify({ data: { ...payload, title: skill, paperMode, layoutMode, bookPages } });
+    // Read meta from refs so save always uses the latest layout/paper
+    // values (the useCallback only depends on skill+slug; capturing
+    // state directly would stale-close over post-toggle values and
+    // ship the prior layoutMode/paperMode/bookPages with every save).
+    const merged = {
+      ...payload,
+      title: skill,
+      paperMode: paperModeRef.current,
+      layoutMode: layoutModeRef.current,
+      bookPages: bookPagesRef.current,
+    };
+    const body = JSON.stringify({ data: merged });
     if (body === last.current) return;
     last.current = body;
     const r = await fetch(`${API}/api/drawings/${slug}`, {
       method: "PUT", headers: { "Content-Type": "application/json", ...authHeaders() }, body,
     });
-    // No `mutate()` here. The SWR poll already revalidates every
-    // 500 ms, and calling mutate from save was reigniting the
-    // save → refetch → apply → onChange feedback loop that React
-    // caught as "Maximum update depth exceeded".
     if (r.ok) {
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
-      // Preempt next-poll ETag miss. Backend echoes the freshly-saved
-      // doc's ETag; cache it so the imminent SWR poll returns 304.
+      // Prime ETag with the FULL merged body (including meta) so the
+      // imminent SWR 304 returns a body that still has layoutMode /
+      // paperMode / bookPages — without this the cached body was
+      // missing meta and the SWR re-render flipped book mode off.
       const newEtag = r.headers.get("etag");
-      if (newEtag) primeEtag(`/api/drawings/${slug}`, newEtag, (payload as { elements?: unknown[] }));
+      if (newEtag) primeEtag(`/api/drawings/${slug}`, newEtag, merged);
     }
   }, [skill, slug]);
 
@@ -731,6 +640,9 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
           elements: [...api.getSceneElements()],
           appState: api.getAppState(),
           files: api.getFiles(),
+          paperMode: paperModeRef.current,
+          layoutMode: layoutModeRef.current,
+          bookPages: bookPagesRef.current,
         },
       });
       const r = await fetch(`${API}/api/drawings/${slug}`, {
@@ -1508,10 +1420,11 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
     exportRef.current.svg = exportSvg;
     exportRef.current.json = copyShareJson;
     exportRef.current.excali = exportExcalidraw;
-    exportRef.current.setPaper = setPaperMode;
-    exportRef.current.setLayout = setLayoutMode;
+    exportRef.current.setPaper = (m) => { lastMetaEditAtRef.current = Date.now(); setPaperMode(m); };
+    exportRef.current.setLayout = (m) => { lastMetaEditAtRef.current = Date.now(); setLayoutMode(m); };
   });
   useEffect(() => { paperModeRef.current = paperMode; }, [paperMode]);
+  useEffect(() => { layoutModeRef.current = layoutMode; }, [layoutMode]);
 
   return (
     <div className={full ? "fixed inset-0 z-50 bg-background p-3 flex flex-col gap-2" : "flex flex-col gap-2"}>
@@ -1554,6 +1467,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
 
       <div
         ref={canvasWrapRef}
+        data-paper-overlay={(layoutMode === "book" || paperMode !== "plain") ? "1" : undefined}
         className={`relative rounded-xl overflow-hidden border border-foreground/10 bg-card ${full ? "flex-1" : "h-[70vh]"}`}
       >
         {paperMode !== "plain" && layoutMode !== "book" && (
@@ -1570,10 +1484,12 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
               onNext={() => goToBookPage(bookPage + 1)}
               onJump={(idx) => goToBookPage(idx)}
               onAddPage={() => {
+                lastMetaEditAtRef.current = Date.now();
                 setBookPages((prev) => [...prev, { paper: "inherit" }]);
                 setTimeout(() => goToBookPage(bookPagesRef.current.length), 0);
               }}
               onDeletePage={(idx) => {
+                lastMetaEditAtRef.current = Date.now();
                 setBookPages((prev) => {
                   if (prev.length <= 1) return prev; // keep at least 1
                   const next = prev.filter((_, i) => i !== idx);
@@ -1583,6 +1499,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
               }}
               onReorder={(from, to) => {
                 if (from === to) return;
+                lastMetaEditAtRef.current = Date.now();
                 setBookPages((prev) => {
                   const next = [...prev];
                   const [moved] = next.splice(from, 1);
@@ -1592,6 +1509,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
                 setTimeout(() => goToBookPage(to), 0);
               }}
               onSetPagePaper={(idx, mode) => {
+                lastMetaEditAtRef.current = Date.now();
                 setBookPages((prev) => prev.map((p, i) => i === idx ? { ...p, paper: mode } : p));
               }}
               pages={bookPages}
@@ -1709,7 +1627,6 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
           key={slug}
           initialData={initialData}
           onChange={onChange}
-          onPointerUpdate={handleLaserPointerUpdate}
           theme={resolvedTheme === "light" ? "light" : "dark"}
           aiEnabled={false}
           excalidrawAPI={excalApiCallback}
@@ -1717,6 +1634,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
           {mainMenuNode}
         </Excalidraw>
         <TrimMoreToolsDropdown />
+        <PropertyPanelSliders excalRef={excalRef} ready={excalReady} />
         <ShapeIslandTools
           onAi={() => setAiOpen(true)}
           onChat={() => setChatOpen(true)}
@@ -1759,7 +1677,7 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
           saving={saving}
           savedTick={saved}
           paperMode={paperMode}
-          onPaperMode={setPaperMode}
+          onPaperMode={(m) => { lastMetaEditAtRef.current = Date.now(); setPaperMode(m); }}
           onZoomDelta={(factor) => {
             const api = excalRef.current;
             if (!api) return;
@@ -1788,8 +1706,6 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
             api.updateScene({ appState: { zoom: { value: 1 } } });
           }}
           zoomPct={Math.round(((miniData.app as { zoom?: { value?: number } })?.zoom?.value ?? 1) * 100)}
-          laserLock={laserLock}
-          onToggleLaserLock={toggleLaserLock}
         />
         {/* Share button removed — realtime WS sync replaces link sharing.
             The iPad dropdown (in TopRightTools) still shows the QR for
@@ -1958,10 +1874,10 @@ function SidebarIconBtn({
 }
 
 // Page geometry constants — shared by overlay + page nav handlers.
-const BOOK_PAGE_W = 794;
-const BOOK_PAGE_H = 1123;
-const BOOK_PAGE_GAP = 24;
-function bookPageTop(idx: number): number {
+export const BOOK_PAGE_W = 794;
+export const BOOK_PAGE_H = 1123;
+export const BOOK_PAGE_GAP = 24;
+export function bookPageTop(idx: number): number {
   return idx * (BOOK_PAGE_H + BOOK_PAGE_GAP);
 }
 
@@ -2032,7 +1948,7 @@ function pagePaperBackgroundCss(mode: PaperMode, zoom: number): React.CSSPropert
     backgroundSize: `${sz}px ${sz}px`,
   };
 }
-function BookPagesOverlay({ appState, pages, globalPaper }: { appState: Record<string, unknown>; pages: BookPageMeta[]; globalPaper: PaperMode }) {
+export function BookPagesOverlay({ appState, pages, globalPaper }: { appState: Record<string, unknown>; pages: BookPageMeta[]; globalPaper: PaperMode }) {
   const s = appState as { scrollX?: number; scrollY?: number; zoom?: { value?: number } };
   const zoom = s.zoom?.value ?? 1;
   const sx = (s.scrollX ?? 0) * zoom;
@@ -2345,9 +2261,9 @@ function LayoutIcon({ mode }: { mode: "board" | "book" }) {
 // classes so the two bars look identical and sit nicely beside each
 // other. Anchored bottom-left when the frame strip is at center, so
 // they no longer stack on top of each other.
-type PaperMode = "plain" | "grid" | "dots" | "lines";
-type BookPageMeta = { paper?: PaperMode | "inherit" };
-function BookNavWidget({
+export type PaperMode = "plain" | "grid" | "dots" | "lines";
+export type BookPageMeta = { paper?: PaperMode | "inherit" };
+export function BookNavWidget({
   page, pageCount, onPrev, onNext, onJump, onAddPage, onDeletePage, onReorder, onSetPagePaper, onExportPdf, onToggleOutline, outlineOpen, framePresenting, pages, globalPaper,
 }: {
   page: number; pageCount: number;
@@ -2607,7 +2523,7 @@ function PaperModeIcon({ mode }: { mode: "plain" | "grid" | "dots" | "lines" }) 
   );
 }
 
-function PaperBackdrop({
+export function PaperBackdrop({
   mode, appState,
 }: {
   mode: "grid" | "dots" | "lines";
@@ -2626,10 +2542,12 @@ function PaperBackdrop({
     inset: 0,
     pointerEvents: "none",
     zIndex: 0,
-    opacity: 0.55,
+    opacity: 0.85,
   };
-  // Tailwind tokens via CSS vars defined in globals.css.
-  const lineColor = "color-mix(in oklab, var(--foreground) 18%, transparent)";
+  // Tailwind tokens via CSS vars defined in globals.css. Bumped to 32%
+  // mix so the pattern stays readable through Excalidraw's translucent
+  // canvas layers on iPad's lower-contrast viewing angle.
+  const lineColor = "color-mix(in oklab, var(--foreground) 32%, transparent)";
   if (mode === "grid") {
     const sz = baseGrid * zoom;
     style.backgroundImage = `linear-gradient(to right, ${lineColor} 1px, transparent 1px), linear-gradient(to bottom, ${lineColor} 1px, transparent 1px)`;
@@ -2647,6 +2565,187 @@ function PaperBackdrop({
     style.backgroundPosition = `${sx}px ${sy}px`;
   }
   return <div style={style} aria-hidden />;
+}
+
+function clampNum(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+// Inject free-range sliders into Excalidraw's right-side properties
+// panel for stroke-width and font-size. We portal a React slider
+// inside the matching fieldset so it inherits panel styling, and we
+// mimic Excalidraw's native Range markup (`control-label`,
+// `range-wrapper`, `range-input`, `value-bubble`) so the result
+// matches the existing Opacity slider one-for-one.
+function PropertyPanelSliders({ excalRef, ready }: { excalRef: React.MutableRefObject<ExcalApi | null>; ready: boolean }) {
+  const [strokeHost, setStrokeHost] = useState<HTMLElement | null>(null);
+  const [fontHost, setFontHost] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!ready) return;
+    let strokeEl: HTMLDivElement | null = null;
+    let fontEl: HTMLDivElement | null = null;
+    const attach = () => {
+      const swProbe = document.querySelector('[data-testid="strokeWidth-thin"]');
+      const swFieldset = swProbe?.closest("fieldset") as HTMLElement | null;
+      if (swFieldset) {
+        if (!strokeEl || !swFieldset.contains(strokeEl)) {
+          strokeEl?.remove();
+          strokeEl = document.createElement("div");
+          strokeEl.className = "excal-extra-slider";
+          swFieldset.appendChild(strokeEl);
+          setStrokeHost(strokeEl);
+        }
+      } else if (strokeEl) {
+        strokeEl.remove();
+        strokeEl = null;
+        setStrokeHost(null);
+      }
+      const fsProbe = document.querySelector('[data-testid="fontSize-small"]');
+      const fsFieldset = fsProbe?.closest("fieldset") as HTMLElement | null;
+      if (fsFieldset) {
+        if (!fontEl || !fsFieldset.contains(fontEl)) {
+          fontEl?.remove();
+          fontEl = document.createElement("div");
+          fontEl.className = "excal-extra-slider";
+          fsFieldset.appendChild(fontEl);
+          setFontHost(fontEl);
+        }
+      } else if (fontEl) {
+        fontEl.remove();
+        fontEl = null;
+        setFontHost(null);
+      }
+    };
+    attach();
+    const obs = new MutationObserver(attach);
+    obs.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      obs.disconnect();
+      strokeEl?.remove();
+      fontEl?.remove();
+    };
+  }, [ready]);
+  return (
+    <>
+      {strokeHost && createPortal(
+        <SliderControl
+          excalRef={excalRef}
+          kind="strokeWidth"
+          min={0.1} max={20} step={0.1} defaultVal={2}
+          storageKey="sketch.thicknessPref"
+        />, strokeHost,
+      )}
+      {fontHost && createPortal(
+        <SliderControl
+          excalRef={excalRef}
+          kind="fontSize"
+          min={8} max={96} step={1} defaultVal={20}
+          storageKey="sketch.fontSizePref"
+        />, fontHost,
+      )}
+    </>
+  );
+}
+
+function SliderControl({
+  excalRef, kind, min, max, step, defaultVal, storageKey,
+}: {
+  excalRef: React.MutableRefObject<ExcalApi | null>;
+  kind: "strokeWidth" | "fontSize";
+  min: number; max: number; step: number; defaultVal: number;
+  storageKey: string;
+}) {
+  const [value, setValue] = useState<number>(() => {
+    if (typeof window === "undefined") return defaultVal;
+    const raw = window.localStorage.getItem(storageKey);
+    const n = raw == null ? NaN : Number(raw);
+    return Number.isFinite(n) ? clampNum(n, min, max) : defaultVal;
+  });
+  const valueRef = useRef(value);
+  useEffect(() => { valueRef.current = value; }, [value]);
+
+  // Poll appState so chip clicks (S/M/L/XL) update the slider too.
+  useEffect(() => {
+    const key = kind === "strokeWidth" ? "currentItemStrokeWidth" : "currentItemFontSize";
+    const id = window.setInterval(() => {
+      const api = excalRef.current;
+      if (!api) return;
+      const app = api.getAppState() as Record<string, unknown>;
+      const cur = Number(app[key]);
+      if (Number.isFinite(cur) && Math.abs(cur - valueRef.current) > 0.001) {
+        setValue(clampNum(cur, min, max));
+      }
+    }, 400);
+    return () => window.clearInterval(id);
+  }, [excalRef, kind, min, max]);
+
+  const apply = (raw: number) => {
+    const next = clampNum(raw, min, max);
+    setValue(next);
+    try { window.localStorage.setItem(storageKey, String(next)); } catch {}
+    const api = excalRef.current;
+    if (!api) return;
+    const appState = api.getAppState() as { selectedElementIds?: Record<string, boolean> };
+    const stateUpdate = kind === "strokeWidth"
+      ? { currentItemStrokeWidth: next }
+      : { currentItemFontSize: next };
+    const ids = appState.selectedElementIds ?? {};
+    const selectedKeys = Object.keys(ids).filter((k) => ids[k]);
+    if (selectedKeys.length > 0) {
+      const els = api.getSceneElements() as ReadonlyArray<Record<string, unknown>>;
+      const sel = new Set(selectedKeys);
+      const nextEls = els.map((e) => {
+        if (typeof e.id !== "string" || !sel.has(e.id)) return e;
+        if (kind === "fontSize" && e.type !== "text") return e;
+        return {
+          ...e,
+          [kind]: next,
+          version: ((e.version as number) ?? 0) + 1,
+          versionNonce: Math.floor(Math.random() * 0x7fffffff),
+          updated: Date.now(),
+        };
+      });
+      api.updateScene({ elements: nextEls as never, appState: stateUpdate });
+    } else {
+      api.updateScene({ appState: stateUpdate });
+    }
+  };
+
+  const label = kind === "strokeWidth" ? "Width" : "Size";
+  // Mimic Excalidraw's native Range: `control-label` wraps a
+  // `range-wrapper` containing a `range-input` and a `value-bubble`.
+  // We also paint the same linear-gradient on the track so the
+  // filled portion matches the native opacity slider visually.
+  const rangeRef = useRef<HTMLInputElement | null>(null);
+  const bubbleRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const r = rangeRef.current; const b = bubbleRef.current;
+    if (!r || !b) return;
+    const pct = ((value - min) / (max - min)) * 100;
+    const w = r.offsetWidth || 120;
+    const thumb = 15;
+    const pos = (pct / 100) * (w - thumb) + thumb / 2;
+    b.style.left = `${pos}px`;
+    r.style.background = `linear-gradient(to right, var(--color-slider-track) 0%, var(--color-slider-track) ${pct}%, var(--button-bg) ${pct}%, var(--button-bg) 100%)`;
+  }, [value, min, max]);
+  return (
+    <label className="control-label excal-extra-slider-label">
+      {label}
+      <div className="range-wrapper">
+        <input
+          ref={rangeRef}
+          type="range"
+          min={min} max={max} step={step}
+          value={value}
+          onChange={(e) => apply(Number(e.currentTarget.value))}
+          className="range-input"
+          aria-label={kind === "strokeWidth" ? "Stroke width" : "Font size"}
+        />
+        <div className="value-bubble" ref={bubbleRef}>{Number.isFinite(value) ? value : ""}</div>
+        <div className="zero-label">{min}</div>
+      </div>
+    </label>
+  );
 }
 
 // Trim Excalidraw's More-tools dropdown: remove the inline
@@ -2782,7 +2881,7 @@ function TopRightTools({
   full, onToggleFull, framesCount, presenting, onPresentToggle,
   penOn, onTogglePen, padUrl, padCount, viewerCount, onSave, saving, savedTick,
   pendingPads, onApprovePad, onDenyPad, paperMode, onPaperMode,
-  onZoomDelta, onZoomReset, zoomPct, laserLock, onToggleLaserLock,
+  onZoomDelta, onZoomReset, zoomPct,
   hideFullscreenButton,
 }: {
   onAi: () => void;
@@ -2812,8 +2911,6 @@ function TopRightTools({
   onZoomDelta: (factor: number) => void;
   onZoomReset: () => void;
   zoomPct: number;
-  laserLock: boolean;
-  onToggleLaserLock: () => void;
   hideFullscreenButton?: boolean;
 }) {
   const [open, setOpen] = useState<null | "ai" | "export" | "pad" | "paper">(null);
@@ -2881,14 +2978,7 @@ function TopRightTools({
           onDenyPad={onDenyPad}
         />
       </ExcalDropdown>
-      <button
-        onClick={onToggleLaserLock}
-        title={laserLock ? "Laser is permanent — click to revert" : "Lock laser pointer (strokes persist)"}
-        className={`excal-btn ${laserLock ? "excal-btn-active" : ""}`}
-      >
-        <Zap className="h-3.5 w-3.5" />
-      </button>
-      {!hideFullscreenButton && (
+{!hideFullscreenButton && (
         <button onClick={onToggleFull} className="excal-btn" title={full ? "Exit fullscreen (F)" : "Fullscreen (F)"}>
           {full ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
         </button>
@@ -3403,10 +3493,13 @@ type MinimapProps = {
   size?: "sm" | "lg";
   defaultCorner?: "tl" | "tr" | "bl" | "br";
   cursor?: { x: number; y: number } | null;
+  // Extra inset (px) added to the corner's vertical edge — used on iPad
+  // to clear the centered native top toolbar so they don't overlap.
+  topOffset?: number;
 };
 
 function MinimapImpl({
-  elements, appState, open, onToggle, onNavigate, onZoom, onFitAll, size = "sm", defaultCorner = "br", cursor,
+  elements, appState, open, onToggle, onNavigate, onZoom, onFitAll, size = "sm", defaultCorner = "br", cursor, topOffset = 0,
 }: MinimapProps) {
   const W = size === "lg" ? 320 : 220;
   const H = size === "lg" ? 220 : 150;
@@ -3542,9 +3635,11 @@ function MinimapImpl({
   };
   const onHeadUp = () => { drag.current = null; };
 
+  const cornerStyle = pickMinimapCornerStyle(defaultCorner);
+  if (topOffset && typeof cornerStyle.top === "number") cornerStyle.top += topOffset;
   const style: React.CSSProperties = pos
     ? { position: "absolute", left: pos.left, top: pos.top, zIndex: 4 }
-    : { position: "absolute", ...pickMinimapCornerStyle(defaultCorner), zIndex: 4 };
+    : { position: "absolute", ...cornerStyle, zIndex: 4 };
 
   return (
     <div ref={rootRef} className="excal-minimap select-none" style={style}>
