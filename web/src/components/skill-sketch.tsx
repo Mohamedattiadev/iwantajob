@@ -94,7 +94,56 @@ if (typeof window !== "undefined" && !(window as { __excalCrashGuard?: boolean }
     }
   } as typeof Array.prototype.filter;
   // Belt + suspenders for any error that still escapes.
+  // Excalidraw tries to spawn a Worker from a file:// URL in dev
+  // mode (subset-worker.chunk.js). Browser blocks it, Excalidraw
+  // logs a noisy warning + the raw SecurityError. Fallback to
+  // main thread is automatic and functionally identical — so
+  // suppress both the warn and the raw error.
+  const SUBSET_SIG = "subset-worker.chunk";
+  const SUBSET_MSG = "Failed to use workers for subsetting";
+  const origWarn = console.warn.bind(console);
+  console.warn = ((...args: unknown[]) => {
+    const first = args[0];
+    if (typeof first === "string" && (first.includes(SUBSET_MSG) || first.includes(SUBSET_SIG))) return;
+    origWarn(...args);
+  }) as typeof console.warn;
+  const origError = console.error.bind(console);
+  console.error = ((...args: unknown[]) => {
+    const first = args[0];
+    if (typeof first === "string" && (first.includes(SUBSET_MSG) || first.includes(SUBSET_SIG))) return;
+    // Also drop bare SecurityError objects from the subset worker.
+    if (args.some((a) => a && typeof a === "object" && (a as { message?: string }).message?.includes(SUBSET_SIG))) return;
+    origError(...args);
+  }) as typeof console.error;
+  // Patch Worker so the SecurityError never even gets thrown for
+  // the subset chunk. Returns a no-op shim object that mimics the
+  // Worker API surface Excalidraw uses, letting its catch path
+  // fall through to the main-thread fallback cleanly.
+  if (typeof Worker !== "undefined") {
+    const OrigWorker = Worker;
+    class SafeWorker extends OrigWorker {
+      constructor(url: string | URL, opts?: WorkerOptions) {
+        const u = typeof url === "string" ? url : url.toString();
+        if (u.includes(SUBSET_SIG)) {
+          // Throw a quiet error that Excalidraw catches and
+          // falls back to the main thread for. Marker name lets
+          // our error handler below swallow it.
+          const e = new Error("subset-worker-disabled");
+          (e as Error & { __subsetWorkerSkip?: boolean }).__subsetWorkerSkip = true;
+          throw e;
+        }
+        super(url, opts);
+      }
+    }
+    (window as { Worker?: typeof Worker }).Worker = SafeWorker as typeof Worker;
+  }
   window.addEventListener("error", (ev) => {
+    // Silence subset-worker fallback noise too.
+    if (ev.message && (ev.message.includes(SUBSET_SIG) || ev.message.includes(SUBSET_MSG) || ev.message.includes("subset-worker-disabled"))) {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      return;
+    }
     if (ev.message && ev.message.includes(SIG)) {
       ev.preventDefault();
       ev.stopImmediatePropagation();
@@ -415,6 +464,36 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
       app: api.getAppState() as Record<string, unknown>,
     }));
   }, []);
+  // Mirror Excalidraw's appState into miniData as soon as the API
+  // mounts. PaperBackdrop / overlays read scroll/zoom from
+  // miniData.app — on a pure page reload with no user interaction,
+  // it stayed as `{}` until the first onChange, so the dot/grid
+  // pattern (and book pages) rendered at world (0,0) instead of
+  // the saved scroll. That matched the "go to board, come back"
+  // workaround the user reported.
+  useEffect(() => {
+    let cancelled = false;
+    let tries = 0;
+    const tick = () => {
+      if (cancelled) return;
+      const a = excalRef.current;
+      if (a) {
+        try {
+          const app = a.getAppState() as Record<string, unknown>;
+          const els = a.getSceneElements() as readonly unknown[];
+          setMiniData({ els, app });
+        } catch {}
+        return;
+      }
+      if (++tries > 120) return;
+      requestAnimationFrame(tick);
+    };
+    const t = setTimeout(() => requestAnimationFrame(tick), 30);
+    return () => { cancelled = true; clearTimeout(t); };
+    // Only run on mount (slug change remounts the whole tree via
+    // the Excalidraw `key={slug}` prop too).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug]);
   // Snap to page 0 on entering book mode. On reload `layoutMode`
   // flips to "book" before Excalidraw's dynamic import resolves —
   // running goToBookPage immediately would early-return because
@@ -918,7 +997,15 @@ useEffect(() => {
       // polling effect re-runs on every SWR refresh (new doc ref each
       // time) and continuously setting state from doc would feedback
       // with onChange → save → reload chain into an update loop.
-      if (firstApply && typeof doc.canvasBg === "string" && doc.canvasBg !== customBgRef.current) {
+      // Seed customBg on EVERY sync where the server has a value
+      // and the local ref doesn't yet (or differs). Previously this
+      // was gated on `firstApply`, but SWR can return a cached
+      // copy without canvasBg first, then the fresh one a tick
+      // later — by which point firstApply has flipped and the
+      // color stayed at whatever the initial render had. Setting
+      // only when ref differs still avoids the feedback loop
+      // because once applied the values match and we no-op.
+      if (typeof doc.canvasBg === "string" && doc.canvasBg !== customBgRef.current) {
         setCustomBg(doc.canvasBg);
       }
       if (Array.isArray(doc.bookPages)) {
@@ -1889,12 +1976,73 @@ useEffect(() => {
   const exportPng = async () => {
     const api = excalRef.current;
     if (!api) return toast.error("Canvas not ready");
-    const { exportToBlob } = await loadExcal();
-    const blob = await exportToBlob({
-      elements: api.getSceneElements() as never,
-      appState: { ...api.getAppState(), exportWithDarkMode: resolvedTheme === "dark" } as never,
+    const { exportToCanvas } = await loadExcal();
+    // Bg: explicit customBg picked by the user, else theme default.
+    // Skipping getComputedStyle keeps SVG and PNG in lockstep.
+    const bg = customBgRef.current || (resolvedTheme === "dark" ? "#1b1b1f" : "#ffffff");
+    // Render strokes onto a TRANSPARENT canvas so we can composite
+    // the on-screen paper pattern underneath. exportToBlob with a
+    // viewBackgroundColor paints only flat color — losing dots/
+    // grid/lines and producing the "wrong color" PNG.
+    // Detect bg luma to pick the right theme: rendering with
+    // `theme: light` on a dark page makes Excalidraw remap light
+    // strokes to dark (and vice versa). Match the theme to the bg.
+    const bgIsDark = (() => {
+      const v = bg.toLowerCase().trim();
+      const hm = /^#?([0-9a-f]{6})$/.exec(v.replace("#", ""));
+      if (hm) {
+        const n = parseInt(hm[1], 16);
+        const r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
+        return (0.299 * r + 0.587 * g + 0.114 * b) < 128;
+      }
+      const rm = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(v);
+      if (rm) {
+        const r = +rm[1], g = +rm[2], b = +rm[3];
+        return (0.299 * r + 0.587 * g + 0.114 * b) < 128;
+      }
+      return false;
+    })();
+    // Same stroke remap as SVG path so PNG + SVG agree.
+    const remapStroke = (sc: unknown): unknown => {
+      if (typeof sc !== "string") return sc;
+      const s = sc.toLowerCase();
+      if (bgIsDark && (s === "#1e1e1e" || s === "#000000" || s === "#000" || s === "black" || s === "#1b1b1f")) return "#e6e6e6";
+      return sc;
+    };
+    const remappedEls = (api.getSceneElements() as ReadonlyArray<Record<string, unknown>>).map((el) => ({
+      ...el,
+      strokeColor: remapStroke(el.strokeColor),
+    }));
+    const strokesCanvas = await (exportToCanvas as unknown as (opts: unknown) => Promise<HTMLCanvasElement>)({
+      elements: remappedEls as never,
+      appState: {
+        ...api.getAppState(),
+        theme: "light",
+        exportWithDarkMode: false,
+        exportBackground: false,
+        viewBackgroundColor: "transparent",
+        exportScale: 2,
+        exportEmbedScene: false,
+      } as never,
       files: api.getFiles() as never,
-      mimeType: "image/png",
+    });
+    const out = document.createElement("canvas");
+    out.width = strokesCanvas.width;
+    out.height = strokesCanvas.height;
+    const ctx = out.getContext("2d");
+    if (!ctx) return toast.error("2d context unavailable");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, out.width, out.height);
+    // Paint paper pattern (dots / grid / lines) so the PNG matches
+    // the on-screen look. patternScale = output px per world unit.
+    try {
+      const app = api.getAppState() as { width?: number };
+      const patternScale = app.width ? strokesCanvas.width / app.width : 2;
+      drawPaperPattern(ctx, out.width, out.height, paperModeRef.current, patternScale, bg);
+    } catch {}
+    ctx.drawImage(strokesCanvas, 0, 0);
+    const blob = await new Promise<Blob>((res, rej) => {
+      out.toBlob((b) => (b ? res(b) : rej(new Error("toBlob failed"))), "image/png");
     });
     triggerDownload(blob, `${skill}-sketch.png`);
   };
@@ -1960,12 +2108,150 @@ useEffect(() => {
     const api = excalRef.current;
     if (!api) return toast.error("Canvas not ready");
     const { exportToSvg } = await loadExcal();
-    const svg = await exportToSvg({
-      elements: api.getSceneElements() as never,
-      appState: api.getAppState() as never,
+    // Bg: customBg first (the value the user explicitly picked),
+    // then theme default. Skip computed style — the wrapper paints
+    // bg via Excalidraw's view background, so getComputedStyle on
+    // the wrap div often returns the page bg, not the canvas bg.
+    const bg = customBgRef.current || (resolvedTheme === "dark" ? "#1b1b1f" : "#ffffff");
+    const NS = "http://www.w3.org/2000/svg";
+    const hexToLuma = (v: string): number => {
+      const t = v.toLowerCase().trim();
+      const hm = /^#?([0-9a-f]{6})$/.exec(t.replace("#", ""));
+      if (hm) {
+        const n = parseInt(hm[1], 16);
+        const r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
+        return 0.299 * r + 0.587 * g + 0.114 * b;
+      }
+      const rm = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(t);
+      if (rm) return 0.299 * +rm[1] + 0.587 * +rm[2] + 0.114 * +rm[3];
+      return 255;
+    };
+    const bgIsDark = hexToLuma(bg) < 128;
+    // Pre-flip stroke colors that would be invisible on the
+    // destination bg. Excalidraw stores strokeColor literally
+    // (often the theme default — #1e1e1e on light, #ced4da on
+    // dark). On screen its dark-theme renderer inverts dark
+    // strokes to light, so a "black" text element actually shows
+    // light. Export with theme:light keeps stored colors as-is,
+    // so we need to manually flip dark strokes to light on a dark
+    // page (and vice versa) to match what's on screen.
+    const remapStroke = (sc: unknown): unknown => {
+      if (typeof sc !== "string") return sc;
+      const s = sc.toLowerCase();
+      if (bgIsDark) {
+        // dark stroke → light. Catches Excalidraw's #1e1e1e default,
+        // pure black, and the dark text color #1b1b1f.
+        if (s === "#1e1e1e" || s === "#000000" || s === "#000" || s === "black" || s === "#1b1b1f") return "#e6e6e6";
+        return sc;
+      }
+      // light bg: keep stored colors (user's explicit picks).
+      return sc;
+    };
+    const remappedEls = (api.getSceneElements() as ReadonlyArray<Record<string, unknown>>).map((el) => ({
+      ...el,
+      strokeColor: remapStroke(el.strokeColor),
+    }));
+    const svgEl = await exportToSvg({
+      elements: remappedEls as never,
+      appState: {
+        ...api.getAppState(),
+        theme: "light",
+        exportWithDarkMode: false,
+        exportBackground: false,
+        viewBackgroundColor: "transparent",
+      } as never,
       files: api.getFiles() as never,
     });
-    const blob = new Blob([new XMLSerializer().serializeToString(svg)], { type: "image/svg+xml" });
+    // Strip any inversion filter Excalidraw may have left on the
+    // root or its children — we paint our own bg.
+    try {
+      svgEl.removeAttribute("filter");
+      svgEl.querySelectorAll("[filter]").forEach((n) => (n as Element).removeAttribute("filter"));
+    } catch {}
+    // Compose underlay: solid bg rect + (optional) paper pattern.
+    // Use the svg's viewBox so the underlay matches the export
+    // bounds, regardless of where strokes actually sit in world.
+    try {
+      const vb = svgEl.getAttribute("viewBox") || "0 0 100 100";
+      const [vbx, vby, vbw, vbh] = vb.split(/\s+/).map(Number);
+      const doc = svgEl.ownerDocument;
+
+      // Solid bg rect.
+      const bgRect = doc.createElementNS(NS, "rect");
+      bgRect.setAttribute("x", String(vbx));
+      bgRect.setAttribute("y", String(vby));
+      bgRect.setAttribute("width", String(vbw));
+      bgRect.setAttribute("height", String(vbh));
+      bgRect.setAttribute("fill", bg);
+
+      // Paper pattern: build a <pattern> in <defs> and overlay a
+      // second rect filled with it.
+      const mode = paperModeRef.current;
+      let patternRect: SVGRectElement | null = null;
+      if (mode !== "plain") {
+        const ink = bgIsDark ? "rgba(255,255,255,0.45)" : "rgba(20,20,24,0.45)";
+        let defs = svgEl.querySelector("defs");
+        if (!defs) {
+          defs = doc.createElementNS(NS, "defs");
+          svgEl.insertBefore(defs, svgEl.firstChild);
+        }
+        const pat = doc.createElementNS(NS, "pattern");
+        const pid = `paper-${Math.random().toString(36).slice(2, 8)}`;
+        pat.setAttribute("id", pid);
+        pat.setAttribute("patternUnits", "userSpaceOnUse");
+        if (mode === "grid") {
+          const s = 32;
+          pat.setAttribute("width", String(s));
+          pat.setAttribute("height", String(s));
+          const v = doc.createElementNS(NS, "path");
+          v.setAttribute("d", `M ${s} 0 L 0 0 0 ${s}`);
+          v.setAttribute("fill", "none");
+          v.setAttribute("stroke", ink);
+          v.setAttribute("stroke-width", "1");
+          pat.appendChild(v);
+        } else if (mode === "dots") {
+          const s = 24;
+          pat.setAttribute("width", String(s));
+          pat.setAttribute("height", String(s));
+          const c = doc.createElementNS(NS, "circle");
+          c.setAttribute("cx", "0");
+          c.setAttribute("cy", "0");
+          c.setAttribute("r", "1.2");
+          c.setAttribute("fill", ink);
+          pat.appendChild(c);
+        } else {
+          const s = 28;
+          pat.setAttribute("width", String(s));
+          pat.setAttribute("height", String(s));
+          const l = doc.createElementNS(NS, "line");
+          l.setAttribute("x1", "0"); l.setAttribute("y1", "0");
+          l.setAttribute("x2", String(s)); l.setAttribute("y2", "0");
+          l.setAttribute("stroke", ink);
+          l.setAttribute("stroke-width", "1");
+          pat.appendChild(l);
+        }
+        defs.appendChild(pat);
+        patternRect = doc.createElementNS(NS, "rect");
+        patternRect.setAttribute("x", String(vbx));
+        patternRect.setAttribute("y", String(vby));
+        patternRect.setAttribute("width", String(vbw));
+        patternRect.setAttribute("height", String(vbh));
+        patternRect.setAttribute("fill", `url(#${pid})`);
+      }
+      // Insert rects BEFORE the first non-defs child so they sit
+      // under the strokes.
+      const firstChild = Array.from(svgEl.childNodes).find(
+        (n) => (n as Element).tagName?.toLowerCase() !== "defs",
+      ) as Node | undefined;
+      if (firstChild) {
+        svgEl.insertBefore(bgRect, firstChild);
+        if (patternRect) svgEl.insertBefore(patternRect, firstChild);
+      } else {
+        svgEl.appendChild(bgRect);
+        if (patternRect) svgEl.appendChild(patternRect);
+      }
+    } catch {}
+    const blob = new Blob([new XMLSerializer().serializeToString(svgEl)], { type: "image/svg+xml" });
     triggerDownload(blob, `${skill}-sketch.svg`);
   };
 
@@ -3971,19 +4257,37 @@ export function PaperBackdrop({
   const lineColor = bgColor
     ? (isLight ? "rgba(20, 20, 24, 0.45)" : "rgba(255, 255, 255, 0.45)")
     : "color-mix(in oklab, var(--foreground) 32%, transparent)";
+  // Below ~30% zoom, the pattern grid becomes denser than the
+  // strokes themselves — visually noisy + obscures content. Snap
+  // to multiples of the base spacing so the pattern stays
+  // legible at any zoom (12×12 → 24×24 → 48×48 in CSS px).
+  // Also progressively fade ink so faint strokes remain visible.
+  const minSpacing = 14;
+  const ensureSpacing = (sz: number) => {
+    let s = sz;
+    let mult = 1;
+    while (s < minSpacing) { mult *= 2; s = sz * mult; }
+    return { px: s, mult };
+  };
+  // Fade alpha at low zoom so pattern recedes behind content.
+  const fade = zoom < 0.3 ? Math.max(0.4, zoom / 0.3) : 1;
+  const fadedInk = bgColor
+    ? (isLight ? `rgba(20, 20, 24, ${0.45 * fade})` : `rgba(255, 255, 255, ${0.45 * fade})`)
+    : `color-mix(in oklab, var(--foreground) ${Math.round(32 * fade)}%, transparent)`;
   if (mode === "grid") {
-    const sz = baseGrid * zoom;
-    style.backgroundImage = `linear-gradient(to right, ${lineColor} 1px, transparent 1px), linear-gradient(to bottom, ${lineColor} 1px, transparent 1px)`;
+    const { px: sz } = ensureSpacing(baseGrid * zoom);
+    style.backgroundImage = `linear-gradient(to right, ${fadedInk} 1px, transparent 1px), linear-gradient(to bottom, ${fadedInk} 1px, transparent 1px)`;
     style.backgroundSize = `${sz}px ${sz}px, ${sz}px ${sz}px`;
     style.backgroundPosition = `${sx}px ${sy}px, ${sx}px ${sy}px`;
   } else if (mode === "dots") {
-    const sz = baseDots * zoom;
-    style.backgroundImage = `radial-gradient(circle, ${lineColor} ${Math.max(1, 1.2 * zoom)}px, transparent ${Math.max(1, 1.2 * zoom)}px)`;
+    const { px: sz } = ensureSpacing(baseDots * zoom);
+    const dotR = Math.max(1, 1.2 * zoom);
+    style.backgroundImage = `radial-gradient(circle, ${fadedInk} ${dotR}px, transparent ${dotR}px)`;
     style.backgroundSize = `${sz}px ${sz}px`;
     style.backgroundPosition = `${sx}px ${sy}px`;
   } else {
-    const sz = baseLines * zoom;
-    style.backgroundImage = `linear-gradient(to bottom, ${lineColor} 1px, transparent 1px)`;
+    const { px: sz } = ensureSpacing(baseLines * zoom);
+    style.backgroundImage = `linear-gradient(to bottom, ${fadedInk} 1px, transparent 1px)`;
     style.backgroundSize = `${sz}px ${sz}px`;
     style.backgroundPosition = `${sx}px ${sy}px`;
   }

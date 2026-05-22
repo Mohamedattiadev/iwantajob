@@ -1,5 +1,6 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import useSWR, { mutate } from "swr";
 import { Loader2, RefreshCw, CheckCircle2, AlertCircle, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,30 @@ export function ScrapeButton() {
   const [source, setSource] = useState<string>("");  // "" = all
   const [polling, setPolling] = useState(false);
   const [openMenu, setOpenMenu] = useState(false);
+  const triggerRef = useRef<HTMLDivElement | null>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   const lastFinished = useRef<string | null>(null);
+
+  // Recompute menu position whenever it opens or the viewport changes.
+  // Renders into a portal at body level so no ancestor stacking
+  // context can trap it behind other cards.
+  useLayoutEffect(() => {
+    if (!openMenu) { setMenuPos(null); return; }
+    const update = () => {
+      const r = triggerRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const MENU_W = 260;
+      // Right-align menu to the trigger's right edge.
+      setMenuPos({ top: r.bottom + 4, left: Math.max(8, r.right - MENU_W) });
+    };
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [openMenu]);
 
   useEffect(() => {
     if (!polling) return;
@@ -76,7 +100,7 @@ export function ScrapeButton() {
             <><RefreshCw className="mr-2 h-4 w-4" />Scrape {source || "all"}</>
           )}
         </Button>
-        <div className="relative">
+        <div className="relative" ref={triggerRef}>
           <Button
             type="button"
             variant="outline"
@@ -87,26 +111,31 @@ export function ScrapeButton() {
           >
             <ChevronDown className="h-4 w-4" />
           </Button>
-          {openMenu && (
+          {openMenu && menuPos && typeof document !== "undefined" && createPortal(
             <>
               <button
                 aria-hidden
                 tabIndex={-1}
                 onClick={() => setOpenMenu(false)}
-                className="fixed inset-0 z-30 cursor-default"
+                className="fixed inset-0 z-[9998] cursor-default"
               />
-              <div className="absolute right-0 top-full mt-1 z-40 w-[260px] rounded-lg border bg-popover shadow-xl overflow-hidden text-sm">
-                <div className="px-3 py-2 border-b border-border/60 text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+              <div
+                style={{ position: "fixed", top: menuPos.top, left: menuPos.left }}
+                className="z-[9999] w-[260px] rounded-lg border border-zinc-800/80 bg-zinc-950 shadow-2xl shadow-black/60 overflow-hidden text-sm ring-1 ring-white/5">
+                <div className="px-3 py-2 border-b border-border/60 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
                   Scrape source
                 </div>
                 <ul className="max-h-[320px] overflow-y-auto p-1">
                   <li>
                     <button
                       onClick={() => pickAndStart("")}
-                      className={`w-full text-left px-2.5 py-1.5 rounded text-sm hover:bg-accent flex items-center justify-between gap-2 ${source === "" ? "bg-primary/10 text-foreground font-medium" : ""}`}
+                      className={`group/item w-full text-left px-2.5 py-1.5 rounded-md text-[13px] hover:bg-accent flex items-center gap-2 ${source === "" ? "bg-primary/10 text-foreground font-medium" : ""}`}
                     >
-                      <span>All sources <span className="text-[10px] text-muted-foreground">— starts scrape</span></span>
-                      <span className="text-[10px] font-mono text-muted-foreground">{(sources ?? []).filter((s) => s.configured).length}</span>
+                      <span className={`inline-block h-1.5 w-1.5 rounded-full ${source === "" ? "bg-primary" : "bg-transparent"}`} />
+                      <span className="flex-1">All sources</span>
+                      <span className="text-[10px] font-medium tabular-nums px-1.5 py-0.5 rounded border border-border/60 text-muted-foreground">
+                        {(sources ?? []).filter((s) => s.configured).length}
+                      </span>
                     </button>
                   </li>
                   <li className="my-1 mx-2 border-t border-border/40" />
@@ -118,12 +147,15 @@ export function ScrapeButton() {
                       <button
                         onClick={() => pickAndStart(s.id)}
                         disabled={!s.configured || running}
-                        className={`w-full text-left px-2.5 py-1.5 rounded text-sm hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-between gap-2 ${source === s.id ? "bg-primary/10 text-foreground font-medium" : ""}`}
+                        className={`group/item w-full text-left px-2.5 py-1.5 rounded-md text-[13px] hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 ${source === s.id ? "bg-primary/10 text-foreground font-medium" : ""}`}
                         title={s.configured ? s.id : `Needs env: ${s.requires.join(", ")}`}
                       >
-                        <span className="lowercase">{s.id}</span>
+                        <span className={`inline-block h-1.5 w-1.5 rounded-full ${source === s.id ? "bg-primary" : "bg-transparent"}`} />
+                        <span className="flex-1 lowercase">{s.id}</span>
                         {!s.configured && (
-                          <span className="text-[9px] font-mono text-amber-500 uppercase">no key</span>
+                          <span className="text-[10px] font-medium uppercase px-1.5 py-0.5 rounded border border-amber-500/40 text-amber-500/90">
+                            no key
+                          </span>
                         )}
                       </button>
                     </li>
@@ -133,7 +165,8 @@ export function ScrapeButton() {
                   Add new: drop <code className="font-mono">collect_*.py</code> in <code className="font-mono">collectors/</code> and register in <code className="font-mono">COLLECTORS</code>.
                 </div>
               </div>
-            </>
+            </>,
+            document.body,
           )}
         </div>
       </div>
