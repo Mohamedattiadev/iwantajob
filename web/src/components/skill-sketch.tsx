@@ -494,6 +494,31 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
     // the Excalidraw `key={slug}` prop too).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug]);
+  // Belt-and-suspenders meta sync: when both doc + canvas API are
+  // present, re-apply paperMode / canvasBg / bookPages from doc
+  // unconditionally (subject to the 1.5s post-edit guard). The
+  // main sync effect already covers this, but on flaky reloads
+  // it sometimes runs before the React state for paperMode has
+  // committed and the next SWR poll then sees identical state +
+  // skips. This effect runs on doc changes only (no excalReady
+  // dep) AND after a 250ms debounce so it lands AFTER the main
+  // sync's setState calls have rendered.
+  useEffect(() => {
+    if (!doc) return;
+    const t = setTimeout(() => {
+      if (Date.now() - lastMetaEditAtRef.current < 1500) return;
+      if (doc.paperMode && doc.paperMode !== paperModeRef.current) {
+        setPaperMode(doc.paperMode);
+      }
+      if (typeof doc.canvasBg === "string" && doc.canvasBg !== customBgRef.current) {
+        setCustomBg(doc.canvasBg);
+      }
+      if (doc.layoutMode && doc.layoutMode !== layoutModeRef.current) {
+        setLayoutMode(doc.layoutMode);
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [doc]);
   // Snap to page 0 on entering book mode. On reload `layoutMode`
   // flips to "book" before Excalidraw's dynamic import resolves —
   // running goToBookPage immediately would early-return because
@@ -2161,12 +2186,50 @@ useEffect(() => {
         viewBackgroundColor: "transparent",
       } as never,
       files: api.getFiles() as never,
+      exportPadding: 0,
     });
     // Strip any inversion filter Excalidraw may have left on the
     // root or its children — we paint our own bg.
     try {
       svgEl.removeAttribute("filter");
       svgEl.querySelectorAll("[filter]").forEach((n) => (n as Element).removeAttribute("filter"));
+    } catch {}
+    // Crop viewBox to actual stroke bbox + tighten width/height
+    // to match. Excalidraw's emitted bounds sometimes include
+    // padding or empty area on the right (the visible "white
+    // strip" the user complained about). Recomputing from
+    // element extents removes it.
+    try {
+      const els = remappedEls as Array<Record<string, unknown>>;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const el of els) {
+        if ((el as { isDeleted?: boolean }).isDeleted) continue;
+        const x = Number((el as { x?: unknown }).x) || 0;
+        const y = Number((el as { y?: unknown }).y) || 0;
+        const w = Number((el as { width?: unknown }).width) || 0;
+        const h = Number((el as { height?: unknown }).height) || 0;
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x + w > maxX) maxX = x + w;
+        if (y + h > maxY) maxY = y + h;
+      }
+      if (Number.isFinite(minX) && Number.isFinite(maxX)) {
+        const vw = maxX - minX;
+        const vh = maxY - minY;
+        svgEl.setAttribute("viewBox", `${minX} ${minY} ${vw} ${vh}`);
+        svgEl.setAttribute("width", String(vw));
+        svgEl.setAttribute("height", String(vh));
+        svgEl.setAttribute("preserveAspectRatio", "xMidYMid meet");
+      } else {
+        // Fallback: lock width/height to whatever viewBox Excalidraw
+        // emitted so they at least agree.
+        const vbAttr = svgEl.getAttribute("viewBox");
+        if (vbAttr) {
+          const [, , vw, vh] = vbAttr.split(/\s+/).map(Number);
+          svgEl.setAttribute("width", String(vw));
+          svgEl.setAttribute("height", String(vh));
+        }
+      }
     } catch {}
     // Compose underlay: solid bg rect + (optional) paper pattern.
     // Use the svg's viewBox so the underlay matches the export
