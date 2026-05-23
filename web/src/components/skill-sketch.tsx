@@ -177,13 +177,19 @@ function nukedInitialData(initial: unknown): unknown {
     .filter((el): el is Record<string, unknown> =>
       !!el && typeof el === "object" && typeof (el as { type?: unknown }).type === "string"
     )
-    .map((el) => ({
-      ...el,
-      boundElements: [],
-      containerId: null,
-      frameId: null,
-      groupIds: [],
-    }));
+    .map((el) => {
+      const upd = Number((el as { updated?: unknown }).updated);
+      const ver = Number((el as { version?: unknown }).version);
+      return {
+        ...el,
+        boundElements: [],
+        containerId: null,
+        frameId: null,
+        groupIds: [],
+        updated: Number.isFinite(upd) && upd > 0 ? upd : Date.now(),
+        version: Number.isFinite(ver) && ver > 0 ? ver : 1,
+      };
+    });
   return { ...src, elements: safe };
 }
 
@@ -849,13 +855,24 @@ export function SkillSketch({ skill, homeHref, defaultFull = false, hideFullscre
           const giChanged = !Array.isArray(gi);
           const cidChanged = (cid ?? null) !== cidClean;
           const fidChanged = (fid ?? null) !== fidClean;
-          if (!beChanged && !giChanged && !cidChanged && !fidChanged) return el;
+          // Excalidraw's store invariant requires non-zero `updated`
+          // and `version` on every element. Legacy docs / AI ops
+          // without these fields crash the store delta tracker.
+          const upd = Number((el as { updated?: unknown }).updated);
+          const ver = Number((el as { version?: unknown }).version);
+          const updFixed = Number.isFinite(upd) && upd > 0 ? upd : Date.now();
+          const verFixed = Number.isFinite(ver) && ver > 0 ? ver : 1;
+          const updChanged = updFixed !== upd;
+          const verChanged = verFixed !== ver;
+          if (!beChanged && !giChanged && !cidChanged && !fidChanged && !updChanged && !verChanged) return el;
           return {
             ...el,
             boundElements: beClean,
             groupIds: giClean,
             containerId: cidClean,
             frameId: fidClean,
+            updated: updFixed,
+            version: verFixed,
           };
         });
         d = { ...d, elements: safe };
@@ -999,13 +1016,22 @@ useEffect(() => {
       .filter((el): el is Record<string, unknown> =>
         !!el && typeof el === "object" && typeof (el as { type?: unknown }).type === "string"
       )
-      .map((el) => ({
-        ...el,
-        groupIds: [],
-        boundElements: [],
-        containerId: null,
-        frameId: null,
-      }));
+      .map((el) => {
+        const upd = Number((el as { updated?: unknown }).updated);
+        const ver = Number((el as { version?: unknown }).version);
+        return {
+          ...el,
+          groupIds: [],
+          boundElements: [],
+          containerId: null,
+          frameId: null,
+          // Excalidraw's store delta tracking crashes on zero/
+          // missing `updated`. Backfill with Date.now() for any
+          // legacy doc that was saved before we started stamping.
+          updated: Number.isFinite(upd) && upd > 0 ? upd : Date.now(),
+          version: Number.isFinite(ver) && ver > 0 ? ver : 1,
+        };
+      });
     const firstApply = appliedFor.current !== slug;
     // Continuously mirror layout/paper/bookPages from server. Skipped
     // during the 1.5s after a local toggle (lastMetaEditAtRef) so an
