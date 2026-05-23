@@ -3437,15 +3437,17 @@ function SelectionAiWidget({
                   ...rebuilt,
                   id: cur?.id ?? id,                 // preserve original id
                   seed: m.seed,                      // keep stable seed for hand-drawn look
-                  // Lock width to the original so wrapping stays
-                  // at the same column. Height comes from the
-                  // rebuilt element (line-count based).
                   width: m.width,
                   groupIds: Array.isArray(m.groupIds) ? m.groupIds : [],
                   boundElements: Array.isArray(m.boundElements) ? m.boundElements : null,
                   // Force a version bump so Excalidraw repaints.
                   version: (typeof m.version === "number" ? m.version : 1) + 1,
                   versionNonce: Math.floor(Math.random() * 0x7fffffff),
+                  // `updated` ms timestamp is part of Excalidraw's
+                  // store delta tracking — missing/zero values fail
+                  // its "Broken invariant for 'updated' delta"
+                  // check and crash the canvas.
+                  updated: Date.now(),
                 };
               }
             } catch {}
@@ -3457,6 +3459,7 @@ function SelectionAiWidget({
             boundElements: (merged as { boundElements?: unknown }).boundElements ?? null,
             version: (typeof m.version === "number" ? m.version : 1) + 1,
             versionNonce: Math.floor(Math.random() * 0x7fffffff),
+            updated: Date.now(),
           };
         }
         // New shape: translate by drift so it lands at the selection's
@@ -3468,6 +3471,10 @@ function SelectionAiWidget({
           ...base,
           groupIds: Array.isArray((base as unknown as { groupIds?: unknown }).groupIds) ? (base as unknown as { groupIds: unknown[] }).groupIds : [],
           boundElements: (base as { boundElements?: unknown }).boundElements ?? null,
+          version: 1,
+          versionNonce: Math.floor(Math.random() * 0x7fffffff),
+          updated: Date.now(),
+          seed: Math.floor(Math.random() * 0x7fffffff),
         };
       });
       // Final guard: Excalidraw crashes hard on any element missing
