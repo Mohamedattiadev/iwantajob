@@ -178,16 +178,22 @@ function nukedInitialData(initial: unknown): unknown {
       !!el && typeof el === "object" && typeof (el as { type?: unknown }).type === "string"
     )
     .map((el) => {
-      const upd = Number((el as { updated?: unknown }).updated);
-      const ver = Number((el as { version?: unknown }).version);
+      // Regenerate every id on recovery so Excalidraw's store
+      // delta tracker has no memory of any previously-poisoned
+      // element. Without this, a single bad element (e.g. an
+      // AI-stamped id with a corrupt `updated` history) keeps
+      // re-triggering "ElementsChange invariant broken" on every
+      // remount.
       return {
         ...el,
+        id: `re-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         boundElements: [],
         containerId: null,
         frameId: null,
         groupIds: [],
-        updated: Number.isFinite(upd) && upd > 0 ? upd : Date.now(),
-        version: Number.isFinite(ver) && ver > 0 ? ver : 1,
+        updated: Date.now(),
+        version: 1,
+        versionNonce: Math.floor(Math.random() * 0x7fffffff),
       };
     });
   return { ...src, elements: safe };
@@ -1019,15 +1025,22 @@ useEffect(() => {
       .map((el) => {
         const upd = Number((el as { updated?: unknown }).updated);
         const ver = Number((el as { version?: unknown }).version);
+        const rawId = (el as { id?: unknown }).id;
+        // Quarantine elements with AI-stamped ids that have ever
+        // triggered Excalidraw's store invariant. The bad delta
+        // sticks to the id, so giving them a fresh id breaks the
+        // tracker association and stops the crash loop.
+        const isAiStamped = typeof rawId === "string" && /^ai-\d+/.test(rawId);
+        const id = isAiStamped
+          ? `aix-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+          : rawId;
         return {
           ...el,
+          id,
           groupIds: [],
           boundElements: [],
           containerId: null,
           frameId: null,
-          // Excalidraw's store delta tracking crashes on zero/
-          // missing `updated`. Backfill with Date.now() for any
-          // legacy doc that was saved before we started stamping.
           updated: Number.isFinite(upd) && upd > 0 ? upd : Date.now(),
           version: Number.isFinite(ver) && ver > 0 ? ver : 1,
         };

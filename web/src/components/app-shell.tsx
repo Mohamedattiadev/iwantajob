@@ -12,7 +12,7 @@ import { OnboardingGate } from "@/components/onboarding-gate";
 // Routes that should mount a *lean* shell — no nav, no chat widget,
 // no todo drawer, no ambient bg, no onboarding gate. Just the page.
 // Cuts ~600 KB of React work out of the canvas LCP path.
-const LEAN_PREFIXES = ["/scratch", "/sketch", "/draw"];
+const LEAN_PREFIXES = ["/excalidraw", "/scratch", "/sketch", "/draw"];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() || "";

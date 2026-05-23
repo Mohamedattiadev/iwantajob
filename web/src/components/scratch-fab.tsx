@@ -11,10 +11,10 @@ import { PencilRuler } from "lucide-react";
 // never covers the canvas.
 export function ScratchFab() {
   const pathname = usePathname();
-  if (pathname?.startsWith("/scratch") || pathname?.startsWith("/sketch")) return null;
+  if (pathname?.startsWith("/excalidraw") || pathname?.startsWith("/scratch") || pathname?.startsWith("/sketch")) return null;
   return (
     <Link
-      href="/scratch"
+      href="/excalidraw"
       title="Excalidraw — sketch / whiteboard"
       aria-label="Excalidraw"
       className="scratch-launcher fixed bottom-5 z-30 group inline-flex items-center gap-2 h-10 pl-3 pr-3.5 rounded-full bg-background/80 backdrop-blur-md text-foreground/90 hover:text-foreground border border-border/60 hover:border-primary/40 shadow-md shadow-black/10 hover:shadow-lg hover:-translate-y-0.5 transition-all"

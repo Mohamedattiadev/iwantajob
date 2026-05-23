@@ -34,6 +34,14 @@ const nextConfig: NextConfig = {
       { source: "/be/api/:path*", destination: `${BACKEND}/api/:path*` },
     ];
   },
+  async redirects() {
+    // Legacy `/scratch` URL kept working for bookmarks. New canonical
+    // path is `/excalidraw`.
+    return [
+      { source: "/scratch", destination: "/excalidraw", permanent: true },
+      { source: "/scratch/:path*", destination: "/excalidraw/:path*", permanent: true },
+    ];
+  },
 };
 
 export default nextConfig;
