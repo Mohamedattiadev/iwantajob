@@ -3362,10 +3362,60 @@ function SelectionAiWidget({
           );
           if (isText && touchesText && convertToExcalidrawElements) {
             // Sync text ↔ originalText (LLM often returns only one).
-            const newText = (e as Record<string, unknown>).text ?? (e as Record<string, unknown>).originalText ?? m.text ?? m.originalText;
+            const rawText = (e as Record<string, unknown>).text ?? (e as Record<string, unknown>).originalText ?? m.text ?? m.originalText;
+            // Wrap text to original width so a single-line AI
+            // response doesn't render as one overflowing line.
+            // Excalidraw only auto-wraps text bound to a container;
+            // free text elements keep whatever line breaks they're
+            // given. We pre-wrap using a canvas measureText sized
+            // to the same font Excalidraw will render with.
+            const wrapByWidth = (txt: string, maxW: number, fs: number, ff: unknown): string => {
+              if (!maxW || !Number.isFinite(maxW) || maxW <= 0) return txt;
+              try {
+                const canvas = document.createElement("canvas");
+                const ctx = canvas.getContext("2d");
+                if (!ctx) return txt;
+                // Map Excalidraw fontFamily ids → CSS font stacks
+                // (matches FONT_FAMILY constants: 1=hand, 2=normal,
+                // 3=code, 4=little-pony, 5=excalifont).
+                const family = ff === 2 ? "Helvetica, Arial, sans-serif"
+                  : ff === 3 ? "Cascadia, Consolas, monospace"
+                  : "Virgil, Excalifont, sans-serif";
+                ctx.font = `${fs || 20}px ${family}`;
+                const out: string[] = [];
+                for (const line of String(txt).split("\n")) {
+                  const words = line.split(/(\s+)/); // keep spaces
+                  let cur = "";
+                  for (const w of words) {
+                    const test = cur + w;
+                    if (ctx.measureText(test).width <= maxW || !cur.trim()) {
+                      cur = test;
+                    } else {
+                      out.push(cur.replace(/\s+$/, ""));
+                      cur = w.replace(/^\s+/, "");
+                    }
+                  }
+                  out.push(cur);
+                }
+                return out.join("\n");
+              } catch {
+                return txt;
+              }
+            };
+            const newText = wrapByWidth(
+              String(rawText ?? ""),
+              Number(m.width) || 0,
+              Number(m.fontSize) || 20,
+              m.fontFamily,
+            );
+            // Preserve original width so text wraps at the same
+            // column instead of collapsing to one long line. Height
+            // is recomputed by convertToExcalidrawElements based on
+            // the wrapped line count.
             const skeleton = {
               type: "text",
               x: m.x, y: m.y,
+              width: m.width,
               text: String(newText ?? ""),
               fontSize: m.fontSize,
               fontFamily: m.fontFamily,
@@ -3377,6 +3427,8 @@ function SelectionAiWidget({
               strokeWidth: m.strokeWidth,
               opacity: m.opacity,
               angle: m.angle,
+              lineHeight: m.lineHeight,
+              containerId: m.containerId,
             };
             try {
               const [rebuilt] = convertToExcalidrawElements([skeleton], { regenerateIds: false }) as Array<Record<string, unknown>>;
@@ -3385,6 +3437,10 @@ function SelectionAiWidget({
                   ...rebuilt,
                   id: cur?.id ?? id,                 // preserve original id
                   seed: m.seed,                      // keep stable seed for hand-drawn look
+                  // Lock width to the original so wrapping stays
+                  // at the same column. Height comes from the
+                  // rebuilt element (line-count based).
+                  width: m.width,
                   groupIds: Array.isArray(m.groupIds) ? m.groupIds : [],
                   boundElements: Array.isArray(m.boundElements) ? m.boundElements : null,
                   // Force a version bump so Excalidraw repaints.
