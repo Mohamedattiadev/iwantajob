@@ -2027,23 +2027,18 @@ useEffect(() => {
       }
       return false;
     })();
-    // Same stroke remap as SVG path so PNG + SVG agree.
-    const remapStroke = (sc: unknown): unknown => {
-      if (typeof sc !== "string") return sc;
-      const s = sc.toLowerCase();
-      if (bgIsDark && (s === "#1e1e1e" || s === "#000000" || s === "#000" || s === "black" || s === "#1b1b1f")) return "#e6e6e6";
-      return sc;
-    };
-    const remappedEls = (api.getSceneElements() as ReadonlyArray<Record<string, unknown>>).map((el) => ({
-      ...el,
-      strokeColor: remapStroke(el.strokeColor),
-    }));
+    // Match the theme to the bg. Excalidraw's dark-theme render
+    // applies a hue-rotate + invert that maps stored colors to
+    // their visible-on-dark equivalents (the "orange-looking red"
+    // the user saw). For PNG, exportToCanvas rasterizes the final
+    // colors directly — no leftover filter, so the canvas is
+    // exactly what the user sees on screen.
     const strokesCanvas = await (exportToCanvas as unknown as (opts: unknown) => Promise<HTMLCanvasElement>)({
-      elements: remappedEls as never,
+      elements: api.getSceneElements() as never,
       appState: {
         ...api.getAppState(),
-        theme: "light",
-        exportWithDarkMode: false,
+        theme: bgIsDark ? "dark" : "light",
+        exportWithDarkMode: bgIsDark,
         exportBackground: false,
         viewBackgroundColor: "transparent",
         exportScale: 2,
@@ -2152,73 +2147,105 @@ useEffect(() => {
       return 255;
     };
     const bgIsDark = hexToLuma(bg) < 128;
-    // Pre-flip stroke colors that would be invisible on the
-    // destination bg. Excalidraw stores strokeColor literally
-    // (often the theme default — #1e1e1e on light, #ced4da on
-    // dark). On screen its dark-theme renderer inverts dark
-    // strokes to light, so a "black" text element actually shows
-    // light. Export with theme:light keeps stored colors as-is,
-    // so we need to manually flip dark strokes to light on a dark
-    // page (and vice versa) to match what's on screen.
-    const remapStroke = (sc: unknown): unknown => {
-      if (typeof sc !== "string") return sc;
-      const s = sc.toLowerCase();
-      if (bgIsDark) {
-        // dark stroke → light. Catches Excalidraw's #1e1e1e default,
-        // pure black, and the dark text color #1b1b1f.
-        if (s === "#1e1e1e" || s === "#000000" || s === "#000" || s === "black" || s === "#1b1b1f") return "#e6e6e6";
-        return sc;
-      }
-      // light bg: keep stored colors (user's explicit picks).
-      return sc;
-    };
-    const remappedEls = (api.getSceneElements() as ReadonlyArray<Record<string, unknown>>).map((el) => ({
-      ...el,
-      strokeColor: remapStroke(el.strokeColor),
-    }));
+    // Render at the SAME theme as the destination bg. Excalidraw
+    // remaps stored colors via dark-mode color mapping (not just
+    // a global CSS invert filter) so the visible color on a dark
+    // canvas matches what users picked from the swatch grid.
+    // Using `theme: light` for a dark bg made oranges render as
+    // their dark-red stored equivalents.
     const svgEl = await exportToSvg({
-      elements: remappedEls as never,
+      elements: api.getSceneElements() as never,
       appState: {
         ...api.getAppState(),
-        theme: "light",
-        exportWithDarkMode: false,
+        theme: bgIsDark ? "dark" : "light",
+        exportWithDarkMode: bgIsDark,
         exportBackground: false,
         viewBackgroundColor: "transparent",
       } as never,
       files: api.getFiles() as never,
       exportPadding: 0,
     });
-    // Strip any inversion filter Excalidraw may have left on the
-    // root or its children — we paint our own bg.
+    // Excalidraw's dark-mode SVG export applies a CSS `filter`
+    // (invert + hue-rotate) to the root <svg>. If we paint our
+    // bg rect at the root level it gets inverted too (which is
+    // the "lavender bg on dark canvas" bug). Move that filter
+    // off the root onto a <g> wrapping the existing children, so
+    // strokes stay inverted (matching the canvas) but our bg
+    // sits OUTSIDE the filtered group.
     try {
-      svgEl.removeAttribute("filter");
-      svgEl.querySelectorAll("[filter]").forEach((n) => (n as Element).removeAttribute("filter"));
+      const rootFilter = svgEl.getAttribute("filter");
+      if (rootFilter) {
+        svgEl.removeAttribute("filter");
+        const doc = svgEl.ownerDocument;
+        const wrap = doc.createElementNS("http://www.w3.org/2000/svg", "g");
+        wrap.setAttribute("filter", rootFilter);
+        // Move every child of svg (except <defs>, which holds the
+        // filter definition itself) into the wrapper.
+        const movables: Node[] = [];
+        svgEl.childNodes.forEach((n: Node) => {
+          const tag = (n as Element).tagName?.toLowerCase();
+          if (tag !== "defs") movables.push(n);
+        });
+        for (const n of movables) wrap.appendChild(n);
+        svgEl.appendChild(wrap);
+      }
     } catch {}
-    // Crop viewBox to actual stroke bbox + tighten width/height
-    // to match. Excalidraw's emitted bounds sometimes include
-    // padding or empty area on the right (the visible "white
-    // strip" the user complained about). Recomputing from
-    // element extents removes it.
+    // Crop viewBox to true content bounds. Prefer Excalidraw's
+    // own getCommonBounds (accounts for stroke width, text
+    // glyph overshoot, rotation, etc) — falls back to a raw
+    // element x/y/w/h sweep only if the helper isn't available.
     try {
-      const els = remappedEls as Array<Record<string, unknown>>;
+      const els = (api.getSceneElements() as Array<Record<string, unknown>>).filter((el) => !el.isDeleted);
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (const el of els) {
-        if ((el as { isDeleted?: boolean }).isDeleted) continue;
-        const x = Number((el as { x?: unknown }).x) || 0;
-        const y = Number((el as { y?: unknown }).y) || 0;
-        const w = Number((el as { width?: unknown }).width) || 0;
-        const h = Number((el as { height?: unknown }).height) || 0;
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x + w > maxX) maxX = x + w;
-        if (y + h > maxY) maxY = y + h;
+      try {
+        const mod = await loadExcal();
+        const getCommonBounds = (mod as unknown as {
+          getCommonBounds?: (els: unknown[]) => [number, number, number, number]
+        }).getCommonBounds;
+        if (getCommonBounds) {
+          const [x1, y1, x2, y2] = getCommonBounds(els as unknown[]);
+          minX = x1; minY = y1; maxX = x2; maxY = y2;
+        }
+      } catch {}
+      if (!Number.isFinite(minX)) {
+        for (const el of els) {
+          const x = Number((el as { x?: unknown }).x) || 0;
+          const y = Number((el as { y?: unknown }).y) || 0;
+          const w = Number((el as { width?: unknown }).width) || 0;
+          const h = Number((el as { height?: unknown }).height) || 0;
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x + w > maxX) maxX = x + w;
+          if (y + h > maxY) maxY = y + h;
+        }
       }
       if (Number.isFinite(minX) && Number.isFinite(maxX)) {
-        const vw = maxX - minX;
-        const vh = maxY - minY;
-        svgEl.setAttribute("viewBox", `${minX} ${minY} ${vw} ${vh}`);
-        svgEl.setAttribute("width", String(vw));
-        svgEl.setAttribute("height", String(vh));
+        // Pad by max stroke width so antialiased edges + text
+        // glyph overshoot don't get clipped on the left/right.
+        let maxStroke = 4;
+        for (const el of els) {
+          const sw = Number((el as { strokeWidth?: unknown }).strokeWidth);
+          if (Number.isFinite(sw) && sw > maxStroke) maxStroke = sw;
+        }
+        // Generous padding — Excalidraw text glyphs can extend
+        // ~font-size/2 beyond the stored element width, and stroke
+        // antialiasing adds another half-width. Anything tighter
+        // clips the leftmost glyph on text-heavy exports.
+        const PAD = Math.ceil(Math.max(maxStroke * 2, 24));
+        const vbx = minX - PAD;
+        const vby = minY - PAD;
+        const vw = (maxX - minX) + 2 * PAD;
+        const vh = (maxY - minY) + 2 * PAD;
+        svgEl.setAttribute("viewBox", `${vbx} ${vby} ${vw} ${vh}`);
+        // Drop fixed width/height — when set to a pixel count, the
+        // browser's standalone SVG viewer renders the file at that
+        // intrinsic size and pads the rest of the tab with white
+        // space. Using 100% with the viewBox + preserveAspectRatio
+        // makes the file scale to whatever container it's dropped
+        // into (browser tab, <img>, <object>, Figma, etc.) without
+        // a baked-in whitespace strip.
+        svgEl.setAttribute("width", "100%");
+        svgEl.setAttribute("height", "100%");
         svgEl.setAttribute("preserveAspectRatio", "xMidYMid meet");
       } else {
         // Fallback: lock width/height to whatever viewBox Excalidraw
@@ -2294,12 +2321,13 @@ useEffect(() => {
           pat.appendChild(l);
         }
         defs.appendChild(pat);
-        patternRect = doc.createElementNS(NS, "rect");
-        patternRect.setAttribute("x", String(vbx));
-        patternRect.setAttribute("y", String(vby));
-        patternRect.setAttribute("width", String(vbw));
-        patternRect.setAttribute("height", String(vbh));
-        patternRect.setAttribute("fill", `url(#${pid})`);
+        const pr = doc.createElementNS(NS, "rect");
+        pr.setAttribute("x", String(vbx));
+        pr.setAttribute("y", String(vby));
+        pr.setAttribute("width", String(vbw));
+        pr.setAttribute("height", String(vbh));
+        pr.setAttribute("fill", `url(#${pid})`);
+        patternRect = pr;
       }
       // Insert rects BEFORE the first non-defs child so they sit
       // under the strokes.
@@ -2721,7 +2749,7 @@ useEffect(() => {
         <ExcalCrashBoundary onCrash={onCanvasCrash} onRetry={onCanvasRetry} resetKey={recoveryNonce}>
           <Excalidraw
             key={`${slug}-${recoveryNonce}`}
-            initialData={recoveryNonce > 0 ? nukedInitialData(initialData) : initialData}
+            initialData={(recoveryNonce > 0 ? nukedInitialData(initialData) : initialData) as never}
             onChange={onChange}
             onLibraryChange={onLibraryChange}
             theme={resolvedTheme === "light" ? "light" : "dark"}
@@ -3302,6 +3330,17 @@ function SelectionAiWidget({
       // backend (server now keeps full originals and applies ops, so
       // matching ids mean unchanged/modified bindings stay intact).
       // Stamp a fresh id only on NEW elements the LLM added.
+      // Lazy-load convertToExcalidrawElements for text-modify ops
+      // (recomputes width/height so the rendered glyphs match the
+      // new content). Without this Excalidraw keeps the old bbox
+      // and the new text either clips or fails to repaint.
+      let convertToExcalidrawElements: ((els: unknown[], opts?: { regenerateIds?: boolean }) => unknown[]) | null = null;
+      try {
+        const mod = await loadExcal();
+        convertToExcalidrawElements = (mod as unknown as {
+          convertToExcalidrawElements?: (els: unknown[], opts?: { regenerateIds?: boolean }) => unknown[]
+        }).convertToExcalidrawElements ?? null;
+      } catch {}
       const stamped = els.map((e) => {
         const id = (e as { id?: unknown }).id;
         const isOriginal = typeof id === "string" && selIdSet.has(id);
@@ -3310,10 +3349,58 @@ function SelectionAiWidget({
           // original (which may have been moved/rotated since submit).
           const cur = current.find((c) => c.id === id) as Record<string, unknown> | undefined;
           const merged = cur ? { ...cur, ...e, id } : e;
+          const m = merged as Record<string, unknown>;
+          // Text-modify path: if AI touched text/originalText/fontSize/
+          // fontFamily, rebuild the element via convertToExcalidrawElements
+          // so width/height + version get recomputed correctly.
+          const isText = m.type === "text";
+          const touchesText = isText && (
+            (e as Record<string, unknown>).text !== undefined ||
+            (e as Record<string, unknown>).originalText !== undefined ||
+            (e as Record<string, unknown>).fontSize !== undefined ||
+            (e as Record<string, unknown>).fontFamily !== undefined
+          );
+          if (isText && touchesText && convertToExcalidrawElements) {
+            // Sync text ↔ originalText (LLM often returns only one).
+            const newText = (e as Record<string, unknown>).text ?? (e as Record<string, unknown>).originalText ?? m.text ?? m.originalText;
+            const skeleton = {
+              type: "text",
+              x: m.x, y: m.y,
+              text: String(newText ?? ""),
+              fontSize: m.fontSize,
+              fontFamily: m.fontFamily,
+              textAlign: m.textAlign,
+              verticalAlign: m.verticalAlign,
+              strokeColor: m.strokeColor,
+              backgroundColor: m.backgroundColor,
+              fillStyle: m.fillStyle,
+              strokeWidth: m.strokeWidth,
+              opacity: m.opacity,
+              angle: m.angle,
+            };
+            try {
+              const [rebuilt] = convertToExcalidrawElements([skeleton], { regenerateIds: false }) as Array<Record<string, unknown>>;
+              if (rebuilt) {
+                return {
+                  ...rebuilt,
+                  id: cur?.id ?? id,                 // preserve original id
+                  seed: m.seed,                      // keep stable seed for hand-drawn look
+                  groupIds: Array.isArray(m.groupIds) ? m.groupIds : [],
+                  boundElements: Array.isArray(m.boundElements) ? m.boundElements : null,
+                  // Force a version bump so Excalidraw repaints.
+                  version: (typeof m.version === "number" ? m.version : 1) + 1,
+                  versionNonce: Math.floor(Math.random() * 0x7fffffff),
+                };
+              }
+            } catch {}
+          }
+          // Non-text modify: keep the simple merge + version bump.
           return {
             ...merged,
             groupIds: Array.isArray((merged as { groupIds?: unknown }).groupIds) ? (merged as { groupIds: unknown[] }).groupIds : [],
             boundElements: (merged as { boundElements?: unknown }).boundElements ?? null,
+            version: (typeof m.version === "number" ? m.version : 1) + 1,
+            versionNonce: Math.floor(Math.random() * 0x7fffffff),
           };
         }
         // New shape: translate by drift so it lands at the selection's
@@ -3323,7 +3410,7 @@ function SelectionAiWidget({
         const base = { ...e, x: ex + dx, y: ey + dy, id: `ai-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` };
         return {
           ...base,
-          groupIds: Array.isArray((base as { groupIds?: unknown }).groupIds) ? (base as { groupIds: unknown[] }).groupIds : [],
+          groupIds: Array.isArray((base as unknown as { groupIds?: unknown }).groupIds) ? (base as unknown as { groupIds: unknown[] }).groupIds : [],
           boundElements: (base as { boundElements?: unknown }).boundElements ?? null,
         };
       });
