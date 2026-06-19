@@ -10,6 +10,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { API, type Profile } from "@/lib/api";
+import { useMutation } from "convex/react";
+import { api as convexApi } from "../../../convex/_generated/api";
 
 function blankProfile(): Profile {
   return {
@@ -28,6 +30,7 @@ export default function Welcome() {
   const { finish } = useOnboarded();
   const [step, setStep] = useState<Step>(0);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const saveProfileMut = useMutation(convexApi.profile.save);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -50,11 +53,7 @@ export default function Welcome() {
       personal: { ...base.personal, name: trimmed },
     };
     try {
-      await fetch(`${API}/api/profile`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ data: patched }),
-      });
+      await saveProfileMut({ data: JSON.stringify(patched) });
     } catch { /* silent — non-fatal */ }
     setProfile(patched);
     return patched;
@@ -92,11 +91,7 @@ export default function Welcome() {
       ...profile,
       personal: { ...profile.personal, summary: summary || profile.personal.summary },
     };
-    await fetch(`${API}/api/profile`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: patch }),
-    });
+    await saveProfileMut({ data: JSON.stringify(patch) });
     setProfile(patch);
     setStep(3);
   };

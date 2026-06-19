@@ -11,6 +11,8 @@ import { MagicCard, Gradient, AnimatedNumber, Bento } from "@/components/eye-can
 import { ShaderBackground } from "@/components/shader-background";
 import { PageHeader, SectionTitle } from "@/components/page-header";
 import { fetcher, type Stats, type JobsResponse, type Profile, type Application } from "@/lib/api";
+import { useQuery } from "convex/react";
+import { api } from "../../convex/_generated/api";
 import { useProficiency } from "@/lib/proficiency";
 
 export default function Home() {
@@ -19,7 +21,8 @@ export default function Home() {
     "/api/jobs?seniority=junior_or_unknown&min_score=50&limit=500",
     fetcher,
   );
-  const profile = useSWR<Profile>("/api/profile", fetcher);
+  const profileData = useQuery(api.profile.get) as Profile | undefined;
+  const profile = { data: profileData };
   const apps = useSWR<Application[]>("/api/applications", fetcher);
   const { map: prof, ready } = useProficiency();
 

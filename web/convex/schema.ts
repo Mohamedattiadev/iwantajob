@@ -97,14 +97,13 @@ export default defineSchema({
     .index("by_user_and_job", ["userId", "job_id"])
     .index("by_user_and_applied_at", ["userId", "applied_at"]),
 
-  // Single row per user. Enforced by querying via the `by_user` index and
-  // patching the first hit on writes.
+  // Single row per user. Full Profile shape stored as JSON for now —
+  // personal/education/experience/projects/skills/languages/certifications.
+  // Validated at the application layer.
   profile: defineTable({
     userId: v.id("users"),
-    name: v.optional(v.string()),
-    headline: v.optional(v.string()),
-    summary: v.optional(v.string()),
-    links: v.optional(v.array(v.string())),
+    data_json: v.string(),
+    updated_at: v.number(),
   }).index("by_user", ["userId"]),
 
   cv_drafts: defineTable({

@@ -16,7 +16,9 @@ import { ProficiencyControl } from "@/components/proficiency";
 import { Pagination } from "@/components/pagination";
 import { useProficiency, LEVELS } from "@/lib/proficiency";
 import { useUserPlans } from "@/lib/plans";
-import { fetcher, API, type LearnResponse, type LearnRow } from "@/lib/api";
+import { fetcher, API, type LearnResponse, type LearnRow, type Profile } from "@/lib/api";
+import { useMutation, useQuery } from "convex/react";
+import { api as convexApi } from "../../../convex/_generated/api";
 import { toast } from "sonner";
 import { AiSearchInput } from "@/components/ai-search-input";
 import { SkillHoverCard } from "@/components/skill-hover-card";
@@ -35,15 +37,26 @@ export default function LearnPage() {
   const [aiRanked, setAiRanked] = useState<{ skill: string; why: string }[] | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
 
-  // Load goal from backend on mount (replaces localStorage).
-  const { data: goalData } = useSWR<{ goal: string }>("/api/profile/goal", fetcher);
+  const profileData = useQuery(convexApi.profile.get) as Profile | undefined;
+  const saveProfileMut = useMutation(convexApi.profile.save);
+  const persistGoal = async (g: string) => {
+    if (!profileData) return;
+    const patched: Profile = {
+      ...profileData,
+      personal: { ...profileData.personal, goal: g } as Profile["personal"],
+    };
+    try {
+      await saveProfileMut({ data: JSON.stringify(patched) });
+    } catch { /* silent */ }
+  };
   useEffect(() => {
-    if (goalData?.goal && !goal) {
-      setGoal(goalData.goal);
-      setGoalDraft(goalData.goal);
+    const storedGoal = (profileData?.personal as { goal?: string } | undefined)?.goal ?? "";
+    if (storedGoal && !goal) {
+      setGoal(storedGoal);
+      setGoalDraft(storedGoal);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [goalData?.goal]);
+  }, [profileData]);
 
   // Rehydrate AI rerank cache on mount so navigating away + back keeps results.
   useEffect(() => {
@@ -96,12 +109,7 @@ export default function LearnPage() {
       setAiRanked(rankedRes);
       setGoal(g);
       try { localStorage.setItem("learn:aiRanked", JSON.stringify({ goal: g, ranked: rankedRes })); } catch {}
-      // Persist goal to backend.
-      fetch(`${API}/api/profile/goal`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ goal: g }),
-      }).catch(() => {});
+      void persistGoal(g);
       toast.success(`Top 5 reranked for "${g}"`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Rerank failed");
@@ -113,10 +121,7 @@ export default function LearnPage() {
   const clearGoal = () => {
     setGoal(""); setGoalDraft(""); setAiRanked(null);
     try { localStorage.removeItem("learn:aiRanked"); } catch {}
-    fetch(`${API}/api/profile/goal`, {
-      method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goal: "" }),
-    }).catch(() => {});
+    void persistGoal("");
   };
 
   // If goal-ranked, use those skills (in that order); else market priority.

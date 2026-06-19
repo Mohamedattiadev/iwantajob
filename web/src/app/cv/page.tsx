@@ -19,6 +19,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { API, fetcher, type Profile } from "@/lib/api";
 import { LEVELS } from "@/lib/proficiency";
+import { useMutation, useQuery } from "convex/react";
+import { api as convexApi } from "../../../convex/_generated/api";
 
 type Section = "personal" | "experience" | "projects" | "education" | "skills";
 type ViewMode = "edit" | "split" | "preview";
@@ -33,7 +35,10 @@ const SECTION_ITEMS: { key: Section; label: string; icon: React.ReactNode }[] = 
 ];
 
 export default function CvPage() {
-  const { data, mutate, isLoading } = useSWR<Profile>("/api/profile", fetcher);
+  const data = useQuery(convexApi.profile.get) as Profile | undefined;
+  const saveProfileMut = useMutation(convexApi.profile.save);
+  const isLoading = data === undefined;
+  const mutate = async () => {/* convex auto-refetches */};
   const [draft, setDraft] = useState<Profile | null>(null);
   const [dirty, setDirty] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -78,17 +83,10 @@ export default function CvPage() {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
-        const r = await fetch(`${API}/api/profile`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ data: draft }),
-        });
-        if (r.ok) {
-          await mutate();
-          setDirty(false);
-          setAutoSaved(Date.now());
-          fetch(`${API}/api/cv/markdown?min_level=${minLevel}`).then(r => r.text()).then(setMdPreview).catch(() => {});
-        }
+        await saveProfileMut({ data: JSON.stringify(draft) });
+        setDirty(false);
+        setAutoSaved(Date.now());
+        fetch(`${API}/api/cv/markdown?min_level=${minLevel}`).then(r => r.text()).then(setMdPreview).catch(() => {});
       } catch { /* silent */ }
     }, 800);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
@@ -121,13 +119,7 @@ export default function CvPage() {
   const save = async () => {
     if (!draft) return;
     try {
-      const r = await fetch(`${API}/api/profile`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ data: draft }),
-      });
-      if (!r.ok) throw new Error(`${r.status}`);
-      await mutate();
+      await saveProfileMut({ data: JSON.stringify(draft) });
       setDirty(false);
       toast.success("Profile saved");
     } catch (e) {
@@ -144,7 +136,7 @@ export default function CvPage() {
       if (!r.ok) throw new Error(`${r.status}`);
       const body = (await r.json()) as { profile: Profile; meta: { skills_detected: number } };
       setDraft(structuredClone(body.profile));
-      await mutate(body.profile, false);
+      await saveProfileMut({ data: JSON.stringify(body.profile) });
       setDirty(false);
       toast.success(`Parsed: ${body.meta.skills_detected} skills detected`);
     } catch (e) {

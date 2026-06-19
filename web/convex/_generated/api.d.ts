@@ -15,6 +15,7 @@ import type * as milestones from "../milestones.js";
 import type * as notes from "../notes.js";
 import type * as plans from "../plans.js";
 import type * as proficiency from "../proficiency.js";
+import type * as profile from "../profile.js";
 import type * as resources from "../resources.js";
 
 import type {
@@ -31,6 +32,7 @@ declare const fullApi: ApiFromModules<{
   notes: typeof notes;
   plans: typeof plans;
   proficiency: typeof proficiency;
+  profile: typeof profile;
   resources: typeof resources;
 }>;
 
