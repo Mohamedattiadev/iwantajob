@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-
-const STORE = "jobscraper:plans:v1";
+import { useCallback } from "react";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "../../convex/_generated/api";
+import type { Id } from "../../convex/_generated/dataModel";
 
 export type Priority = "low" | "med" | "high";
 export type Status = "todo" | "doing" | "done";
@@ -16,72 +17,74 @@ export type PlanItem = {
   pinned: boolean;
   created_at: number;
   priority?: Priority;
-  due?: string;            // ISO date "YYYY-MM-DD"
+  due?: string;
   notes?: string;
   completed_at?: number;
-  status?: Status;         // todo | doing | done (mirrors `done` when "done")
+  status?: Status;
 };
 
-function load(): PlanItem[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(STORE);
-    return raw ? (JSON.parse(raw) as PlanItem[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function persist(items: PlanItem[]): void {
-  try { localStorage.setItem(STORE, JSON.stringify(items)); } catch {}
-}
-
 export function useUserPlans() {
-  // Lazy init keeps localStorage read out of render path and avoids
-  // setState-in-effect lint flag on the initial hydration.
-  const [items, setItems] = useState<PlanItem[]>(() => load());
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setReady(true);
-  }, []);
+  const data = useQuery(api.plans.list);
+  const addMut = useMutation(api.plans.add);
+  const updateMut = useMutation(api.plans.update);
+  const removeMut = useMutation(api.plans.remove);
+  const reorderMut = useMutation(api.plans.reorder);
 
-  const add = useCallback((p: Pick<PlanItem, "title" | "skill" | "target"> & Partial<Pick<PlanItem, "priority" | "due" | "notes">>) => {
-    setItems((prev) => {
-      const next: PlanItem[] = [
-        { id: crypto.randomUUID(), done: false, pinned: false, created_at: Date.now(), ...p },
-        ...prev,
-      ];
-      persist(next);
-      return next;
-    });
-  }, []);
+  const items: PlanItem[] = (data ?? []).map((r) => ({
+    id: r._id,
+    title: r.title,
+    skill: r.skill,
+    target: r.target,
+    done: r.done,
+    pinned: r.pinned,
+    created_at: r.created_at,
+    priority: r.priority as Priority | undefined,
+    due: r.due,
+    notes: r.notes,
+    completed_at: r.completed_at,
+    status: r.status as Status | undefined,
+  }));
 
-  const update = useCallback((id: string, patch: Partial<PlanItem>) => {
-    setItems((prev) => {
-      const next = prev.map((p) => (p.id === id ? { ...p, ...patch } : p));
-      persist(next);
-      return next;
-    });
-  }, []);
+  const add = useCallback(
+    (p: Pick<PlanItem, "title" | "skill" | "target"> & Partial<Pick<PlanItem, "priority" | "due" | "notes">>) => {
+      void addMut({
+        title: p.title,
+        skill: p.skill,
+        target: p.target,
+        priority: p.priority,
+        due: p.due,
+        notes: p.notes,
+      });
+    },
+    [addMut],
+  );
+
+  const update = useCallback(
+    (id: string, patch: Partial<PlanItem>) => {
+      const cleaned: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(patch)) {
+        if (k === "id" || k === "created_at") continue;
+        if (v !== undefined) cleaned[k] = v;
+      }
+      void updateMut({ id: id as Id<"plans">, patch: cleaned as never });
+    },
+    [updateMut],
+  );
 
   const remove = useCallback((id: string) => {
-    setItems((prev) => {
-      const next = prev.filter((p) => p.id !== id);
-      persist(next);
-      return next;
-    });
-  }, []);
+    void removeMut({ id: id as Id<"plans"> });
+  }, [removeMut]);
 
-  const reorder = useCallback((from: number, to: number) => {
-    setItems((prev) => {
-      const next = [...prev];
-      const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      persist(next);
-      return next;
-    });
-  }, []);
+  const reorder = useCallback(
+    (from: number, to: number) => {
+      const ids = items.map((p) => p.id) as Id<"plans">[];
+      const [moved] = ids.splice(from, 1);
+      ids.splice(to, 0, moved);
+      void reorderMut({ ids });
+    },
+    [items, reorderMut],
+  );
 
+  const ready = data !== undefined;
   return { items, ready, add, update, remove, reorder };
 }

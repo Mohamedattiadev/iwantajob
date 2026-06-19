@@ -58,13 +58,21 @@ export default defineSchema({
   plans: defineTable({
     userId: v.id("users"),
     title: v.string(),
-    skill: v.string(),
+    skill: v.optional(v.string()),
+    target: v.optional(v.string()),
     done: v.boolean(),
+    pinned: v.boolean(),
     created_at: v.number(),
+    priority: v.optional(v.string()),
+    due: v.optional(v.string()),
+    notes: v.optional(v.string()),
+    completed_at: v.optional(v.number()),
+    status: v.optional(v.string()),
+    order: v.number(),
   })
     .index("by_user", ["userId"])
     .index("by_user_and_skill", ["userId", "skill"])
-    .index("by_user_and_created_at", ["userId", "created_at"]),
+    .index("by_user_and_order", ["userId", "order"]),
 
   resources: defineTable({
     userId: v.id("users"),

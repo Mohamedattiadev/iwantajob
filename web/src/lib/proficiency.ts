@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-
-const STORAGE = "jobscraper:proficiency:v1";
-const NOTES = "jobscraper:notes:v1";
+import { useCallback } from "react";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "../../convex/_generated/api";
 
 export const LEVELS = [
   { value: 0, label: "None", short: "—", color: "bg-muted text-muted-foreground" },
@@ -16,64 +15,31 @@ export const LEVELS = [
 
 export type ProficiencyMap = Record<string, number>;
 
-export function loadProficiency(): ProficiencyMap {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = localStorage.getItem(STORAGE);
-    return raw ? (JSON.parse(raw) as ProficiencyMap) : {};
-  } catch {
-    return {};
-  }
-}
-
-export function loadNotes(): Record<string, string> {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = localStorage.getItem(NOTES);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
-}
-
 export function useProficiency() {
-  const [map, setMap] = useState<ProficiencyMap>({});
-  const [notes, setNotes] = useState<Record<string, string>>({});
-  const [ready, setReady] = useState(false);
+  const data = useQuery(api.proficiency.list);
+  const setMut = useMutation(api.proficiency.setLevel);
+  const resetMut = useMutation(api.proficiency.reset);
 
-  useEffect(() => {
-    setMap(loadProficiency());
-    setNotes(loadNotes());
-    setReady(true);
-  }, []);
+  const map: ProficiencyMap = {};
+  for (const row of data ?? []) map[row.skill] = row.level;
 
-  const set = useCallback((skill: string, level: number) => {
-    setMap((prev) => {
-      const next = { ...prev, [skill]: level };
-      try { localStorage.setItem(STORAGE, JSON.stringify(next)); } catch {}
-      return next;
-    });
-    // Fire-and-forget server sync so CV stays in step.
-    const url = (process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000") + "/api/profile/skills";
-    fetch(url, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ skill, level }),
-    }).catch(() => {});
-  }, []);
+  const set = useCallback(
+    (skill: string, level: number) => {
+      void setMut({ skill, level });
+    },
+    [setMut],
+  );
 
-  const setNote = useCallback((skill: string, text: string) => {
-    setNotes((prev) => {
-      const next = { ...prev, [skill]: text };
-      try { localStorage.setItem(NOTES, JSON.stringify(next)); } catch {}
-      return next;
-    });
+  const setNote = useCallback((_skill: string, _text: string) => {
+    // Per-skill side notes moved to `notes` table; this stub is kept so
+    // callers that still pass through don't break. Use `api.notes.save`
+    // for actual storage.
   }, []);
 
   const reset = useCallback(() => {
-    setMap({});
-    try { localStorage.removeItem(STORAGE); } catch {}
-  }, []);
+    void resetMut();
+  }, [resetMut]);
 
-  return { map, notes, set, setNote, reset, ready };
+  const ready = data !== undefined;
+  return { map, notes: {} as Record<string, string>, set, setNote, reset, ready };
 }

@@ -13,6 +13,9 @@ import type * as auth_ResendOTP from "../auth/ResendOTP.js";
 import type * as http from "../http.js";
 import type * as milestones from "../milestones.js";
 import type * as notes from "../notes.js";
+import type * as plans from "../plans.js";
+import type * as proficiency from "../proficiency.js";
+import type * as resources from "../resources.js";
 
 import type {
   ApiFromModules,
@@ -26,6 +29,9 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   milestones: typeof milestones;
   notes: typeof notes;
+  plans: typeof plans;
+  proficiency: typeof proficiency;
+  resources: typeof resources;
 }>;
 
 /**

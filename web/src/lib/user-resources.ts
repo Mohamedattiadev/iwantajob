@@ -1,44 +1,33 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useCallback } from "react";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "../../convex/_generated/api";
 import type { Resource } from "./resources";
 
-const KEY = "user:resources";
-
-type Store = Record<string, Resource[]>;
-
-function load(): Store {
-  if (typeof window === "undefined") return {};
-  try {
-    return JSON.parse(localStorage.getItem(KEY) || "{}") as Store;
-  } catch { return {}; }
-}
-
-function save(s: Store) {
-  try { localStorage.setItem(KEY, JSON.stringify(s)); } catch {}
-}
-
 export function useUserResources(skill: string) {
-  const [items, setItems] = useState<Resource[]>([]);
+  const data = useQuery(api.resources.listBySkill, { skill });
+  const addMut = useMutation(api.resources.add);
+  const removeMut = useMutation(api.resources.removeByUrl);
 
-  useEffect(() => {
-    setItems(load()[skill] ?? []);
-  }, [skill]);
+  const items: Resource[] = (data ?? []).map((r) => ({
+    title: r.title,
+    url: r.url,
+    kind: r.kind as Resource["kind"],
+  }));
 
-  const add = useCallback((r: Resource) => {
-    const store = load();
-    const list = [...(store[skill] ?? []), r];
-    store[skill] = list;
-    save(store);
-    setItems(list);
-  }, [skill]);
+  const add = useCallback(
+    (r: Resource) => {
+      void addMut({ skill, title: r.title, url: r.url, kind: r.kind });
+    },
+    [addMut, skill],
+  );
 
-  const remove = useCallback((url: string) => {
-    const store = load();
-    const list = (store[skill] ?? []).filter((r) => r.url !== url);
-    store[skill] = list;
-    save(store);
-    setItems(list);
-  }, [skill]);
+  const remove = useCallback(
+    (url: string) => {
+      void removeMut({ skill, url });
+    },
+    [removeMut, skill],
+  );
 
   return { items, add, remove };
 }
