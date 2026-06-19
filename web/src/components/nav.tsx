@@ -1,9 +1,10 @@
 "use client";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useAuthActions } from "@convex-dev/auth/react";
 import {
   LayoutGrid, FileUser, GraduationCap, Briefcase, Sparkles,
-  Search,
+  Search, LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -30,14 +31,20 @@ function isActive(pathname: string, href: string) {
 
 export function Nav() {
   const pathname = usePathname();
+  const router = useRouter();
+  const { signOut } = useAuthActions();
+  const handleSignOut = async () => {
+    await signOut();
+    router.replace("/login");
+  };
 
   return (
     <header className="sticky top-0 z-40 bg-background/85 backdrop-blur-xl border-b border-border/60">
       <div aria-hidden className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent pointer-events-none" />
 
-      <div className="max-w-7xl w-full mx-auto h-12 grid grid-cols-[auto_1fr_auto] items-center gap-4 px-4 sm:px-6">
+      <div className="max-w-7xl w-full mx-auto h-12 grid grid-cols-3 items-center gap-4 px-4 sm:px-6">
         {/* Brand */}
-        <Link href="/" className="group flex items-center gap-2 shrink-0">
+        <Link href="/" className="group flex items-center gap-2 shrink-0 justify-self-start">
           <div className="h-6 w-6 rounded-md bg-gradient-to-br from-primary to-primary/60 grid place-items-center text-background font-extrabold text-[11px] shadow-sm">
             W
           </div>
@@ -96,7 +103,7 @@ export function Nav() {
         </ul>
 
         {/* Right: width toggle + command palette + theme */}
-        <div className="flex items-center justify-end gap-1.5">
+        <div className="flex items-center justify-end gap-1.5 justify-self-end">
           <PageWidthToggle />
           <button
             onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }))}
@@ -108,6 +115,14 @@ export function Nav() {
             <kbd className="ml-1 font-mono text-[10px] px-1 rounded bg-foreground/[0.06]">⌘K</kbd>
           </button>
           <ThemeToggle />
+          <button
+            onClick={handleSignOut}
+            title="Sign out"
+            aria-label="Sign out"
+            className="h-7 w-7 grid place-items-center rounded-md text-muted-foreground hover:text-foreground hover:bg-foreground/[0.06] transition-colors"
+          >
+            <LogOut className="h-3.5 w-3.5" />
+          </button>
         </div>
       </div>
     </header>

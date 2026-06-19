@@ -1,8 +1,17 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import useSWR from "swr";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "../../../../convex/_generated/api";
 import Link from "next/link";
+import dynamic from "next/dynamic";
+import type {
+  ExcalidrawImperativeAPI,
+  ExcalidrawInitialDataState,
+} from "@excalidraw/excalidraw/types";
+import "@excalidraw/excalidraw/index.css";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -10,7 +19,10 @@ import {
   Download,
   ExternalLink,
   Eye,
+  Maximize2,
+  Minimize2,
   Pencil,
+  PenTool,
   RotateCcw,
   Save,
   CheckCircle2,
@@ -18,7 +30,6 @@ import {
   GraduationCap,
   Video,
   Hammer,
-  PenTool,
   Mic,
   FileText,
   Check,
@@ -28,11 +39,15 @@ import {
   Briefcase,
   X,
 } from "lucide-react";
+
+const Excalidraw = dynamic(
+  async () => (await import("@excalidraw/excalidraw")).Excalidraw,
+  { ssr: false },
+);
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { useSkillMilestones } from "@/lib/milestones";
 import { useUserPlans } from "@/lib/plans";
-import { SkillSketch, SketchPreloader } from "@/components/skill-sketch";
 import { VoiceRecorder } from "@/components/voice-recorder";
 import { VoiceInputButton } from "@/components/voice-input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -41,13 +56,11 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { API, fetcher, type LearnResponse, type JobsResponse } from "@/lib/api";
+import { fetcher, type LearnResponse, type JobsResponse } from "@/lib/api";
 import { useProficiency } from "@/lib/proficiency";
 import { ProficiencyControl, ProficiencyLabel } from "@/components/proficiency";
 import { resourcesFor, type Resource } from "@/lib/resources";
 import { useUserResources } from "@/lib/user-resources";
-
-type NoteResp = { skill: string; category: string; content: string };
 
 export default function SkillPage({
   params,
@@ -57,8 +70,9 @@ export default function SkillPage({
   const { skill: rawSkill } = use(params);
   const skill = decodeURIComponent(rawSkill);
 
-  const noteUrl = `/api/notes/${encodeURIComponent(skill)}`;
-  const { data: note, mutate } = useSWR<NoteResp>(noteUrl, fetcher);
+  const note = useQuery(api.notes.get, { skill });
+  const saveNote = useMutation(api.notes.save);
+  const resetNote = useMutation(api.notes.reset);
   const learn = useSWR<LearnResponse>("/api/learn", fetcher);
   const jobsQ = useSWR<JobsResponse>(
     `/api/jobs?skill=${encodeURIComponent(skill)}&min_score=50&limit=6`,
@@ -70,11 +84,11 @@ export default function SkillPage({
 
   const [draft, setDraft] = useState<string>("");
   const [mode, setMode] = useState<"preview" | "edit">("preview");
-  type Tab = "note" | "sketch" | "voice" | "milestones" | "resources" | "jobs";
+  type Tab = "note" | "voice" | "sketch" | "milestones" | "resources" | "jobs";
   const [tab, setTab] = useState<Tab>(() => {
     if (typeof window === "undefined") return "note";
     const v = localStorage.getItem(`learn:tab:${skill}`) as Tab | null;
-    return v && ["note", "sketch", "voice", "milestones", "resources", "jobs"].includes(v) ? v : "note";
+    return v && ["note", "voice", "sketch", "milestones", "resources", "jobs"].includes(v) ? v : "note";
   });
   useEffect(() => {
     try { localStorage.setItem(`learn:tab:${skill}`, tab); } catch {}
@@ -99,13 +113,7 @@ export default function SkillPage({
   const save = async () => {
     setSaving(true);
     try {
-      const r = await fetch(`${API}${noteUrl}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: draft }),
-      });
-      if (!r.ok) throw new Error(`${r.status}`);
-      await mutate({ skill, category: note?.category ?? "skill", content: draft }, false);
+      await saveNote({ skill, content: draft, category: note?.category });
       setDirty(false);
       toast.success("Saved");
     } catch (e) {
@@ -130,10 +138,8 @@ export default function SkillPage({
 
   const reset = async () => {
     if (!confirm(`Reset ${skill} note to starter template? Your edits will be lost.`)) return;
-    const r = await fetch(`${API}${noteUrl}/reset`, { method: "POST" });
-    const data = (await r.json()) as { content: string };
+    const data = await resetNote({ skill, category: note?.category });
     setDraft(data.content);
-    await mutate({ skill, category: note?.category ?? "skill", content: data.content }, false);
     setDirty(false);
     toast.info("Reset to starter");
   };
@@ -225,8 +231,8 @@ export default function SkillPage({
         <div className="inline-flex items-center gap-1 p-1 rounded-lg bg-muted/60 border">
           {([
             { id: "note",   label: "Notes",  icon: <FileText className="h-3.5 w-3.5" /> },
-            { id: "sketch", label: "Sketch", icon: <PenTool className="h-3.5 w-3.5" /> },
             { id: "voice",  label: "Voice",  icon: <Mic className="h-3.5 w-3.5" /> },
+            { id: "sketch", label: "Sketch", icon: <PenTool className="h-3.5 w-3.5" /> },
           ] as const).map((t) => (
             <button
               key={t.id}
@@ -337,11 +343,9 @@ export default function SkillPage({
         </>
       )}
 
-      <SketchPreloader />
-      <div className={tab === "sketch" ? "" : "hidden"}>
-        <SkillSketch skill={skill} />
-      </div>
       {tab === "voice" && <VoiceRecorder skill={skill} />}
+
+      {tab === "sketch" && <SkillSketch skill={skill} />}
 
       {tab === "milestones" && (
         <Card><CardContent className="p-4">
@@ -391,6 +395,169 @@ export default function SkillPage({
         )
       )}
 
+      </div>
+    </div>
+  );
+}
+
+function SkillSketch({ skill }: { skill: string }) {
+  const storageKey = `sketch:skill:${skill}`;
+  const [initial, setInitial] = useState<ExcalidrawInitialDataState | null | undefined>(undefined);
+  const [full, setFull] = useState(false);
+  const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
+  const [toolbarEl, setToolbarEl] = useState<HTMLElement | null>(null);
+  const [miniSvg, setMiniSvg] = useState<string | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const miniTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) { setInitial(null); return; }
+      const parsed = JSON.parse(raw) as ExcalidrawInitialDataState & { appState?: Record<string, unknown> };
+      if (parsed.appState) {
+        const next: Record<string, unknown> = { ...parsed.appState };
+        delete next.collaborators;
+        parsed.appState = next;
+      }
+      setInitial(parsed);
+    } catch {
+      setInitial(null);
+    }
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!full) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFull(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [full]);
+
+  useEffect(() => {
+    const find = (): boolean => {
+      const root: ParentNode = wrapRef.current ?? document;
+      const eraser = root.querySelector('[data-testid="toolbar-eraser"]') as HTMLElement | null;
+      const stack = (eraser?.closest(".Stack_horizontal") as HTMLElement | null)
+        ?? document.querySelector<HTMLElement>(".App-toolbar .Stack_horizontal");
+      if (stack) { setToolbarEl(stack); return true; }
+      return false;
+    };
+    if (find()) return;
+    let tries = 0;
+    const id = setInterval(() => {
+      tries += 1;
+      if (find() || tries > 40) clearInterval(id);
+    }, 150);
+    return () => clearInterval(id);
+  }, [full, initial]);
+
+  const refreshMinimap = useCallback(async () => {
+    if (!api) return;
+    const elements = api.getSceneElements();
+    if (!elements.length) { setMiniSvg(null); return; }
+    try {
+      const mod = await import("@excalidraw/excalidraw");
+      const svg = await mod.exportToSvg({
+        elements,
+        appState: { exportBackground: true, viewBackgroundColor: "#ffffff" } as never,
+        files: api.getFiles(),
+      });
+      svg.setAttribute("width", "100%");
+      svg.setAttribute("height", "100%");
+      setMiniSvg(new XMLSerializer().serializeToString(svg));
+    } catch {
+      /* ignore */
+    }
+  }, [api]);
+
+  useEffect(() => { refreshMinimap(); }, [refreshMinimap]);
+
+  const onChange = useCallback(
+    (elements: unknown, appState: unknown, files: unknown) => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        try {
+          localStorage.setItem(storageKey, JSON.stringify({ elements, appState, files }));
+        } catch {
+          /* quota */
+        }
+      }, 500);
+      if (miniTimer.current) clearTimeout(miniTimer.current);
+      miniTimer.current = setTimeout(() => { refreshMinimap(); }, 600);
+    },
+    [storageKey, refreshMinimap],
+  );
+
+  const fitAll = () => {
+    if (!api) return;
+    const elements = api.getSceneElements();
+    if (elements.length) api.scrollToContent(elements, { fitToContent: true });
+  };
+
+  if (initial === undefined) return <Skeleton className="h-[75vh] w-full rounded-xl" />;
+
+  const wrapClass = full
+    ? "fixed inset-0 z-50 bg-background overflow-hidden"
+    : "relative h-[75vh] w-full rounded-xl border overflow-hidden";
+
+  return (
+    <div ref={wrapRef} className={wrapClass}>
+      <Excalidraw
+        initialData={initial}
+        onChange={onChange as never}
+        excalidrawAPI={(a) => setApi(a)}
+      />
+      {toolbarEl && createPortal(
+        <>
+          <div className="App-toolbar__divider" />
+          <button
+            type="button"
+            onClick={() => setFull((v) => !v)}
+            title={full ? "Exit fullscreen (Esc)" : "Fullscreen"}
+            aria-label={full ? "Exit fullscreen" : "Fullscreen"}
+            style={{
+              height: 36,
+              width: 36,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              border: "1px solid var(--default-border-color, #6965db)",
+              borderRadius: 6,
+              background: "var(--button-bg, #fff)",
+              color: "var(--text-primary-color, #1b1b1f)",
+              cursor: "pointer",
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {full ? (
+                <>
+                  <path d="M4 14h6v6" /><path d="M20 10h-6V4" /><path d="M14 10l7-7" /><path d="M3 21l7-7" />
+                </>
+              ) : (
+                <>
+                  <path d="M15 3h6v6" /><path d="M9 21H3v-6" /><path d="M21 3l-7 7" /><path d="M3 21l7-7" />
+                </>
+              )}
+            </svg>
+          </button>
+        </>,
+        toolbarEl,
+      )}
+      <div className="absolute bottom-3 right-3 z-10 w-44 h-32 rounded-md border bg-white/95 dark:bg-neutral-900/95 shadow-lg overflow-hidden flex flex-col">
+        <div className="flex items-center justify-between px-2 py-1 border-b text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+          <span>minimap</span>
+          <button onClick={fitAll} title="Fit all" className="hover:text-foreground">fit</button>
+        </div>
+        <div className="flex-1 bg-white overflow-hidden flex items-center justify-center">
+          {miniSvg ? (
+            <div className="w-full h-full p-1" dangerouslySetInnerHTML={{ __html: miniSvg }} />
+          ) : (
+            <span className="text-[10px] text-muted-foreground italic">empty</span>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -478,7 +645,8 @@ function ResourcesPane({
 function SkillMilestonesPanel({ skill }: { skill: string }) {
   const ms = useSkillMilestones(skill);
   const [adding, setAdding] = useState("");
-  const [editId, setEditId] = useState<string | null>(null);
+  type MId = (typeof ms.items)[number]["_id"];
+  const [editId, setEditId] = useState<MId | null>(null);
   const [editText, setEditText] = useState("");
   const pct = Math.round(ms.progress * 100);
   const doneCount = ms.items.filter((m) => m.done).length;
@@ -502,9 +670,9 @@ function SkillMilestonesPanel({ skill }: { skill: string }) {
           <div className="text-xs text-muted-foreground py-2">No milestones yet. Add your first below.</div>
         )}
         {ms.items.map((m, i) => (
-          <div key={m.id} className="group flex items-start gap-3 px-2 py-1.5 rounded-md hover:bg-accent/40 transition-colors">
+          <div key={m._id} className="group flex items-start gap-3 px-2 py-1.5 rounded-md hover:bg-accent/40 transition-colors">
             <button
-              onClick={() => ms.toggle(m.id)}
+              onClick={() => ms.toggle(m._id)}
               className={`mt-0.5 h-4.5 w-4.5 rounded border-2 grid place-items-center shrink-0 transition-colors ${
                 m.done ? "bg-emerald-500 border-emerald-500" : "border-foreground/30 hover:border-primary"
               }`}
@@ -514,12 +682,12 @@ function SkillMilestonesPanel({ skill }: { skill: string }) {
               {m.done && <Check className="h-3 w-3 text-white" strokeWidth={3} />}
             </button>
             <span className="font-mono text-[10px] text-muted-foreground mt-1 tabular-nums w-5 text-right shrink-0">{i + 1}.</span>
-            {editId === m.id ? (
+            {editId === m._id ? (
               <input
                 autoFocus
                 value={editText}
                 onChange={(e) => setEditText(e.target.value)}
-                onBlur={() => { if (editText.trim() && editText !== m.text) ms.updateText(m.id, editText.trim()); setEditId(null); }}
+                onBlur={() => { if (editText.trim() && editText !== m.text) ms.updateText(m._id, editText.trim()); setEditId(null); }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") (e.target as HTMLInputElement).blur();
                   if (e.key === "Escape") setEditId(null);
@@ -528,14 +696,14 @@ function SkillMilestonesPanel({ skill }: { skill: string }) {
               />
             ) : (
               <span
-                onClick={() => { if (!m.done) { setEditId(m.id); setEditText(m.text); } }}
+                onClick={() => { if (!m.done) { setEditId(m._id); setEditText(m.text); } }}
                 className={`flex-1 text-sm cursor-text ${m.done ? "line-through text-muted-foreground" : ""}`}
               >
                 {m.text}
               </span>
             )}
             <button
-              onClick={() => ms.remove(m.id)}
+              onClick={() => ms.remove(m._id)}
               className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-rose-500 shrink-0"
               aria-label="Remove milestone"
             >

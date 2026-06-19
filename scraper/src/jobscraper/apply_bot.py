@@ -8,12 +8,8 @@ apply link + (if extractable) draft mailto. No web automation in this phase.
 from __future__ import annotations
 
 import logging
-import os
 import re
-import threading
-import time
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -25,13 +21,6 @@ from .telegram import Telegram, TelegramError, have_config, inline_keyboard, top
 
 log = logging.getLogger("apply_bot")
 
-# Tuning knobs (read from env at runtime so user can override without code edit)
-AUTO_SCAN_INTERVAL_SEC = int(os.environ.get("APPLY_AUTOSCAN_SEC", "600"))   # 10 min default
-AUTO_BRIEF_MAX_PER_RUN = int(os.environ.get("APPLY_AUTOBRIEF_MAX", "3"))     # 3 briefs per scan
-WEEKLY_DIGEST_DAYS = int(os.environ.get("APPLY_DIGEST_DAYS", "7"))
-DIGEST_STATE = Path(os.environ.get("APPLY_DIGEST_STATE", "/tmp/iwantajob-digest.ts"))
-ENABLE_AUTO_BRIEF = os.environ.get("APPLY_AUTO_BRIEF", "1") not in ("0", "false", "no")
-ENABLE_DIGEST = os.environ.get("APPLY_DIGEST", "1") not in ("0", "false", "no")
 
 INTERN_RE = re.compile(r"\b(intern|internship|stajyer|staj|stagiaire|practicante)\b", re.IGNORECASE)
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
@@ -235,146 +224,25 @@ def handle_callback(callback: dict) -> None:
             pass
 
 
-# ── Long-polling background loop ───────────────────────────────────────────
-
-_poll_thread: threading.Thread | None = None
-_poll_stop = threading.Event()
-
-
-def _poll_loop() -> None:
-    offset: int | None = None
-    log.info("telegram poll loop started")
-    while not _poll_stop.is_set():
-        try:
-            tg = Telegram()
-            updates = tg.get_updates(offset=offset, timeout=20)
-        except TelegramError as e:
-            log.warning("getUpdates: %s — sleep 5s", e)
-            time.sleep(5)
-            continue
-        except Exception as e:  # network blips etc.
-            log.warning("poll error: %s — sleep 5s", e)
-            time.sleep(5)
-            continue
-        for u in updates:
-            offset = max(offset or 0, u["update_id"] + 1)
-            cb = u.get("callback_query")
-            if cb:
-                try:
-                    handle_callback(cb)
-                except Exception as e:
-                    log.exception("handle_callback failed: %s", e)
-    log.info("telegram poll loop stopped")
+# ── Telegram polling startup hooks ─────────────────────────────────────────
+#
+# Background polling threads were removed to cut idle cost. The web app still
+# calls start_polling()/stop_polling() at startup/shutdown — these are now
+# no-ops. Apply callbacks can be wired via Telegram webhook if/when needed.
 
 
 def start_polling() -> None:
-    """Spawn background poll thread if telegram is configured. Idempotent."""
-    global _poll_thread
-    if not have_config():
-        log.info("telegram not configured; skipping poll loop")
-        return
-    if _poll_thread and _poll_thread.is_alive():
-        return
-    _poll_stop.clear()
-    _poll_thread = threading.Thread(target=_poll_loop, name="tg-poll", daemon=True)
-    _poll_thread.start()
-    # Start auto-scan + digest threads alongside.
-    start_auto_scan()
-    start_digest()
+    log.info("apply_bot: background polling disabled (no-op)")
 
 
 def stop_polling() -> None:
-    _poll_stop.set()
+    return
 
 
-# ── Autonomous intern brief scan ───────────────────────────────────────────
+# ── Weekly digest (manual) ─────────────────────────────────────────────────
 #
-# Every AUTO_SCAN_INTERVAL_SEC, find intern jobs that have NOT been briefed
-# (auto_briefed_at IS NULL) and have NO existing Application, then send up to
-# AUTO_BRIEF_MAX_PER_RUN briefs to Telegram. User confirms in TG to record/apply.
-
-_scan_thread: threading.Thread | None = None
-
-
-def _autoscan_once() -> int:
-    if not have_config():
-        return 0
-    sent = 0
-    with session_scope() as s:
-        applied_ids = {a.job_id for a in s.scalars(select(Application))}
-        candidates: list[int] = []
-        for j in s.scalars(select(Job).where(Job.auto_briefed_at.is_(None))):
-            if j.id in applied_ids:
-                continue
-            if not is_intern(j):
-                continue
-            # Skip very old jobs.
-            if j.posted_at and (datetime.utcnow() - j.posted_at.replace(tzinfo=None) > timedelta(days=45)):
-                continue
-            candidates.append(j.id)
-            if len(candidates) >= AUTO_BRIEF_MAX_PER_RUN:
-                break
-    for job_id in candidates:
-        try:
-            res = send_apply_request(job_id)
-            with session_scope() as s:
-                j = s.get(Job, job_id)
-                if j:
-                    j.auto_briefed_at = datetime.utcnow()
-            if res.get("ok"):
-                sent += 1
-                log.info("auto-briefed job %d", job_id)
-            else:
-                log.warning("auto-brief job %d failed: %s", job_id, res.get("error"))
-        except Exception as e:
-            log.exception("auto-brief job %d crashed: %s", job_id, e)
-    return sent
-
-
-def _autoscan_loop() -> None:
-    log.info("auto-scan loop started (interval=%ds, max=%d/run)", AUTO_SCAN_INTERVAL_SEC, AUTO_BRIEF_MAX_PER_RUN)
-    while not _poll_stop.is_set():
-        try:
-            _autoscan_once()
-        except Exception as e:
-            log.exception("autoscan crash: %s", e)
-        if _poll_stop.wait(AUTO_SCAN_INTERVAL_SEC):
-            break
-    log.info("auto-scan loop stopped")
-
-
-def start_auto_scan() -> None:
-    global _scan_thread
-    if not ENABLE_AUTO_BRIEF or not have_config():
-        return
-    if _scan_thread and _scan_thread.is_alive():
-        return
-    _scan_thread = threading.Thread(target=_autoscan_loop, name="tg-autoscan", daemon=True)
-    _scan_thread.start()
-
-
-# ── Weekly digest ──────────────────────────────────────────────────────────
-#
-# Every WEEKLY_DIGEST_DAYS, generate a Gemini-summarised report (progress on
-# applications, top skill gaps, suggested actions) and send to the "skills"
-# topic. Persists last-sent timestamp to DIGEST_STATE so a server restart
-# doesn't trigger duplicates.
-
-_digest_thread: threading.Thread | None = None
-
-
-def _read_last_digest_ts() -> float:
-    try:
-        return float(DIGEST_STATE.read_text().strip())
-    except (OSError, ValueError):
-        return 0.0
-
-
-def _write_last_digest_ts(ts: float) -> None:
-    try:
-        DIGEST_STATE.write_text(str(ts))
-    except OSError as e:
-        log.warning("cannot write digest state: %s", e)
+# Builds + sends a digest to the "skills" topic when send_digest() is called
+# explicitly. No timer loop — invoke from a cron / CLI / endpoint when wanted.
 
 
 def _build_digest() -> str:
@@ -421,7 +289,8 @@ No markdown. Plain Telegram HTML only.
             f"Top gaps: {', '.join(s for s, _ in gaps[:5]) or 'n/a'}.")
 
 
-def _digest_once() -> bool:
+def send_digest() -> bool:
+    """Build digest and send to the 'skills' topic. Returns True on success."""
     if not have_config():
         return False
     text = _build_digest()
@@ -432,32 +301,6 @@ def _digest_once() -> bool:
     except TelegramError as e:
         log.warning("digest send failed: %s", e)
         return False
-
-
-def _digest_loop() -> None:
-    log.info("digest loop started (every %d days)", WEEKLY_DIGEST_DAYS)
-    interval = WEEKLY_DIGEST_DAYS * 86400
-    while not _poll_stop.is_set():
-        last = _read_last_digest_ts()
-        now = time.time()
-        if now - last >= interval:
-            if _digest_once():
-                _write_last_digest_ts(now)
-                log.info("digest sent")
-        # Sleep 1 hour then check again — cheap.
-        if _poll_stop.wait(3600):
-            break
-    log.info("digest loop stopped")
-
-
-def start_digest() -> None:
-    global _digest_thread
-    if not ENABLE_DIGEST or not have_config():
-        return
-    if _digest_thread and _digest_thread.is_alive():
-        return
-    _digest_thread = threading.Thread(target=_digest_loop, name="tg-digest", daemon=True)
-    _digest_thread.start()
 
 
 # ── Apply engine abstraction ──────────────────────────────────────────────

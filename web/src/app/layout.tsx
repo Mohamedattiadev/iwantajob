@@ -6,6 +6,8 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { PageWidthProvider } from "@/components/page-width";
 import { SwrProvider } from "@/components/swr-provider";
 import { AppShell } from "@/components/app-shell";
+import { ConvexAuthNextjsServerProvider } from "@convex-dev/auth/nextjs/server";
+import { ConvexClientProvider } from "@/components/convex-client-provider";
 
 const sansFont = Inter({
   variable: "--font-sans",
@@ -63,21 +65,29 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en"
-      suppressHydrationWarning
-      className={`${sansFont.variable} ${monoFont.variable} ${serif.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col bg-background text-foreground">
-        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
-          <PageWidthProvider>
-            <SwrProvider>
-              <AppShell>{children}</AppShell>
-              <Toaster richColors closeButton position="bottom-right" />
-            </SwrProvider>
-          </PageWidthProvider>
-        </ThemeProvider>
-      </body>
-    </html>
+    // Convex auth providers wrap the whole tree so theming, SWR, and AppShell
+    // can all read auth state. ServerProvider must be outside <html> so its
+    // cookie reads happen on the server before render; the client provider
+    // mounts inside <body> for normal React context.
+    <ConvexAuthNextjsServerProvider>
+      <html
+        lang="en"
+        suppressHydrationWarning
+        className={`${sansFont.variable} ${monoFont.variable} ${serif.variable} h-full antialiased`}
+      >
+        <body className="min-h-full flex flex-col bg-background text-foreground">
+          <ConvexClientProvider>
+            <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
+              <PageWidthProvider>
+                <SwrProvider>
+                  <AppShell>{children}</AppShell>
+                  <Toaster richColors closeButton position="bottom-right" />
+                </SwrProvider>
+              </PageWidthProvider>
+            </ThemeProvider>
+          </ConvexClientProvider>
+        </body>
+      </html>
+    </ConvexAuthNextjsServerProvider>
   );
 }

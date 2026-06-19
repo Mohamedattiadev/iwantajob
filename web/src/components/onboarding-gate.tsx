@@ -9,10 +9,7 @@ export function OnboardingGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
-  // Shared sketch links are opened from external devices (iPad) that have no
-  // onboarding state. Don't gate them — otherwise the page redirects to
-  // /welcome and the viewer sees a black screen.
-  const isPublicRoute = pathname?.startsWith("/sketch/") || pathname === "/welcome";
+  const isPublicRoute = pathname === "/welcome";
 
   useEffect(() => {
     if (!isPublicRoute && onboarded === false && pathname !== "/welcome") {

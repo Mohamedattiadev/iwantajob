@@ -1,14 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect } from "react";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "../../convex/_generated/api";
+import type { Id } from "../../convex/_generated/dataModel";
 
-const STORE = "jobscraper:milestones:v1";
+export type Milestone = { _id: Id<"milestones">; text: string; done: boolean; order: number };
 
-export type Milestone = { id: string; text: string; done: boolean };
-export type SkillMilestones = Record<string, Milestone[]>; // skill -> ordered list
-
-// Curated default milestones for high-frequency skills. Used to seed when user
-// opens a skill page for the first time. Editable afterwards.
 export const DEFAULT_MILESTONES: Record<string, string[]> = {
   JavaScript: [
     "Variables, data types, operators",
@@ -108,74 +106,65 @@ export const DEFAULT_MILESTONES: Record<string, string[]> = {
   ],
 };
 
-function load(): SkillMilestones {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = localStorage.getItem(STORE);
-    return raw ? (JSON.parse(raw) as SkillMilestones) : {};
-  } catch { return {}; }
-}
-
-function persist(map: SkillMilestones): void {
-  try { localStorage.setItem(STORE, JSON.stringify(map)); } catch {}
-}
-
-function seedFor(skill: string): Milestone[] {
-  const preset = DEFAULT_MILESTONES[skill];
-  if (!preset) return [];
-  return preset.map((t) => ({ id: crypto.randomUUID(), text: t, done: false }));
-}
-
 export function useSkillMilestones(skill: string) {
-  const [map, setMap] = useState<SkillMilestones>(() => load());
-  const [ready, setReady] = useState(false);
+  const data = useQuery(api.milestones.listBySkill, { skill });
+  const seedIfEmpty = useMutation(api.milestones.seedIfEmpty);
+  const addMut = useMutation(api.milestones.add);
+  const toggleMut = useMutation(api.milestones.toggle);
+  const updateTextMut = useMutation(api.milestones.updateText);
+  const removeMut = useMutation(api.milestones.remove);
+  const replaceForSkill = useMutation(api.milestones.replaceForSkill);
 
-  // Seed default checklist on first load for this skill, if missing.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setMap((prev) => {
-      if (prev[skill]) return prev;
-      const seed = seedFor(skill);
-      if (seed.length === 0) return prev;
-      const next = { ...prev, [skill]: seed };
-      persist(next);
-      return next;
-    });
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setReady(true);
-  }, [skill]);
+    if (data === undefined) return;
+    if (data.length > 0) return;
+    const preset = DEFAULT_MILESTONES[skill];
+    if (!preset || preset.length === 0) return;
+    seedIfEmpty({ skill, texts: preset }).catch(() => {});
+  }, [data, skill, seedIfEmpty]);
 
-  const items = useMemo(() => map[skill] ?? [], [map, skill]);
+  const items: Milestone[] = (data ?? []).map((r) => ({
+    _id: r._id,
+    text: r.text,
+    done: r.done,
+    order: r.order,
+  }));
 
-  const writeItems = useCallback((next: Milestone[]) => {
-    setMap((prev) => {
-      const merged = { ...prev, [skill]: next };
-      persist(merged);
-      return merged;
-    });
-  }, [skill]);
+  const add = useCallback(
+    (text: string) => {
+      if (!text.trim()) return;
+      void addMut({ skill, text });
+    },
+    [addMut, skill],
+  );
 
-  const add = useCallback((text: string) => {
-    if (!text.trim()) return;
-    writeItems([...items, { id: crypto.randomUUID(), text: text.trim(), done: false }]);
-  }, [items, writeItems]);
+  const toggle = useCallback(
+    (id: Id<"milestones">) => {
+      void toggleMut({ id });
+    },
+    [toggleMut],
+  );
 
-  const toggle = useCallback((id: string) => {
-    writeItems(items.map((m) => (m.id === id ? { ...m, done: !m.done } : m)));
-  }, [items, writeItems]);
+  const updateText = useCallback(
+    (id: Id<"milestones">, text: string) => {
+      void updateTextMut({ id, text });
+    },
+    [updateTextMut],
+  );
 
-  const updateText = useCallback((id: string, text: string) => {
-    writeItems(items.map((m) => (m.id === id ? { ...m, text } : m)));
-  }, [items, writeItems]);
-
-  const remove = useCallback((id: string) => {
-    writeItems(items.filter((m) => m.id !== id));
-  }, [items, writeItems]);
+  const remove = useCallback(
+    (id: Id<"milestones">) => {
+      void removeMut({ id });
+    },
+    [removeMut],
+  );
 
   const reset = useCallback(() => {
-    writeItems(seedFor(skill));
-  }, [skill, writeItems]);
+    const preset = DEFAULT_MILESTONES[skill] ?? [];
+    void replaceForSkill({ skill, texts: preset });
+  }, [replaceForSkill, skill]);
 
+  const ready = data !== undefined;
   const progress = items.length === 0 ? 0 : items.filter((m) => m.done).length / items.length;
 
   return { items, ready, add, toggle, updateText, remove, reset, progress };

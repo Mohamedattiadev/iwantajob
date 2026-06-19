@@ -205,7 +205,11 @@ function Stat({ label, value, accent }: { label: string; value: number | undefin
   return (
     <div>
       <div className="font-serif text-3xl leading-none">
-        <AnimatedNumber value={value ?? 0} className={cls} />
+        {value === undefined ? (
+          <span className={`tabular-nums ${cls} opacity-40`}>—</span>
+        ) : (
+          <AnimatedNumber value={value} className={cls} />
+        )}
       </div>
       <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground mt-1.5">{label}</div>
     </div>

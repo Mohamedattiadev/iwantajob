@@ -139,7 +139,7 @@ function HoverPanel({ skill, why, pos }: { skill: string; why?: string; pos: { t
           <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground mb-1">Next milestones</div>
           <ul className="space-y-0.5">
             {ms.items.filter((m) => !m.done).slice(0, 3).map((m) => (
-              <li key={m.id} className="text-xs px-2 py-0.5 text-foreground/80 truncate">
+              <li key={m._id} className="text-xs px-2 py-0.5 text-foreground/80 truncate">
                 — {m.text}
               </li>
             ))}

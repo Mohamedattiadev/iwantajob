@@ -113,8 +113,14 @@ export function AnimatedNumber({
   duration?: number;
   className?: string;
 }) {
-  const [shown, setShown] = useState(0);
+  const [shown, setShown] = useState(value);
+  const mounted = useRef(false);
   useEffect(() => {
+    if (!mounted.current) {
+      mounted.current = true;
+      setShown(value);
+      return;
+    }
     let raf = 0;
     const start = performance.now();
     const from = shown;
