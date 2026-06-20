@@ -33,7 +33,7 @@ export const list = query({
 
 export const apply = mutation({
   args: {
-    job_external_id: v.number(),
+    job_external_id: v.string(),
     job_title: v.string(),
     job_company: v.optional(v.string()),
     job_source: v.optional(v.string()),
@@ -96,7 +96,7 @@ export const update = mutation({
 
 export const setStatusByExternalId = mutation({
   args: {
-    job_external_id: v.number(),
+    job_external_id: v.string(),
     status: v.string(),
     notes: v.optional(v.string()),
   },

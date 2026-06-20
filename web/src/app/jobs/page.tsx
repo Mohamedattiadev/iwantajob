@@ -26,11 +26,12 @@ import { PageHeader } from "@/components/page-header";
 import { PageTabs, JOBS_TABS } from "@/components/page-tabs";
 import { Pagination } from "@/components/pagination";
 import { AiSearchInput } from "@/components/ai-search-input";
-import { fetcher, API, type JobsResponse } from "@/lib/api";
-import { Send } from "lucide-react";
+import { type JobsResponse } from "@/lib/api";
 import { useApplications } from "@/lib/applications";
 import { CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
+import { useQuery } from "convex/react";
+import { api as convexApi } from "../../../convex/_generated/api";
 
 function JobsPageInner() {
   const router = useRouter();
@@ -45,41 +46,18 @@ function JobsPageInner() {
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 12;
 
-  const params = new URLSearchParams();
-  if (q) params.set("q", q);
-  if (source !== "all") params.set("source", source);
-  params.set("seniority", seniority);
-  params.set("min_score", minScore);
-  if (skill !== "all") params.set("skill", skill);
-  params.set("limit", "100");
-
-  const { data, isLoading } = useSWR<JobsResponse>(
-    `/api/jobs?${params.toString()}`,
-    fetcher,
-    { keepPreviousData: true },
-  );
+  const raw = useQuery(convexApi.jobs.list, {
+    q: q || undefined,
+    source: source !== "all" ? source : undefined,
+    seniority: seniority || undefined,
+    skill: skill !== "all" ? skill : undefined,
+    min_score: Number(minScore) || 0,
+    limit: 100,
+  });
+  const data = raw as JobsResponse | undefined;
+  const isLoading = raw === undefined;
 
   const { appliedIds, apply } = useApplications();
-  const { data: tgStatus } = useSWR<{ available: boolean }>("/api/telegram/status", fetcher);
-  const [tgLoading, setTgLoading] = useState<number | null>(null);
-
-  const telegramApply = async (jobId: number) => {
-    setTgLoading(jobId);
-    try {
-      const r = await fetch(`${API}/api/applications/telegram-apply`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: jobId }),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(d.detail || "Telegram send failed");
-      toast.success("Brief sent to Telegram. Confirm there to record application.");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed");
-    } finally {
-      setTgLoading(null);
-    }
-  };
 
   // Filter-setter wrappers that also reset to page 1
   const withReset = <T,>(setter: (v: T) => void) => (v: T) => { setter(v); setPage(1); };
@@ -238,11 +216,6 @@ function JobsPageInner() {
                       <span className="font-mono uppercase">{j.source}</span>
                       {j.posted_at && (<><span>·</span><span>{j.posted_at.slice(0, 10)}</span></>)}
                       {j.seniority && (<><span>·</span><span className="capitalize">{j.seniority.replace(/_/g, " ")}</span></>)}
-                      {j.is_intern && (
-                        <span className="ml-auto px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-700 dark:text-sky-300 text-[10px] font-semibold uppercase tracking-wide">
-                          Intern
-                        </span>
-                      )}
                     </div>
 
                     {j.skills.length > 0 && (
@@ -280,17 +253,6 @@ function JobsPageInner() {
                       <span className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-xs font-semibold">
                         <CheckCircle2 className="h-3.5 w-3.5" /> Applied
                       </span>
-                    ) : j.is_intern && tgStatus?.available ? (
-                      <button
-                        type="button"
-                        disabled={tgLoading === j.id}
-                        onClick={(e) => { e.preventDefault(); telegramApply(j.id); }}
-                        className="inline-flex items-center justify-center gap-1.5 h-9 px-4 rounded-lg bg-sky-600 text-white text-xs font-semibold hover:opacity-90 shadow-sm disabled:opacity-50"
-                        title="Send brief to Telegram for review + confirm"
-                      >
-                        <Send className="h-3.5 w-3.5" />
-                        {tgLoading === j.id ? "Sending..." : "Apply via TG"}
-                      </button>
                     ) : (
                       <button
                         type="button"

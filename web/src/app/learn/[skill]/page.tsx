@@ -74,10 +74,12 @@ export default function SkillPage({
   const saveNote = useMutation(api.notes.save);
   const resetNote = useMutation(api.notes.reset);
   const learn = useSWR<LearnResponse>("/api/learn", fetcher);
-  const jobsQ = useSWR<JobsResponse>(
-    `/api/jobs?skill=${encodeURIComponent(skill)}&min_score=50&limit=6`,
-    fetcher,
-  );
+  const jobsRaw = useQuery(api.jobs.list, {
+    skill,
+    min_score: 50,
+    limit: 6,
+  });
+  const jobsQ = { data: jobsRaw as JobsResponse | undefined, isLoading: jobsRaw === undefined };
   const { map: prof, set, ready } = useProficiency();
   const plans = useUserPlans();
   const onPlan = plans.items.some((p) => !p.done && p.skill?.toLowerCase() === skill.toLowerCase());
@@ -401,21 +403,25 @@ export default function SkillPage({
 }
 
 function SkillSketch({ skill }: { skill: string }) {
-  const storageKey = `sketch:skill:${skill}`;
+  const slug = `skill:${skill}`;
+  const saved = useQuery(api.sketches.get, { slug });
+  const saveSketchMut = useMutation(api.sketches.save);
   const [initial, setInitial] = useState<ExcalidrawInitialDataState | null | undefined>(undefined);
   const [full, setFull] = useState(false);
-  const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
+  const [api_, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
   const [toolbarEl, setToolbarEl] = useState<HTMLElement | null>(null);
   const [miniSvg, setMiniSvg] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const miniTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadedRef = useRef(false);
 
   useEffect(() => {
+    if (initial !== undefined) return;
+    if (saved === undefined) return;
+    if (saved === null) { setInitial(null); return; }
     try {
-      const raw = localStorage.getItem(storageKey);
-      if (!raw) { setInitial(null); return; }
-      const parsed = JSON.parse(raw) as ExcalidrawInitialDataState & { appState?: Record<string, unknown> };
+      const parsed = JSON.parse(saved.data_json) as ExcalidrawInitialDataState & { appState?: Record<string, unknown> };
       if (parsed.appState) {
         const next: Record<string, unknown> = { ...parsed.appState };
         delete next.collaborators;
@@ -425,7 +431,7 @@ function SkillSketch({ skill }: { skill: string }) {
     } catch {
       setInitial(null);
     }
-  }, [storageKey]);
+  }, [saved, initial]);
 
   useEffect(() => {
     if (!full) return;
@@ -455,15 +461,15 @@ function SkillSketch({ skill }: { skill: string }) {
   }, [full, initial]);
 
   const refreshMinimap = useCallback(async () => {
-    if (!api) return;
-    const elements = api.getSceneElements();
+    if (!api_) return;
+    const elements = api_.getSceneElements();
     if (!elements.length) { setMiniSvg(null); return; }
     try {
       const mod = await import("@excalidraw/excalidraw");
       const svg = await mod.exportToSvg({
         elements,
         appState: { exportBackground: true, viewBackgroundColor: "#ffffff" } as never,
-        files: api.getFiles(),
+        files: api_.getFiles(),
       });
       svg.setAttribute("width", "100%");
       svg.setAttribute("height", "100%");
@@ -471,30 +477,38 @@ function SkillSketch({ skill }: { skill: string }) {
     } catch {
       /* ignore */
     }
-  }, [api]);
+  }, [api_]);
 
   useEffect(() => { refreshMinimap(); }, [refreshMinimap]);
+
+  // Mark loaded a tick after initial data settles so onChange doesn't
+  // persist an empty scene before hydration completes.
+  useEffect(() => {
+    if (initial === undefined) return;
+    const t = setTimeout(() => { loadedRef.current = true; }, 200);
+    return () => clearTimeout(t);
+  }, [initial]);
 
   const onChange = useCallback(
     (elements: unknown, appState: unknown, files: unknown) => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
-        try {
-          localStorage.setItem(storageKey, JSON.stringify({ elements, appState, files }));
-        } catch {
-          /* quota */
-        }
+        if (!loadedRef.current) return;
+        void saveSketchMut({
+          slug,
+          data: JSON.stringify({ elements, appState, files }),
+        });
       }, 500);
       if (miniTimer.current) clearTimeout(miniTimer.current);
       miniTimer.current = setTimeout(() => { refreshMinimap(); }, 600);
     },
-    [storageKey, refreshMinimap],
+    [slug, saveSketchMut, refreshMinimap],
   );
 
   const fitAll = () => {
-    if (!api) return;
-    const elements = api.getSceneElements();
-    if (elements.length) api.scrollToContent(elements, { fitToContent: true });
+    if (!api_) return;
+    const elements = api_.getSceneElements();
+    if (elements.length) api_.scrollToContent(elements, { fitToContent: true });
   };
 
   if (initial === undefined) return <Skeleton className="h-[75vh] w-full rounded-xl" />;

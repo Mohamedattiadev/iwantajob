@@ -100,8 +100,15 @@ export const list = query({
           continue;
         }
       }
+      const titleDesc = `${r.title} ${r.description ?? ""}`.toLowerCase();
+      const matchedSkills: Array<{ skill: string; category: string }> = [];
+      for (const sk of Object.keys(userSkills)) {
+        if (titleDesc.includes(sk.toLowerCase())) {
+          matchedSkills.push({ skill: sk, category: "skill" });
+        }
+      }
       out.push({
-        id: r._id,
+        id: r._id as string,
         source: r.source,
         source_url: r.source_url,
         title: r.title,
@@ -109,13 +116,28 @@ export const list = query({
         location: r.location ?? null,
         remote: r.remote ?? false,
         posted_at: r.posted_at ? new Date(r.posted_at).toISOString() : null,
-        description: (r.description ?? "").slice(0, 600),
+        seniority: seniorityBucket(r.title),
+        salary_min: r.salary_min ?? null,
+        salary_max: r.salary_max ?? null,
+        currency: r.currency ?? null,
+        skills: matchedSkills,
+        description_excerpt: (r.description ?? "").slice(0, 240),
         score,
       });
       if (out.length >= limit) break;
     }
     out.sort((a, b) => b.score - a.score);
-    return { jobs: out, total: out.length };
+    const sources = Array.from(new Set(out.map((j) => j.source)));
+    const skillFacets = Array.from(
+      new Set(out.flatMap((j) => j.skills.map((s) => s.skill))),
+    ).slice(0, 40);
+    return {
+      total: out.length,
+      offset: 0,
+      limit,
+      items: out,
+      facets: { sources, skills: skillFacets },
+    };
   },
 });
 

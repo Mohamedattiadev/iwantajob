@@ -82,7 +82,7 @@ export type Stats = {
 };
 
 export type JobItem = {
-  id: number;
+  id: string;
   source: string;
   source_url: string;
   title: string;
@@ -138,7 +138,7 @@ export type Profile = {
 
 export type Application = {
   id: string;
-  job_id: number;
+  job_id: string;
   applied_at: string;
   status: "applied" | "interviewing" | "rejected" | "offer" | "ghost";
   notes: string;

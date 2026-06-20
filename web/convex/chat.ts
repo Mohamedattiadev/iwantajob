@@ -168,7 +168,7 @@ async function execTool(
       return { applications: out, count: out.length };
     }
     if (name === "set_application_status") {
-      const job_external_id = Number(args.job_external_id);
+      const job_external_id = String(args.job_external_id ?? "");
       const status = String(args.status || "");
       const notes =
         args.notes !== undefined ? String(args.notes) : undefined;

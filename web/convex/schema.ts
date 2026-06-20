@@ -98,7 +98,7 @@ export default defineSchema({
   // FastAPI Job.id used as the dedupe key.
   applications: defineTable({
     userId: v.id("users"),
-    job_external_id: v.number(),
+    job_external_id: v.string(),
     job_title: v.string(),
     job_company: v.optional(v.string()),
     job_source: v.optional(v.string()),
@@ -131,6 +131,19 @@ export default defineSchema({
   })
     .index("by_user", ["userId"])
     .index("by_user_and_updated_at", ["userId", "updated_at"]),
+
+  // Excalidraw canvases. `slug` is the page identifier — "main" for
+  // the standalone /excalidraw page, "skill:<skill>" for in-skill
+  // sketches. Single row per (user, slug). Body is the full scene blob
+  // as a JSON string so we don't fight schema drift in Excalidraw.
+  sketches: defineTable({
+    userId: v.id("users"),
+    slug: v.string(),
+    data_json: v.string(),
+    updated_at: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_and_slug", ["userId", "slug"]),
 
   // Per-user secrets. Strings are expected to be encrypted at the
   // application layer (sealed by a key kept in Convex env) before insert.

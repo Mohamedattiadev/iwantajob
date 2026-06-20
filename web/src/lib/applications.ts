@@ -13,18 +13,10 @@ export function useApplications() {
   const applications = (data ?? []) as unknown as Application[];
   const appliedIds = new Set(applications.map((a) => a.job_id));
 
-  const apply = async (job: JobItem | number): Promise<boolean> => {
-    if (typeof job === "number") {
-      // Back-compat path — caller only had the id. Will fail without
-      // title/company since Convex requires them. Surface a console
-      // warning so the call site can be updated.
-      // eslint-disable-next-line no-console
-      console.warn("[applications.apply] called with bare id — pass JobItem.");
-      return false;
-    }
+  const apply = async (job: JobItem): Promise<boolean> => {
     try {
       await applyMut({
-        job_external_id: job.id,
+        job_external_id: String(job.id),
         job_title: job.title,
         job_company: job.company ?? undefined,
         job_source: job.source,

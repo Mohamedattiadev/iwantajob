@@ -1,6 +1,8 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
+import { useQuery } from "convex/react";
+import { api as convexApi } from "../../convex/_generated/api";
 import Link from "next/link";
 import { BookOpen, ListChecks, Briefcase, ArrowRight, ExternalLink, Sparkles } from "lucide-react";
 import { fetcher, type JobsResponse } from "@/lib/api";
@@ -76,10 +78,12 @@ function HoverPanel({ skill, why, pos }: { skill: string; why?: string; pos: { t
   const curated = resourcesFor(skill);
   const userRes = useUserResources(skill);
   const ms = useSkillMilestones(skill);
-  const jobsQ = useSWR<JobsResponse>(
-    `/api/jobs?skill=${encodeURIComponent(skill)}&min_score=50&limit=4`,
-    fetcher,
-  );
+  const jobsRaw = useQuery(convexApi.jobs.list, {
+    skill,
+    min_score: 50,
+    limit: 4,
+  });
+  const jobsQ = { data: jobsRaw as JobsResponse | undefined };
   const allRes = [...userRes.items, ...curated];
   const doneCount = ms.items.filter((m) => m.done).length;
 

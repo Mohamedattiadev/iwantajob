@@ -17,10 +17,12 @@ import { useProficiency } from "@/lib/proficiency";
 
 export default function Home() {
   const stats = useSWR<Stats>("/api/stats", fetcher);
-  const jobsQ = useSWR<JobsResponse>(
-    "/api/jobs?seniority=junior_or_unknown&min_score=50&limit=500",
-    fetcher,
-  );
+  const jobsList = useQuery(api.jobs.list, {
+    seniority: "junior_or_unknown",
+    min_score: 50,
+    limit: 500,
+  });
+  const jobsQ = { data: jobsList as JobsResponse | undefined, isLoading: jobsList === undefined };
   const profileData = useQuery(api.profile.get) as Profile | undefined;
   const profile = { data: profileData };
   const appsData = useQuery(api.applications.list);
