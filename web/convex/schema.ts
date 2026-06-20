@@ -8,22 +8,29 @@ import { authTables } from "@convex-dev/auth/server";
 export default defineSchema({
   ...authTables,
 
-  jobs: defineTable({
-    userId: v.id("users"),
-    title: v.string(),
-    company: v.string(),
-    location: v.optional(v.string()),
+  // Global shared catalog of scraped jobs. Collectors run as scheduled
+  // Convex actions and upsert into this table. Per-user filtering and
+  // scoring happen at read time against the caller's profile. Dedupe
+  // key is (source, source_id).
+  jobs_pool: defineTable({
     source: v.string(),
+    source_id: v.string(),
     source_url: v.string(),
-    score: v.optional(v.number()),
-    status: v.optional(v.string()),
-    posted_at: v.optional(v.string()),
-    raw: v.optional(v.string()),
+    title: v.string(),
+    company: v.optional(v.string()),
+    location: v.optional(v.string()),
+    remote: v.optional(v.boolean()),
+    posted_at: v.optional(v.number()),
+    description: v.optional(v.string()),
+    employment_type: v.optional(v.string()),
+    salary_min: v.optional(v.number()),
+    salary_max: v.optional(v.number()),
+    currency: v.optional(v.string()),
+    fetched_at: v.number(),
   })
-    .index("by_user", ["userId"])
-    .index("by_user_and_posted_at", ["userId", "posted_at"])
-    .index("by_user_and_status", ["userId", "status"])
-    .index("by_user_and_source_url", ["userId", "source_url"]),
+    .index("by_source_and_id", ["source", "source_id"])
+    .index("by_posted_at", ["posted_at"])
+    .index("by_source", ["source"]),
 
   notes: defineTable({
     userId: v.id("users"),
