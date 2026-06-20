@@ -81,6 +81,7 @@ export const get = query({
     return {
       has_groq_key: Boolean(row?.groq_key_encrypted),
       has_telegram_token: Boolean(row?.telegram_token_encrypted),
+      telegram_chat_id: row?.telegram_chat_id ?? null,
       scrape_filters: row?.scrape_filters ?? null,
     };
   },
@@ -159,6 +160,30 @@ export const clearTelegramToken = mutation({
   },
 });
 
+export const setTelegramChatId = mutation({
+  args: { chat_id: v.string() },
+  handler: async (ctx, { chat_id }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("UNAUTHENTICATED");
+    await upsertPatch(ctx, userId, { telegram_chat_id: chat_id });
+    return { ok: true };
+  },
+});
+
+export const clearTelegramChatId = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("UNAUTHENTICATED");
+    const row = await ctx.db
+      .query("user_settings")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+    if (row) await ctx.db.patch(row._id, { telegram_chat_id: undefined });
+    return { ok: true };
+  },
+});
+
 export const setScrapeFilters = mutation({
   args: { filters: v.string() },
   handler: async (ctx, { filters }) => {
@@ -187,20 +212,28 @@ export const _readSecrets = query({
     return {
       groq_key_encrypted: row.groq_key_encrypted ?? null,
       telegram_token_encrypted: row.telegram_token_encrypted ?? null,
+      telegram_chat_id: row.telegram_chat_id ?? null,
     };
   },
 });
 
 export async function decryptUserSecretsInAction(
   ctx: ActionCtx,
-): Promise<{ groq_key: string | null; telegram_token: string | null }> {
+): Promise<{
+  groq_key: string | null;
+  telegram_token: string | null;
+  telegram_chat_id: string | null;
+}> {
   const row = await ctx.runQuery(api.userSettings._readSecrets, {});
-  if (!row) return { groq_key: null, telegram_token: null };
+  if (!row) {
+    return { groq_key: null, telegram_token: null, telegram_chat_id: null };
+  }
   return {
     groq_key: row.groq_key_encrypted ? await open(row.groq_key_encrypted) : null,
     telegram_token: row.telegram_token_encrypted
       ? await open(row.telegram_token_encrypted)
       : null,
+    telegram_chat_id: row.telegram_chat_id ?? null,
   };
 }
 

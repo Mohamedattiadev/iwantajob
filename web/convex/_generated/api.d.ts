@@ -22,6 +22,7 @@ import type * as proficiency from "../proficiency.js";
 import type * as profile from "../profile.js";
 import type * as resources from "../resources.js";
 import type * as sketches from "../sketches.js";
+import type * as telegram from "../telegram.js";
 import type * as userSettings from "../userSettings.js";
 
 import type {
@@ -45,6 +46,7 @@ declare const fullApi: ApiFromModules<{
   profile: typeof profile;
   resources: typeof resources;
   sketches: typeof sketches;
+  telegram: typeof telegram;
   userSettings: typeof userSettings;
 }>;
 

@@ -151,6 +151,7 @@ export default defineSchema({
     userId: v.id("users"),
     groq_key_encrypted: v.optional(v.string()),
     telegram_token_encrypted: v.optional(v.string()),
+    telegram_chat_id: v.optional(v.string()),
     scrape_filters: v.optional(v.string()),
   }).index("by_user", ["userId"]),
 });

@@ -4,7 +4,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useAuthActions } from "@convex-dev/auth/react";
 import {
   LayoutGrid, FileUser, GraduationCap, Briefcase, Sparkles,
-  Search, LogOut,
+  Search, LogOut, Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -17,6 +17,7 @@ const links = [
   { href: "/learn",     label: "Learn",     icon: GraduationCap },
   { href: "/jobs",      label: "Jobs",      icon: Briefcase },
   { href: "/assistant", label: "Assistant", icon: Sparkles },
+  { href: "/settings",  label: "Settings",  icon: Settings },
 ];
 
 const JOBS_GROUP = ["/jobs", "/apply"];

@@ -28,10 +28,11 @@ import { Pagination } from "@/components/pagination";
 import { AiSearchInput } from "@/components/ai-search-input";
 import { type JobsResponse } from "@/lib/api";
 import { useApplications } from "@/lib/applications";
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, Send } from "lucide-react";
 import { toast } from "sonner";
-import { useQuery } from "convex/react";
+import { useAction, useQuery } from "convex/react";
 import { api as convexApi } from "../../../convex/_generated/api";
+import type { Id } from "../../../convex/_generated/dataModel";
 
 function JobsPageInner() {
   const router = useRouter();
@@ -58,6 +59,22 @@ function JobsPageInner() {
   const isLoading = raw === undefined;
 
   const { appliedIds, apply } = useApplications();
+  const tgStatus = useQuery(convexApi.telegram.status);
+  const sendBrief = useAction(convexApi.telegram.sendApplyBrief);
+  const [tgLoading, setTgLoading] = useState<string | null>(null);
+
+  const telegramApply = async (jobId: string) => {
+    setTgLoading(jobId);
+    try {
+      const res = await sendBrief({ jobId: jobId as Id<"jobs_pool"> });
+      if (!res.ok) throw new Error(res.error || "Telegram send failed");
+      toast.success("Brief sent to Telegram. Recorded as applied.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setTgLoading(null);
+    }
+  };
 
   // Filter-setter wrappers that also reset to page 1
   const withReset = <T,>(setter: (v: T) => void) => (v: T) => { setter(v); setPage(1); };
@@ -253,6 +270,17 @@ function JobsPageInner() {
                       <span className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-xs font-semibold">
                         <CheckCircle2 className="h-3.5 w-3.5" /> Applied
                       </span>
+                    ) : tgStatus?.available ? (
+                      <button
+                        type="button"
+                        disabled={tgLoading === j.id}
+                        onClick={(e) => { e.preventDefault(); telegramApply(j.id); }}
+                        className="inline-flex items-center justify-center gap-1.5 h-9 px-4 rounded-lg bg-sky-600 text-white text-xs font-semibold hover:opacity-90 shadow-sm disabled:opacity-50"
+                        title="Send brief to Telegram + record as applied"
+                      >
+                        <Send className="h-3.5 w-3.5" />
+                        {tgLoading === j.id ? "Sending..." : "Apply via TG"}
+                      </button>
                     ) : (
                       <button
                         type="button"

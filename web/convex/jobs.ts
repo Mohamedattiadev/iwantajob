@@ -141,6 +141,23 @@ export const list = query({
   },
 });
 
+export const _getById = query({
+  args: { id: v.id("jobs_pool") },
+  handler: async (ctx, { id }) => {
+    const j = await ctx.db.get(id);
+    if (!j) return null;
+    return {
+      title: j.title,
+      company: j.company ?? null,
+      location: j.location ?? null,
+      source: j.source,
+      source_url: j.source_url,
+      description: j.description ?? "",
+      posted_at: j.posted_at ? new Date(j.posted_at).toISOString() : null,
+    };
+  },
+});
+
 export const stats = query({
   args: {},
   handler: async (ctx) => {
