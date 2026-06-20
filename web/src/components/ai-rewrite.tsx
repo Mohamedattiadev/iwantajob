@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Sparkles, Loader2, X, Check, AlertTriangle } from "lucide-react";
-import useSWR from "swr";
-import { API, fetcher } from "@/lib/api";
+import { useAction, useQuery } from "convex/react";
+import { api } from "../../convex/_generated/api";
 
 type Field = "summary" | "experience" | "project" | "education" | "generic";
 
@@ -26,7 +26,8 @@ export function AiRewrite({
   const [error, setError] = useState("");
   const panelRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const { data: status } = useSWR<{ available: boolean }>("/api/chat/status", fetcher);
+  const status = useQuery(api.chat.status);
+  const rewrite = useAction(api.chat.rewrite);
 
   useEffect(() => {
     if (!open) return;
@@ -51,12 +52,7 @@ export function AiRewrite({
     setBusy(true);
     setError("");
     try {
-      const r = await fetch(`${API}/api/ai/rewrite`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ field, raw: current, instruction }),
-      });
-      const data = await r.json();
+      const data = await rewrite({ field, raw: current, instruction });
       if (data.error) setError(data.error);
       else setDraft(data.text ?? "");
     } catch (e) {

@@ -11,6 +11,7 @@
 import type * as applications from "../applications.js";
 import type * as auth from "../auth.js";
 import type * as auth_ResendOTP from "../auth/ResendOTP.js";
+import type * as chat from "../chat.js";
 import type * as http from "../http.js";
 import type * as milestones from "../milestones.js";
 import type * as notes from "../notes.js";
@@ -29,6 +30,7 @@ declare const fullApi: ApiFromModules<{
   applications: typeof applications;
   auth: typeof auth;
   "auth/ResendOTP": typeof auth_ResendOTP;
+  chat: typeof chat;
   http: typeof http;
   milestones: typeof milestones;
   notes: typeof notes;

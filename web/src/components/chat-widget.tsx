@@ -1,14 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import useSWR from "swr";
+import { useAction, useQuery } from "convex/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MessageCircle, Send, X, AlertTriangle, Maximize2 } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { API, fetcher } from "@/lib/api";
+import { api } from "../../convex/_generated/api";
 
 type Msg = { role: "user" | "assistant"; content: string };
 const STORE = "jobscraper:chat:v1";
@@ -19,7 +19,8 @@ export function ChatWidget() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
-  const { data: status } = useSWR<{ available: boolean }>("/api/chat/status", fetcher);
+  const status = useQuery(api.chat.status);
+  const sendChat = useAction(api.chat.send);
 
   useEffect(() => {
     try { const raw = localStorage.getItem(STORE); if (raw) setMsgs(JSON.parse(raw)); } catch {}
@@ -40,12 +41,7 @@ export function ChatWidget() {
     setInput("");
     setSending(true);
     try {
-      const r = await fetch(`${API}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: next }),
-      });
-      const data = await r.json();
+      const data = await sendChat({ messages: next });
       if (data.error) {
         setMsgs([...next, { role: "assistant", content: `⚠ ${data.error}` }]);
       } else {

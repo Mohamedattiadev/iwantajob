@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
+import { useAction, useQuery } from "convex/react";
+import { api as convexApi } from "../../../convex/_generated/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -31,7 +33,8 @@ export default function AssistantPage() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
-  const { data: status } = useSWR<{ available: boolean }>("/api/chat/status", fetcher);
+  const status = useQuery(convexApi.chat.status);
+  const sendChat = useAction(convexApi.chat.send);
   const { data: convs, mutate: mutateConvs } = useSWR<ConvSummary[]>("/api/conversations?type=assistant", fetcher);
 
   useEffect(() => {
@@ -105,18 +108,13 @@ export default function AssistantPage() {
     setSending(true);
     void persistMsg(convId, "user", text.trim());
     try {
-      const r = await fetch(`${API}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: next }),
-      });
-      const data = await r.json();
+      const data = await sendChat({ messages: next });
       if (data.error) {
         const m: Msg = { role: "assistant", content: `⚠ ${data.error}` };
         setMsgs([...next, m]);
         void persistMsg(convId, "assistant", m.content);
       } else {
-        const m: Msg = { role: "assistant", content: data.text || "(empty reply)", tool_calls: data.tool_calls };
+        const m: Msg = { role: "assistant", content: data.text || "(empty reply)", tool_calls: data.tool_calls as ToolCall[] | undefined };
         setMsgs([...next, m]);
         void persistMsg(convId, "assistant", m.content, { tool_calls: data.tool_calls });
       }

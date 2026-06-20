@@ -94,6 +94,29 @@ export const update = mutation({
   },
 });
 
+export const setStatusByExternalId = mutation({
+  args: {
+    job_external_id: v.number(),
+    status: v.string(),
+    notes: v.optional(v.string()),
+  },
+  handler: async (ctx, { job_external_id, status, notes }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("UNAUTHENTICATED");
+    const row = await ctx.db
+      .query("applications")
+      .withIndex("by_user_and_job_ext", (q) =>
+        q.eq("userId", userId).eq("job_external_id", job_external_id),
+      )
+      .first();
+    if (!row) throw new Error("NOT_FOUND");
+    const patch: Record<string, unknown> = { status };
+    if (notes !== undefined) patch.notes = notes;
+    await ctx.db.patch(row._id, patch);
+    return { ok: true, status };
+  },
+});
+
 export const remove = mutation({
   args: { id: v.id("applications") },
   handler: async (ctx, { id }) => {

@@ -72,6 +72,23 @@ export const save = mutation({
   },
 });
 
+export const listAll = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return [];
+    const rows = await ctx.db
+      .query("notes")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    return rows.map((r) => ({
+      skill: r.skill,
+      lines: (r.content.match(/\n/g)?.length ?? 0) + 1,
+      bytes: r.content.length,
+    }));
+  },
+});
+
 export const reset = mutation({
   args: { skill: v.string(), category: v.optional(v.string()) },
   handler: async (ctx, { skill, category }) => {
