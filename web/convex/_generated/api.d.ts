@@ -15,6 +15,7 @@ import type * as chat from "../chat.js";
 import type * as conversations from "../conversations.js";
 import type * as crons from "../crons.js";
 import type * as http from "../http.js";
+import type * as interview from "../interview.js";
 import type * as jobs from "../jobs.js";
 import type * as milestones from "../milestones.js";
 import type * as notes from "../notes.js";
@@ -25,6 +26,7 @@ import type * as resources from "../resources.js";
 import type * as sketches from "../sketches.js";
 import type * as telegram from "../telegram.js";
 import type * as userSettings from "../userSettings.js";
+import type * as voice from "../voice.js";
 
 import type {
   ApiFromModules,
@@ -40,6 +42,7 @@ declare const fullApi: ApiFromModules<{
   conversations: typeof conversations;
   crons: typeof crons;
   http: typeof http;
+  interview: typeof interview;
   jobs: typeof jobs;
   milestones: typeof milestones;
   notes: typeof notes;
@@ -50,6 +53,7 @@ declare const fullApi: ApiFromModules<{
   sketches: typeof sketches;
   telegram: typeof telegram;
   userSettings: typeof userSettings;
+  voice: typeof voice;
 }>;
 
 /**
