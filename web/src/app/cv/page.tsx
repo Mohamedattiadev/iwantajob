@@ -21,6 +21,7 @@ import { API, fetcher, type Profile } from "@/lib/api";
 import { LEVELS } from "@/lib/proficiency";
 import { useMutation, useQuery } from "convex/react";
 import { api as convexApi } from "../../../convex/_generated/api";
+import { renderMarkdown } from "@/lib/cv-render";
 
 type Section = "personal" | "experience" | "projects" | "education" | "skills";
 type ViewMode = "edit" | "split" | "preview";
@@ -65,7 +66,7 @@ export default function CvPage() {
   }, [data, draft]);
 
   useEffect(() => {
-    fetch(`${API}/api/cv/markdown?min_level=${minLevel}`).then(r => r.text()).then(setMdPreview).catch(() => {});
+    if (data) setMdPreview(renderMarkdown(data, minLevel));
   }, [minLevel, data]);
 
   useEffect(() => {
@@ -86,7 +87,7 @@ export default function CvPage() {
         await saveProfileMut({ data: JSON.stringify(draft) });
         setDirty(false);
         setAutoSaved(Date.now());
-        fetch(`${API}/api/cv/markdown?min_level=${minLevel}`).then(r => r.text()).then(setMdPreview).catch(() => {});
+        setMdPreview(renderMarkdown(draft, minLevel));
       } catch { /* silent */ }
     }, 800);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
@@ -323,11 +324,21 @@ export default function CvPage() {
           <>
             <div className="cv-sidebar__label">Export</div>
             <div className="cv-sidebar__export">
-              <a href={`${API}/api/cv/markdown?min_level=${minLevel}`} download="cv.md"
-                 title="Download Markdown" className="cv-sidebar__export-btn">
+              <button
+                type="button"
+                onClick={() => {
+                  const blob = new Blob([mdPreview], { type: "text/markdown" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = "cv.md";
+                  a.click();
+                  setTimeout(() => URL.revokeObjectURL(url), 0);
+                }}
+                title="Download Markdown" className="cv-sidebar__export-btn">
                 <Download className="h-3.5 w-3.5" />
                 <span>md</span>
-              </a>
+              </button>
               <a href={`${API}/api/cv/tex?min_level=${minLevel}&template=${template}`} download="cv.tex"
                  title="Download LaTeX" className="cv-sidebar__export-btn">
                 <Download className="h-3.5 w-3.5" />
