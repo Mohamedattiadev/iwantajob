@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ export default function SettingsPage() {
   const clearTg = useMutation(api.userSettings.clearTelegramToken);
   const setChat = useMutation(api.userSettings.setTelegramChatId);
   const clearChat = useMutation(api.userSettings.clearTelegramChatId);
+  const registerWebhook = useAction(api.telegram.registerWebhook);
 
   const [groqKey, setGroqKey] = useState("");
   const [tgToken, setTgToken] = useState("");
@@ -186,6 +187,31 @@ export default function SettingsPage() {
             <p className="text-[11px] text-muted-foreground">
               Get it from @userinfobot, or look at any update from your bot.
             </p>
+          </div>
+
+          <div className="flex items-center justify-between pt-2 border-t border-foreground/10">
+            <div>
+              <div className="text-sm font-medium">Confirm/Cancel buttons</div>
+              <div className="text-[11px] text-muted-foreground">
+                Register Telegram webhook so the Confirm/Skip buttons on apply
+                briefs record the application back here.
+              </div>
+            </div>
+            <Button
+              variant="secondary"
+              disabled={!settings?.has_telegram_token}
+              onClick={async () => {
+                try {
+                  const res = await registerWebhook({});
+                  if (res.ok) toast.success("Webhook registered");
+                  else toast.error(res.error ?? "Failed");
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "Failed");
+                }
+              }}
+            >
+              Register webhook
+            </Button>
           </div>
         </CardContent>
       </Card>

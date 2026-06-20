@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { mutation, query, internalMutation } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 
 export const list = query({
@@ -114,6 +114,47 @@ export const setStatusByExternalId = mutation({
     if (notes !== undefined) patch.notes = notes;
     await ctx.db.patch(row._id, patch);
     return { ok: true, status };
+  },
+});
+
+// Internal mutation used by trusted callers (Telegram webhook) where
+// the user identity is established out-of-band (URL secret), not via
+// ctx.auth. Idempotent on (userId, job_external_id).
+export const _internalApply = internalMutation({
+  args: {
+    userId: v.id("users"),
+    job_external_id: v.string(),
+    job_title: v.string(),
+    job_company: v.optional(v.string()),
+    job_source: v.optional(v.string()),
+    job_source_url: v.optional(v.string()),
+    job_posted_at: v.optional(v.string()),
+    status: v.optional(v.string()),
+    notes: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("applications")
+      .withIndex("by_user_and_job_ext", (q) =>
+        q.eq("userId", args.userId).eq("job_external_id", args.job_external_id),
+      )
+      .first();
+    if (existing) {
+      return { id: existing._id, duplicated: true };
+    }
+    const id = await ctx.db.insert("applications", {
+      userId: args.userId,
+      job_external_id: args.job_external_id,
+      job_title: args.job_title,
+      job_company: args.job_company,
+      job_source: args.job_source,
+      job_source_url: args.job_source_url,
+      job_posted_at: args.job_posted_at,
+      status: args.status ?? "applied",
+      applied_at: Date.now(),
+      notes: args.notes,
+    });
+    return { id, duplicated: false };
   },
 });
 

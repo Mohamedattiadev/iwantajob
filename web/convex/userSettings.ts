@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, query, action } from "./_generated/server";
+import { mutation, query, action, internalMutation, internalQuery } from "./_generated/server";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { api } from "./_generated/api";
 import { getAuthUserId } from "@convex-dev/auth/server";
@@ -235,6 +235,35 @@ export async function decryptUserSecretsInAction(
       : null,
     telegram_chat_id: row.telegram_chat_id ?? null,
   };
+}
+
+// ---- Telegram webhook secret (internal-only). --------------------------
+
+export const _setWebhookSecret = internalMutation({
+  args: { userId: v.id("users"), secret: v.string() },
+  handler: async (ctx, { userId, secret }) => {
+    await upsertPatch(ctx, userId, { telegram_webhook_secret: secret });
+    return { ok: true };
+  },
+});
+
+export const _findByWebhookSecret = internalQuery({
+  args: { secret: v.string() },
+  handler: async (ctx, { secret }) => {
+    const row = await ctx.db
+      .query("user_settings")
+      .withIndex("by_webhook_secret", (q) => q.eq("telegram_webhook_secret", secret))
+      .first();
+    if (!row) return null;
+    return {
+      userId: row.userId,
+      telegram_token_encrypted: row.telegram_token_encrypted ?? null,
+    };
+  },
+});
+
+export async function openSealed(blob: string): Promise<string> {
+  return open(blob);
 }
 
 // Smoke-test helper for round-trip encryption.

@@ -178,6 +178,9 @@ export default defineSchema({
     groq_key_encrypted: v.optional(v.string()),
     telegram_token_encrypted: v.optional(v.string()),
     telegram_chat_id: v.optional(v.string()),
+    telegram_webhook_secret: v.optional(v.string()),
     scrape_filters: v.optional(v.string()),
-  }).index("by_user", ["userId"]),
+  })
+    .index("by_user", ["userId"])
+    .index("by_webhook_secret", ["telegram_webhook_secret"]),
 });

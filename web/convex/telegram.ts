@@ -1,8 +1,9 @@
 import { v } from "convex/values";
-import { action, query } from "./_generated/server";
-import { api } from "./_generated/api";
+import { action, query, httpAction } from "./_generated/server";
+import { api, internal } from "./_generated/api";
 import { getAuthUserId } from "@convex-dev/auth/server";
-import { decryptUserSecretsInAction } from "./userSettings";
+import { decryptUserSecretsInAction, openSealed } from "./userSettings";
+import type { Id } from "./_generated/dataModel";
 
 export const status = query({
   args: {},
@@ -97,6 +98,15 @@ export const sendApplyBrief = action({
       `<pre>${escapeHtml(brief)}</pre>\n` +
       `<a href="${escapeHtml(job.source_url)}">Open posting</a>`;
 
+    const reply_markup = {
+      inline_keyboard: [
+        [
+          { text: "✅ Confirm apply", callback_data: `apply:confirm:${jobId}` },
+          { text: "✖ Skip", callback_data: `apply:cancel:${jobId}` },
+        ],
+      ],
+    };
+
     const r = await fetch(
       `https://api.telegram.org/bot${secrets.telegram_token}/sendMessage`,
       {
@@ -107,6 +117,7 @@ export const sendApplyBrief = action({
           text: msg,
           parse_mode: "HTML",
           disable_web_page_preview: false,
+          reply_markup,
         }),
       },
     );
@@ -126,11 +137,160 @@ export const sendApplyBrief = action({
       return { ok: false, error: data.description ?? "telegram rejected" };
     }
 
-    // Auto-record the application — keeps parity with the FastAPI flow
-    // where Confirm callback recorded it. The Confirm/Cancel callback
-    // path is not wired (no webhook in Convex yet); the message is
-    // informational + manual apply.
-    await ctx.runMutation(api.applications.apply, {
+    return { ok: true, message_id: data.result?.message_id };
+  },
+});
+
+// ---- Webhook registration ----------------------------------------------
+
+function randomSecret(len = 24): string {
+  const buf = new Uint8Array(len);
+  crypto.getRandomValues(buf);
+  let s = "";
+  for (let i = 0; i < buf.length; i++) s += buf[i].toString(16).padStart(2, "0");
+  return s;
+}
+
+export const registerWebhook = action({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<{ ok: boolean; error?: string; url?: string }> => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return { ok: false, error: "UNAUTHENTICATED" };
+    const siteUrl = process.env.CONVEX_SITE_URL;
+    if (!siteUrl) {
+      return { ok: false, error: "CONVEX_SITE_URL not set in Convex env." };
+    }
+    const secrets = await decryptUserSecretsInAction(ctx);
+    if (!secrets.telegram_token) {
+      return { ok: false, error: "Set telegram bot token in settings first." };
+    }
+    const secret = randomSecret();
+    await ctx.runMutation(internal.userSettings._setWebhookSecret, {
+      userId,
+      secret,
+    });
+    const url = `${siteUrl}/telegram/cb?s=${secret}`;
+    const r = await fetch(
+      `https://api.telegram.org/bot${secrets.telegram_token}/setWebhook`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url,
+          allowed_updates: ["callback_query"],
+        }),
+      },
+    );
+    if (!r.ok) {
+      const body = await r.text();
+      return {
+        ok: false,
+        error: `Telegram setWebhook ${r.status}: ${body.slice(0, 200)}`,
+      };
+    }
+    const data = (await r.json()) as { ok: boolean; description?: string };
+    if (!data.ok) {
+      return { ok: false, error: data.description ?? "telegram rejected" };
+    }
+    return { ok: true, url };
+  },
+});
+
+async function tgPost(
+  token: string,
+  method: string,
+  body: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    // Best-effort; webhook handler must always 200.
+  }
+}
+
+export const webhook = httpAction(async (ctx, req) => {
+  const url = new URL(req.url);
+  const secret = url.searchParams.get("s") || "";
+  if (!secret) return new Response("missing secret", { status: 400 });
+  const owner = await ctx.runQuery(internal.userSettings._findByWebhookSecret, {
+    secret,
+  });
+  if (!owner) return new Response("forbidden", { status: 403 });
+  let payload: Record<string, unknown>;
+  try {
+    payload = (await req.json()) as Record<string, unknown>;
+  } catch {
+    return new Response("bad json", { status: 400 });
+  }
+  const cb = payload.callback_query as
+    | {
+        id?: string;
+        data?: string;
+        message?: { chat?: { id?: number }; message_id?: number; text?: string };
+      }
+    | undefined;
+  if (!cb) {
+    // Other update types (message etc.) — ignore.
+    return new Response("ok", { status: 200 });
+  }
+  const token = owner.telegram_token_encrypted
+    ? await openSealed(owner.telegram_token_encrypted)
+    : null;
+  if (!token) {
+    return new Response("ok", { status: 200 });
+  }
+
+  const data = cb.data ?? "";
+  const parts = data.split(":");
+  const cbId = cb.id ?? "";
+  const chatId = cb.message?.chat?.id;
+  const messageId = cb.message?.message_id;
+  const origText = cb.message?.text ?? "";
+
+  if (parts.length !== 3 || parts[0] !== "apply") {
+    await tgPost(token, "answerCallbackQuery", {
+      callback_query_id: cbId,
+      text: "unknown action",
+    });
+    return new Response("ok", { status: 200 });
+  }
+  const op = parts[1];
+  const jobId = parts[2];
+
+  if (op === "cancel") {
+    await tgPost(token, "answerCallbackQuery", {
+      callback_query_id: cbId,
+      text: "Skipped.",
+    });
+    if (chatId && messageId) {
+      await tgPost(token, "editMessageText", {
+        chat_id: chatId,
+        message_id: messageId,
+        text: `${origText}\n\n— ✖ Skipped.`,
+      });
+    }
+    return new Response("ok", { status: 200 });
+  }
+
+  if (op === "confirm") {
+    const job = await ctx.runQuery(api.jobs._getById, {
+      id: jobId as Id<"jobs_pool">,
+    });
+    if (!job) {
+      await tgPost(token, "answerCallbackQuery", {
+        callback_query_id: cbId,
+        text: "Job not found.",
+      });
+      return new Response("ok", { status: 200 });
+    }
+    const res = await ctx.runMutation(internal.applications._internalApply, {
+      userId: owner.userId,
       job_external_id: String(jobId),
       job_title: job.title,
       job_company: job.company ?? undefined,
@@ -140,7 +300,26 @@ export const sendApplyBrief = action({
       status: "applied",
       notes: "via telegram",
     });
+    await tgPost(token, "answerCallbackQuery", {
+      callback_query_id: cbId,
+      text: res.duplicated ? "Already applied." : "Recorded ✓",
+    });
+    if (chatId && messageId) {
+      const suffix = res.duplicated
+        ? "\n\n— ℹ Already applied."
+        : "\n\n— ✅ Confirmed.";
+      await tgPost(token, "editMessageText", {
+        chat_id: chatId,
+        message_id: messageId,
+        text: `${origText}${suffix}`,
+      });
+    }
+    return new Response("ok", { status: 200 });
+  }
 
-    return { ok: true, message_id: data.result?.message_id };
-  },
+  await tgPost(token, "answerCallbackQuery", {
+    callback_query_id: cbId,
+    text: "unknown action",
+  });
+  return new Response("ok", { status: 200 });
 });
