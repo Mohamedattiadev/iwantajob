@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import useSWR from "swr";
-import { useAction, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api as convexApi } from "../../../convex/_generated/api";
+import type { Id } from "../../../convex/_generated/dataModel";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -16,8 +16,9 @@ import { API, fetcher } from "@/lib/api";
 import { PageTabs, ASSISTANT_TABS } from "@/components/page-tabs";
 
 type ToolCall = { name: string; args: Record<string, unknown>; result_preview: unknown };
-type Msg = { id?: number; role: "user" | "assistant"; content: string; tool_calls?: ToolCall[] };
-type ConvSummary = { id: number; title: string; type: string; updated_at: string; message_count: number };
+type Msg = { id?: string; role: "user" | "assistant"; content: string; tool_calls?: ToolCall[] };
+type ConvId = Id<"conversations">;
+type ConvSummary = { id: ConvId; title: string; type: string; updated_at: string; message_count: number };
 
 const SUGGESTIONS = [
   "What 3 skills should I prioritize given my current notes and the job market?",
@@ -28,69 +29,64 @@ const SUGGESTIONS = [
 ];
 
 export default function AssistantPage() {
-  const [activeId, setActiveId] = useState<number | null>(null);
+  const [activeId, setActiveId] = useState<ConvId | null>(null);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   const status = useQuery(convexApi.chat.status);
   const sendChat = useAction(convexApi.chat.send);
-  const { data: convs, mutate: mutateConvs } = useSWR<ConvSummary[]>("/api/conversations?type=assistant", fetcher);
+  const convsRaw = useQuery(convexApi.conversations.list, { type: "assistant" });
+  const convs = convsRaw as ConvSummary[] | undefined;
+  const activeConv = useQuery(
+    convexApi.conversations.get,
+    activeId ? { id: activeId } : "skip",
+  );
+  const createConv = useMutation(convexApi.conversations.create);
+  const addMessage = useMutation(convexApi.conversations.addMessage);
+  const renameMut = useMutation(convexApi.conversations.rename);
+  const removeMut = useMutation(convexApi.conversations.remove);
 
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
   }, [msgs]);
 
-  // Load conversation when activeId changes.
+  // Hydrate when active conversation changes.
   useEffect(() => {
     if (activeId == null) { setMsgs([]); return; }
-    fetch(`${API}/api/conversations/${activeId}`)
-      .then((r) => r.json())
-      .then((d) => {
-        const loaded: Msg[] = (d.messages || []).map((m: { id: number; role: string; content: string; meta?: { tool_calls?: ToolCall[] } }) => ({
-          id: m.id,
-          role: m.role as "user" | "assistant",
-          content: m.content,
-          tool_calls: m.meta?.tool_calls,
-        }));
-        setMsgs(loaded);
-      });
-  }, [activeId]);
+    if (!activeConv) return;
+    const loaded: Msg[] = (activeConv.messages || []).map((m) => ({
+      id: m.id as string,
+      role: m.role as "user" | "assistant",
+      content: m.content,
+      tool_calls: (m.meta as { tool_calls?: ToolCall[] })?.tool_calls,
+    }));
+    setMsgs(loaded);
+  }, [activeId, activeConv]);
 
   const newConversation = async (title = "New chat") => {
-    const r = await fetch(`${API}/api/conversations`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "assistant", title }),
-    });
-    const d = await r.json();
-    await mutateConvs();
-    setActiveId(d.id);
+    const d = await createConv({ type: "assistant", title });
+    setActiveId(d.id as ConvId);
     setMsgs([]);
-    return d.id as number;
+    return d.id as ConvId;
   };
 
-  const persistMsg = async (convId: number, role: string, content: string, meta: object = {}) => {
-    await fetch(`${API}/api/conversations/${convId}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ role, content, meta }),
+  const persistMsg = async (convId: ConvId, role: string, content: string, meta: object = {}) => {
+    await addMessage({
+      conversationId: convId,
+      role,
+      content,
+      meta: JSON.stringify(meta),
     });
   };
 
-  const renameConv = async (id: number, title: string) => {
-    await fetch(`${API}/api/conversations/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title }),
-    });
-    mutateConvs();
+  const renameConv = async (id: ConvId, title: string) => {
+    await renameMut({ id, title });
   };
 
-  const deleteConv = async (id: number) => {
+  const deleteConv = async (id: ConvId) => {
     if (!confirm("Delete this conversation?")) return;
-    await fetch(`${API}/api/conversations/${id}`, { method: "DELETE" });
-    mutateConvs();
+    await removeMut({ id });
     if (activeId === id) { setActiveId(null); setMsgs([]); }
   };
 
@@ -118,14 +114,13 @@ export default function AssistantPage() {
         setMsgs([...next, m]);
         void persistMsg(convId, "assistant", m.content, { tool_calls: data.tool_calls });
       }
-      mutateConvs();
     } catch (e) {
       const m: Msg = { role: "assistant", content: `Network error: ${e instanceof Error ? e.message : e}` };
       setMsgs([...next, m]);
     } finally {
       setSending(false);
     }
-  }, [activeId, msgs, sending, mutateConvs]);
+  }, [activeId, msgs, sending]);
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-4 flex-1 min-h-0 w-full">

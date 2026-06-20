@@ -262,6 +262,87 @@ test("user_settings: presence booleans + isolation", async () => {
   expect(aGet).not.toHaveProperty("groq_key_encrypted");
 });
 
+test("conversations: per-user isolation + message ownership", async () => {
+  const t = convexTest(schema, modules);
+  const a = await makeUser(t, "a@test.local");
+  const b = await makeUser(t, "b@test.local");
+  const aCtx = t.withIdentity(asIdentity(a));
+  const bCtx = t.withIdentity(asIdentity(b));
+
+  const aConv = await aCtx.mutation(api.conversations.create, {
+    type: "assistant",
+    title: "A's chat",
+  });
+  await bCtx.mutation(api.conversations.create, {
+    type: "assistant",
+    title: "B's chat",
+  });
+
+  await aCtx.mutation(api.conversations.addMessage, {
+    conversationId: aConv.id,
+    role: "user",
+    content: "hi",
+  });
+
+  // B cannot see A's conversation in list
+  const bList = await bCtx.query(api.conversations.list, { type: "assistant" });
+  expect(bList).toHaveLength(1);
+  expect(bList[0].title).toBe("B's chat");
+
+  // B cannot get A's conversation
+  const stolen = await bCtx.query(api.conversations.get, { id: aConv.id });
+  expect(stolen).toBeNull();
+
+  // B cannot add to / rename / remove A's conversation
+  await expect(
+    bCtx.mutation(api.conversations.addMessage, {
+      conversationId: aConv.id,
+      role: "user",
+      content: "evil",
+    }),
+  ).rejects.toThrow(/NOT_FOUND/);
+  await expect(
+    bCtx.mutation(api.conversations.rename, { id: aConv.id, title: "hijack" }),
+  ).rejects.toThrow(/NOT_FOUND/);
+  await expect(
+    bCtx.mutation(api.conversations.remove, { id: aConv.id }),
+  ).rejects.toThrow(/NOT_FOUND/);
+
+  // A still has only their msg, and the conversation is intact
+  const aRead = await aCtx.query(api.conversations.get, { id: aConv.id });
+  expect(aRead?.title).toBe("A's chat");
+  expect(aRead?.messages).toHaveLength(1);
+});
+
+test("conversations.remove cascades to messages", async () => {
+  const t = convexTest(schema, modules);
+  const a = await makeUser(t, "a@test.local");
+  const aCtx = t.withIdentity(asIdentity(a));
+
+  const conv = await aCtx.mutation(api.conversations.create, {
+    type: "interview",
+    title: "drop me",
+  });
+  await aCtx.mutation(api.conversations.addMessage, {
+    conversationId: conv.id,
+    role: "user",
+    content: "x",
+  });
+  await aCtx.mutation(api.conversations.addMessage, {
+    conversationId: conv.id,
+    role: "assistant",
+    content: "y",
+  });
+
+  await aCtx.mutation(api.conversations.remove, { id: conv.id });
+  const list = await aCtx.query(api.conversations.list, { type: "interview" });
+  expect(list).toHaveLength(0);
+  const orphans = await t.run(async (ctx) =>
+    ctx.db.query("messages").collect(),
+  );
+  expect(orphans).toHaveLength(0);
+});
+
 test("unauthenticated queries return empty/default, mutations throw", async () => {
   const t = convexTest(schema, modules);
 

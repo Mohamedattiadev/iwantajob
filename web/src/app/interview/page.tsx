@@ -1,11 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import useSWR from "swr";
 import { Mic, MicOff, Power, RotateCcw, Send, Volume2, VolumeX, MessageSquare, GraduationCap, AlertTriangle, MessageSquarePlus, Trash2, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { API, fetcher } from "@/lib/api";
+import { API } from "@/lib/api";
+import { useMutation, useQuery } from "convex/react";
+import { api as convexApi } from "../../../convex/_generated/api";
+import type { Id } from "../../../convex/_generated/dataModel";
+type ConvId = Id<"conversations">;
 import { PageTabs, ASSISTANT_TABS } from "@/components/page-tabs";
 
 type Msg = { role: "user" | "assistant"; content: string };
@@ -36,11 +39,18 @@ export default function InterviewPage() {
   const [textInput, setTextInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [energy, setEnergy] = useState(0);
-  const [convId, setConvId] = useState<number | null>(null);
-  const { data: sessions, mutate: mutateSessions } = useSWR<{ id: number; title: string; updated_at: string; message_count: number }[]>(
-    "/api/conversations?type=interview",
-    fetcher,
+  const [convId, setConvId] = useState<ConvId | null>(null);
+  const sessionsRaw = useQuery(convexApi.conversations.list, { type: "interview" });
+  const sessions = sessionsRaw as { id: ConvId; title: string; updated_at: string; message_count: number }[] | undefined;
+  const activeSession = useQuery(
+    convexApi.conversations.get,
+    convId ? { id: convId } : "skip",
   );
+  const createConv = useMutation(convexApi.conversations.create);
+  const addMessage = useMutation(convexApi.conversations.addMessage);
+  const renameConvMut = useMutation(convexApi.conversations.rename);
+  const removeConvMut = useMutation(convexApi.conversations.remove);
+  const mutateSessions = () => {/* convex auto-refetches */};
 
   // Refs (mutable, no re-render)
   const sessionAlive = useRef(false);
@@ -403,14 +413,10 @@ export default function InterviewPage() {
   });
 
   // ── Persistence (conversations API) ──────────────────────────────────────
-  const persistMsg = async (cid: number, role: string, content: string) => {
+  const persistMsg = async (cid: ConvId, role: string, content: string) => {
     if (!cid) return;
     try {
-      await fetch(`${API}/api/conversations/${cid}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role, content }),
-      });
+      await addMessage({ conversationId: cid, role, content });
     } catch {}
   };
   // Persist every new message as it arrives.
@@ -425,34 +431,35 @@ export default function InterviewPage() {
     mutateSessions();
   }, [msgs, convId, mutateSessions]);
 
-  const loadSession = async (id: number) => {
+  const loadSession = async (id: ConvId) => {
     endSession();
-    const r = await fetch(`${API}/api/conversations/${id}`);
-    const d = await r.json();
-    const loaded: Msg[] = (d.messages || []).map((m: { role: string; content: string }) => ({
-      role: m.role as "user" | "assistant", content: m.content,
-    }));
-    setMsgs(loaded);
     setConvId(id);
-    lastPersistedLen.current = loaded.length;
-    if (d.meta?.topic) setTopic(d.meta.topic);
-    if (d.meta?.mode) setMode(d.meta.mode as Mode);
-    if (d.meta?.lang) setLang(d.meta.lang as Lang);
+    // activeSession query will fetch + the hydration effect below applies it.
   };
 
-  const deleteSession = async (id: number) => {
+  // Hydrate when activeSession resolves.
+  useEffect(() => {
+    if (!activeSession) return;
+    const loaded: Msg[] = (activeSession.messages || []).map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }));
+    setMsgs(loaded);
+    lastPersistedLen.current = loaded.length;
+    const meta = activeSession.meta as { topic?: string; mode?: Mode; lang?: Lang };
+    if (meta?.topic) setTopic(meta.topic);
+    if (meta?.mode) setMode(meta.mode);
+    if (meta?.lang) setLang(meta.lang);
+  }, [activeSession]);
+
+  const deleteSession = async (id: ConvId) => {
     if (!confirm("Delete this session?")) return;
-    await fetch(`${API}/api/conversations/${id}`, { method: "DELETE" });
-    mutateSessions();
+    await removeConvMut({ id });
     if (convId === id) { setConvId(null); setMsgs([]); }
   };
 
-  const renameSession = async (id: number, title: string) => {
-    await fetch(`${API}/api/conversations/${id}`, {
-      method: "PATCH", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title }),
-    });
-    mutateSessions();
+  const renameSession = async (id: ConvId, title: string) => {
+    await renameConvMut({ id, title });
   };
 
   // ── Session controls ────────────────────────────────────────────────────
@@ -463,17 +470,12 @@ export default function InterviewPage() {
     // Create a backed conversation so messages persist.
     if (convId == null) {
       try {
-        const r = await fetch(`${API}/api/conversations`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            type: "interview",
-            title: `${mode === "interview" ? "Interview" : "Teach"} — ${topic || "general"} (${lang})`,
-            meta: { topic, mode, lang },
-          }),
+        const d = await createConv({
+          type: "interview",
+          title: `${mode === "interview" ? "Interview" : "Teach"} — ${topic || "general"} (${lang})`,
+          meta: JSON.stringify({ topic, mode, lang }),
         });
-        const d = await r.json();
-        setConvId(d.id); lastPersistedLen.current = 0;
-        mutateSessions();
+        setConvId(d.id as ConvId); lastPersistedLen.current = 0;
       } catch {}
     }
     sessionAlive.current = true;
@@ -732,7 +734,7 @@ export default function InterviewPage() {
 }
 
 function SessionRow({ s, active, onPick, onRename, onDelete }: {
-  s: { id: number; title: string; updated_at: string; message_count: number };
+  s: { id: ConvId; title: string; updated_at: string; message_count: number };
   active: boolean; onPick: () => void;
   onRename: (t: string) => void; onDelete: () => void;
 }) {

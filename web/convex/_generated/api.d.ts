@@ -12,6 +12,7 @@ import type * as applications from "../applications.js";
 import type * as auth from "../auth.js";
 import type * as auth_ResendOTP from "../auth/ResendOTP.js";
 import type * as chat from "../chat.js";
+import type * as conversations from "../conversations.js";
 import type * as crons from "../crons.js";
 import type * as http from "../http.js";
 import type * as jobs from "../jobs.js";
@@ -36,6 +37,7 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   "auth/ResendOTP": typeof auth_ResendOTP;
   chat: typeof chat;
+  conversations: typeof conversations;
   crons: typeof crons;
   http: typeof http;
   jobs: typeof jobs;

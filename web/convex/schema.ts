@@ -132,6 +132,32 @@ export default defineSchema({
     .index("by_user", ["userId"])
     .index("by_user_and_updated_at", ["userId", "updated_at"]),
 
+  // Chat history for /assistant + /interview. Conversations live per
+  // user; messages denormalize userId for cheap isolation checks at
+  // the read side without joining.
+  conversations: defineTable({
+    userId: v.id("users"),
+    type: v.string(),
+    title: v.string(),
+    meta_json: v.optional(v.string()),
+    created_at: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_and_updated_at", ["userId", "updated_at"])
+    .index("by_user_and_type", ["userId", "type"]),
+
+  messages: defineTable({
+    conversationId: v.id("conversations"),
+    userId: v.id("users"),
+    role: v.string(),
+    content: v.string(),
+    meta_json: v.optional(v.string()),
+    created_at: v.number(),
+  })
+    .index("by_conv", ["conversationId"])
+    .index("by_user", ["userId"]),
+
   // Excalidraw canvases. `slug` is the page identifier — "main" for
   // the standalone /excalidraw page, "skill:<skill>" for in-skill
   // sketches. Single row per (user, slug). Body is the full scene blob
