@@ -1,6 +1,5 @@
 "use client";
 
-import useSWR from "swr";
 import Link from "next/link";
 import { useMemo } from "react";
 import { ArrowRight, FileText, GraduationCap, Briefcase, Send, Sparkles, BadgeCheck, Pencil } from "lucide-react";
@@ -10,13 +9,14 @@ import { ScrapeButton } from "@/components/scrape-button";
 import { MagicCard, Gradient, AnimatedNumber, Bento } from "@/components/eye-candy";
 import { ShaderBackground } from "@/components/shader-background";
 import { PageHeader, SectionTitle } from "@/components/page-header";
-import { fetcher, type Stats, type JobsResponse, type Profile, type Application } from "@/lib/api";
+import { type JobsResponse, type Profile, type Application } from "@/lib/api";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { useProficiency } from "@/lib/proficiency";
 
 export default function Home() {
-  const stats = useSWR<Stats>("/api/stats", fetcher);
+  const statsData = useQuery(api.jobs.stats);
+  const stats = { data: statsData };
   const jobsList = useQuery(api.jobs.list, {
     seniority: "junior_or_unknown",
     min_score: 50,

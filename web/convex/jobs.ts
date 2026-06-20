@@ -158,14 +158,89 @@ export const _getById = query({
   },
 });
 
+const REAL_THRESHOLD = 50;
+
 export const stats = query({
   args: {},
   handler: async (ctx) => {
-    // Cheap totals — used for dashboard header.
-    const sample = await ctx.db.query("jobs_pool").take(2000);
+    const userId = await getAuthUserId(ctx);
+    const profile = userId
+      ? await ctx.db
+          .query("profile")
+          .withIndex("by_user", (q) => q.eq("userId", userId))
+          .first()
+      : null;
+    let userSkills: Record<string, number> = {};
+    if (profile) {
+      try {
+        const p = JSON.parse(profile.data_json);
+        userSkills = (p?.skills ?? {}) as Record<string, number>;
+      } catch {
+        userSkills = {};
+      }
+    }
+    const have = new Set(Object.keys(userSkills).map((s) => s.toLowerCase()));
+
+    const sample = await ctx.db
+      .query("jobs_pool")
+      .withIndex("by_posted_at")
+      .order("desc")
+      .take(2000);
+
     const bySource: Record<string, number> = {};
-    for (const j of sample) bySource[j.source] = (bySource[j.source] ?? 0) + 1;
-    return { total: sample.length, by_source: bySource };
+    const bySeniority: Record<string, number> = {};
+    const skillCounts: Record<string, number> = {};
+    const skillOrig: Record<string, string> = {};
+    let targetCount = 0;
+    let realCount = 0;
+
+    for (const j of sample) {
+      bySource[j.source] = (bySource[j.source] ?? 0) + 1;
+      const bucket = seniorityBucket(j.title);
+      const senKey = bucket === "unknown" ? "unknown" : bucket;
+      if (bucket !== "senior") {
+        bySeniority[senKey] = (bySeniority[senKey] ?? 0) + 1;
+        targetCount += 1;
+        const score = scoreJob(j, userSkills);
+        if (score >= REAL_THRESHOLD) {
+          realCount += 1;
+          const text = `${j.title} ${j.description ?? ""}`.toLowerCase();
+          for (const sk of Object.keys(userSkills)) {
+            const needle = sk.toLowerCase();
+            if (text.includes(needle)) {
+              skillCounts[needle] = (skillCounts[needle] ?? 0) + 1;
+              skillOrig[needle] = sk;
+            }
+          }
+        }
+      }
+    }
+
+    const by_source = Object.entries(bySource)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+    const by_seniority = Object.entries(bySeniority)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+    const top_skills = Object.entries(skillCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 20)
+      .map(([key, count]) => ({
+        skill: skillOrig[key] ?? key,
+        count,
+        category: "skill",
+        have: have.has(key),
+      }));
+
+    return {
+      total: sample.length,
+      target: targetCount,
+      real: realCount,
+      by_source,
+      by_seniority,
+      top_skills,
+      generated_at: new Date().toISOString(),
+    };
   },
 });
 
