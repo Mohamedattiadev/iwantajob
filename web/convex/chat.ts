@@ -331,6 +331,61 @@ You have tools to read/write the user's skill notes, list/update applications, a
   },
 });
 
+export const improveSearch = action({
+  args: {
+    query: v.string(),
+    context: v.optional(v.string()),
+    hint: v.optional(v.string()),
+  },
+  handler: async (
+    _ctx,
+    { query, context, hint },
+  ): Promise<{ query: string; error?: string }> => {
+    const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    if (!key) return { query, error: "GEMINI_API_KEY not set in Convex env." };
+    const ctxHint =
+      context === "learn"
+        ? "skill names from the curriculum"
+        : context === "skills"
+          ? "skill names"
+          : context === "jobs"
+            ? "job postings (titles, companies, technologies, seniority)"
+            : "general full-text search";
+    const system =
+      "You rewrite messy search queries into concise, high-signal keywords that match a " +
+      `full-text search over ${ctxHint}. Output ONLY the improved query — no quotes, no ` +
+      "explanation, no leading 'Query:'. Keep it under 8 words. Prefer canonical technology " +
+      "names. Strip filler words. If the input is already clean, return it unchanged.";
+    const promptParts = [`User input: ${query.trim() || "(empty)"}`];
+    if (hint && hint.trim()) promptParts.push(`User intent hint: ${hint.trim()}`);
+    const r = await fetch(ENDPOINT(key), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: promptParts.join("\n") }] }],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 60,
+          thinkingConfig: { thinkingBudget: 0 },
+        },
+      }),
+    });
+    if (!r.ok) {
+      const body = await r.text();
+      return { query, error: `Gemini API error: ${r.status} — ${body.slice(0, 300)}` };
+    }
+    const data = await r.json();
+    const parts = (data.candidates ?? [{}])[0]?.content?.parts ?? [];
+    let text = "";
+    for (const p of parts as Array<Record<string, unknown>>) {
+      if (typeof p.text === "string") text += p.text;
+    }
+    const improved = text.trim().replace(/^["'`]+|["'`]+$/g, "").replace(/[.!?,]+$/, "").trim();
+    return { query: improved || query };
+  },
+});
+
 export const rewrite = action({
   args: {
     field: v.string(),

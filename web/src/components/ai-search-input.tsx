@@ -2,8 +2,9 @@
 import { useState } from "react";
 import { Search, Sparkles, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { useAction } from "convex/react";
 import { Input } from "@/components/ui/input";
-import { API } from "@/lib/api";
+import { api } from "../../convex/_generated/api";
 
 type Props = {
   value: string;
@@ -15,6 +16,7 @@ type Props = {
 
 export function AiSearchInput({ value, onChange, placeholder, context = "jobs", className }: Props) {
   const [busy, setBusy] = useState(false);
+  const improveAction = useAction(api.chat.improveSearch);
 
   const improve = async () => {
     if (!value.trim()) {
@@ -23,13 +25,8 @@ export function AiSearchInput({ value, onChange, placeholder, context = "jobs", 
     }
     setBusy(true);
     try {
-      const r = await fetch(`${API}/api/ai/search-improve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: value, context }),
-      });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.detail || `${r.status}`);
+      const d = await improveAction({ query: value, context });
+      if (d.error) throw new Error(d.error);
       if (d.query && d.query !== value) {
         onChange(d.query);
         toast.success(`AI: "${value}" → "${d.query}"`);
