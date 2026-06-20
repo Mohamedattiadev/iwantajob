@@ -4,8 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Mic, MicOff, Power, RotateCcw, Send, Volume2, VolumeX, MessageSquare, GraduationCap, AlertTriangle, MessageSquarePlus, Trash2, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { API } from "@/lib/api";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api as convexApi } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 type ConvId = Id<"conversations">;
@@ -50,6 +49,9 @@ export default function InterviewPage() {
   const addMessage = useMutation(convexApi.conversations.addMessage);
   const renameConvMut = useMutation(convexApi.conversations.rename);
   const removeConvMut = useMutation(convexApi.conversations.remove);
+  const transcribeAction = useAction(convexApi.voice.transcribe);
+  const synthesizeAction = useAction(convexApi.voice.synthesize);
+  const interviewAction = useAction(convexApi.interview.send);
   const mutateSessions = () => {/* convex auto-refetches */};
 
   // Refs (mutable, no re-render)
@@ -79,7 +81,6 @@ export default function InterviewPage() {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
   }, [msgs]);
   useEffect(() => {
-    fetch(`${API}/api/health`).catch((e) => setError(`Backend unreachable: ${e}`));
     return () => { teardown(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -259,17 +260,12 @@ export default function InterviewPage() {
     setState("transcribing");
     let userText = "";
     try {
-      const ext = (blob.type.split("/")[1] || "webm").split(";")[0];
-      const form = new FormData();
-      form.append("file", blob, `audio.${ext}`);
-      const r = await fetch(`${API}/api/stt?lang=${lang}`, { method: "POST", body: form });
-      if (!r.ok) {
-        const txt = await r.text();
-        if (r.status === 404) setError("Backend missing /api/stt — ./run restart");
-        else setError(`STT ${r.status}: ${txt.slice(0, 200)}`);
+      const buf = await blob.arrayBuffer();
+      const d = await transcribeAction({ audio: buf, mime: blob.type || "audio/webm", lang });
+      if (d.error) {
+        setError(`STT: ${d.error}`);
         setState("listening"); return;
       }
-      const d = await r.json();
       userText = (d.text || "").trim();
     } catch (e) {
       setError(`STT net: ${e instanceof Error ? e.message : e}`);
@@ -296,19 +292,9 @@ export default function InterviewPage() {
     setMsgs(next);
     setState("thinking");
     try {
-      const r = await fetch(`${API}/api/interview`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic, mode, lang, messages: next }),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (r.status === 404) {
-        setError("Backend missing /api/interview — ./run restart");
-        setState(sessionAlive.current ? "listening" : "idle"); return;
-      }
-      if (!r.ok || d.error) {
-        const err = d.error || d.detail || `HTTP ${r.status}`;
-        setError(typeof err === "string" ? err : JSON.stringify(err));
+      const d = await interviewAction({ topic, mode, lang, messages: next });
+      if (d.error) {
+        setError(d.error);
         setState(sessionAlive.current ? "listening" : "idle"); return;
       }
       const text: string = d.text || "(silence)";
@@ -354,21 +340,15 @@ export default function InterviewPage() {
     ttsAbortRef.current = ctl;
 
     const sentences = splitSentences(text);
-    // Prefetch each sentence's mp3 in parallel; play in order.
+    // Prefetch each sentence in parallel via Convex action; play in order.
     const fetches: Promise<Blob | null>[] = sentences.map((s) =>
-      fetch(`${API}/api/tts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: s, lang }),
-        signal: ctl.signal,
-      })
-        .then((r) => {
-          if (!r.ok) {
-            if (r.status === 404) setError("Backend missing /api/tts — ./run restart");
-            else setError(`TTS ${r.status}`);
+      synthesizeAction({ text: s, lang })
+        .then((d) => {
+          if (d.error || !d.audio) {
+            setError(`TTS: ${d.error ?? "no audio"}`);
             return null;
           }
-          return r.blob();
+          return new Blob([d.audio], { type: d.mime || "audio/wav" });
         })
         .catch((e) => {
           if ((e as Error).name === "AbortError") return null;
@@ -376,6 +356,7 @@ export default function InterviewPage() {
           return null;
         }),
     );
+    void ctl;
 
     try {
       for (let i = 0; i < fetches.length; i++) {
@@ -483,14 +464,8 @@ export default function InterviewPage() {
     setState("thinking");
     // Greet: send empty user → backend gives first line.
     try {
-      const r = await fetch(`${API}/api/interview`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic, mode, lang, messages: [] }),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (r.status === 404) { setError("Backend missing /api/interview — ./run restart"); endSession(); return; }
-      if (!r.ok || d.error) { setError(d.error || d.detail || `HTTP ${r.status}`); endSession(); return; }
+      const d = await interviewAction({ topic, mode, lang, messages: [] });
+      if (d.error) { setError(d.error); endSession(); return; }
       const text: string = d.text || "Hello.";
       setMsgs([{ role: "assistant", content: text }]);
       await speakAI(text);
