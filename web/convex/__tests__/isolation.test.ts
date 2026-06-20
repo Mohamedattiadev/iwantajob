@@ -232,6 +232,36 @@ test("apply is idempotent per (user, job_external_id)", async () => {
   expect(list).toHaveLength(1);
 });
 
+test("user_settings: presence booleans + isolation", async () => {
+  // Provide a SECRETS_KEY for sealing during the test if not set.
+  if (!process.env.SECRETS_KEY) {
+    process.env.SECRETS_KEY = Buffer.alloc(32, 7).toString("base64");
+  }
+  const t = convexTest(schema, modules);
+  const a = await makeUser(t, "a@test.local");
+  const b = await makeUser(t, "b@test.local");
+  const aCtx = t.withIdentity(asIdentity(a));
+  const bCtx = t.withIdentity(asIdentity(b));
+
+  await aCtx.mutation(api.userSettings.setGroqKey, { key: "groq-secret-A" });
+  await aCtx.mutation(api.userSettings.setScrapeFilters, { filters: "react,node" });
+  await bCtx.mutation(api.userSettings.setTelegramToken, { token: "tg-B" });
+
+  const aGet = await aCtx.query(api.userSettings.get);
+  const bGet = await bCtx.query(api.userSettings.get);
+
+  expect(aGet.has_groq_key).toBe(true);
+  expect(aGet.has_telegram_token).toBe(false);
+  expect(aGet.scrape_filters).toBe("react,node");
+
+  expect(bGet.has_groq_key).toBe(false);
+  expect(bGet.has_telegram_token).toBe(true);
+  expect(bGet.scrape_filters).toBeNull();
+
+  // Frontend-visible blob shape never leaks ciphertext.
+  expect(aGet).not.toHaveProperty("groq_key_encrypted");
+});
+
 test("unauthenticated queries return empty/default, mutations throw", async () => {
   const t = convexTest(schema, modules);
 
@@ -241,11 +271,19 @@ test("unauthenticated queries return empty/default, mutations throw", async () =
   expect(await t.query(api.resources.listBySkill, { skill: "Python" })).toEqual([]);
   expect(await t.query(api.proficiency.list)).toEqual([]);
   expect(await t.query(api.applications.list)).toEqual([]);
+  expect(await t.query(api.userSettings.get)).toEqual({
+    has_groq_key: false,
+    has_telegram_token: false,
+    scrape_filters: null,
+  });
 
   await expect(t.mutation(api.notes.save, { skill: "Python", content: "x" })).rejects.toThrow(/UNAUTHENTICATED/);
   await expect(t.mutation(api.milestones.add, { skill: "X", text: "y" })).rejects.toThrow(/UNAUTHENTICATED/);
   await expect(t.mutation(api.plans.add, { title: "p" })).rejects.toThrow(/UNAUTHENTICATED/);
   await expect(
     t.mutation(api.applications.apply, { job_external_id: 1, job_title: "x" }),
+  ).rejects.toThrow(/UNAUTHENTICATED/);
+  await expect(
+    t.mutation(api.userSettings.setGroqKey, { key: "x" }),
   ).rejects.toThrow(/UNAUTHENTICATED/);
 });
