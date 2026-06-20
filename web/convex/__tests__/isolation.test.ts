@@ -157,6 +157,81 @@ test("profile is isolated per user", async () => {
   expect(bProfile.personal.name).toBe("");
 });
 
+test("applications are isolated per user", async () => {
+  const t = convexTest(schema, modules);
+  const a = await makeUser(t, "a@test.local");
+  const b = await makeUser(t, "b@test.local");
+  const aCtx = t.withIdentity(asIdentity(a));
+  const bCtx = t.withIdentity(asIdentity(b));
+
+  await aCtx.mutation(api.applications.apply, {
+    job_external_id: 1001,
+    job_title: "Senior Eng",
+    job_company: "Acme",
+    job_source: "remoteok",
+    job_source_url: "https://example.com/1001",
+  });
+  await bCtx.mutation(api.applications.apply, {
+    job_external_id: 1002,
+    job_title: "Staff Eng",
+    job_company: "Beta",
+    job_source: "hn",
+    job_source_url: "https://example.com/1002",
+  });
+
+  const aList = await aCtx.query(api.applications.list);
+  const bList = await bCtx.query(api.applications.list);
+
+  expect(aList).toHaveLength(1);
+  expect(bList).toHaveLength(1);
+  expect(aList[0].job.title).toBe("Senior Eng");
+  expect(bList[0].job.title).toBe("Staff Eng");
+});
+
+test("user B cannot update or delete user A's application", async () => {
+  const t = convexTest(schema, modules);
+  const a = await makeUser(t, "a@test.local");
+  const b = await makeUser(t, "b@test.local");
+  const aCtx = t.withIdentity(asIdentity(a));
+  const bCtx = t.withIdentity(asIdentity(b));
+
+  const { id } = await aCtx.mutation(api.applications.apply, {
+    job_external_id: 2001,
+    job_title: "Locked",
+  });
+
+  await expect(
+    bCtx.mutation(api.applications.update, { id, status: "rejected" }),
+  ).rejects.toThrow(/NOT_FOUND/);
+  await expect(
+    bCtx.mutation(api.applications.remove, { id }),
+  ).rejects.toThrow(/NOT_FOUND/);
+
+  const aStill = await aCtx.query(api.applications.list);
+  expect(aStill).toHaveLength(1);
+  expect(aStill[0].status).toBe("applied");
+});
+
+test("apply is idempotent per (user, job_external_id)", async () => {
+  const t = convexTest(schema, modules);
+  const a = await makeUser(t, "a@test.local");
+  const aCtx = t.withIdentity(asIdentity(a));
+
+  const first = await aCtx.mutation(api.applications.apply, {
+    job_external_id: 3001,
+    job_title: "Once",
+  });
+  const second = await aCtx.mutation(api.applications.apply, {
+    job_external_id: 3001,
+    job_title: "Once",
+  });
+
+  expect(first.duplicated).toBe(false);
+  expect(second.duplicated).toBe(true);
+  const list = await aCtx.query(api.applications.list);
+  expect(list).toHaveLength(1);
+});
+
 test("unauthenticated queries return empty/default, mutations throw", async () => {
   const t = convexTest(schema, modules);
 
@@ -165,8 +240,12 @@ test("unauthenticated queries return empty/default, mutations throw", async () =
   expect(await t.query(api.plans.list)).toEqual([]);
   expect(await t.query(api.resources.listBySkill, { skill: "Python" })).toEqual([]);
   expect(await t.query(api.proficiency.list)).toEqual([]);
+  expect(await t.query(api.applications.list)).toEqual([]);
 
   await expect(t.mutation(api.notes.save, { skill: "Python", content: "x" })).rejects.toThrow(/UNAUTHENTICATED/);
   await expect(t.mutation(api.milestones.add, { skill: "X", text: "y" })).rejects.toThrow(/UNAUTHENTICATED/);
   await expect(t.mutation(api.plans.add, { title: "p" })).rejects.toThrow(/UNAUTHENTICATED/);
+  await expect(
+    t.mutation(api.applications.apply, { job_external_id: 1, job_title: "x" }),
+  ).rejects.toThrow(/UNAUTHENTICATED/);
 });

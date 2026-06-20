@@ -296,7 +296,7 @@ function JobsPageInner() {
                         type="button"
                         onClick={async (e) => {
                           e.preventDefault();
-                          const ok = await apply(j.id);
+                          const ok = await apply(j);
                           if (ok) toast.success("Marked applied");
                         }}
                         className="inline-flex items-center justify-center h-9 px-4 rounded-lg bg-foreground text-background text-xs font-semibold hover:opacity-90 shadow-sm"

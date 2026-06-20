@@ -85,16 +85,26 @@ export default defineSchema({
     .index("by_user_and_skill", ["userId", "skill"])
     .index("by_user_and_kind", ["userId", "kind"]),
 
+  // Jobs themselves are still served by FastAPI (SQLite). Applications
+  // denormalize the snapshot of job fields needed for the apply tracker
+  // UI so reads don't need a cross-system join. `job_external_id` is the
+  // FastAPI Job.id used as the dedupe key.
   applications: defineTable({
     userId: v.id("users"),
-    job_id: v.id("jobs"),
+    job_external_id: v.number(),
+    job_title: v.string(),
+    job_company: v.optional(v.string()),
+    job_source: v.optional(v.string()),
+    job_source_url: v.optional(v.string()),
+    job_posted_at: v.optional(v.string()),
     status: v.string(),
-    applied_at: v.optional(v.number()),
+    applied_at: v.number(),
     notes: v.optional(v.string()),
+    follow_up_at: v.optional(v.string()),
   })
     .index("by_user", ["userId"])
     .index("by_user_and_status", ["userId", "status"])
-    .index("by_user_and_job", ["userId", "job_id"])
+    .index("by_user_and_job_ext", ["userId", "job_external_id"])
     .index("by_user_and_applied_at", ["userId", "applied_at"]),
 
   // Single row per user. Full Profile shape stored as JSON for now —

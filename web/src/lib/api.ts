@@ -137,7 +137,7 @@ export type Profile = {
 };
 
 export type Application = {
-  id: number;
+  id: string;
   job_id: number;
   applied_at: string;
   status: "applied" | "interviewing" | "rejected" | "offer" | "ghost";

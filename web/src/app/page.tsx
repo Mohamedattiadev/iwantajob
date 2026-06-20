@@ -23,7 +23,8 @@ export default function Home() {
   );
   const profileData = useQuery(api.profile.get) as Profile | undefined;
   const profile = { data: profileData };
-  const apps = useSWR<Application[]>("/api/applications", fetcher);
+  const appsData = useQuery(api.applications.list);
+  const apps = { data: appsData as unknown as Application[] | undefined };
   const { map: prof, ready } = useProficiency();
 
   const confidentSet = useMemo(
