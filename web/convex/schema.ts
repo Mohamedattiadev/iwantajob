@@ -121,6 +121,7 @@ export default defineSchema({
     userId: v.id("users"),
     data_json: v.string(),
     updated_at: v.number(),
+    onboarded: v.optional(v.boolean()),
   }).index("by_user", ["userId"]),
 
   cv_drafts: defineTable({

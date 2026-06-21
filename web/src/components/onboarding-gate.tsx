@@ -1,38 +1,24 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
-
-const KEY = "jobscraper:onboarded";
-
-function readOnboarded(): boolean {
-  if (typeof window === "undefined") return true;
-  try {
-    return localStorage.getItem(KEY) === "1";
-  } catch {
-    return true;
-  }
-}
+import { useOnboarded } from "@/lib/onboarding";
 
 export function OnboardingGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [checked, setChecked] = useState(false);
+  const { onboarded } = useOnboarded();
 
   const isPublicRoute = pathname === "/welcome";
 
   useEffect(() => {
-    if (isPublicRoute) {
-      setChecked(true);
-      return;
-    }
-    if (!readOnboarded()) {
-      router.replace("/welcome");
-      return;
-    }
-    setChecked(true);
-  }, [pathname, isPublicRoute, router]);
+    if (isPublicRoute) return;
+    if (onboarded === false) router.replace("/welcome");
+  }, [pathname, isPublicRoute, router, onboarded]);
 
-  if (!checked) return null;
+  if (isPublicRoute) return <>{children}</>;
+  // null = unauthenticated → let auth/middleware handle the redirect, don't block render.
+  // undefined→null fallback already resolved in useOnboarded; only block when known-false.
+  if (onboarded === false) return null;
   return <>{children}</>;
 }

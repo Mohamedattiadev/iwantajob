@@ -99,8 +99,8 @@ export default function Welcome() {
     setStep(3);
   };
 
-  const done = () => {
-    finish();
+  const done = async () => {
+    await finish();
     router.push("/");
   };
 

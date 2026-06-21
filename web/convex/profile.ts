@@ -30,6 +30,42 @@ export const get = query({
   },
 });
 
+export const getOnboarded = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return null;
+    const row = await ctx.db
+      .query("profile")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+    return !!row?.onboarded;
+  },
+});
+
+export const setOnboarded = mutation({
+  args: { value: v.boolean() },
+  handler: async (ctx, { value }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("UNAUTHENTICATED");
+    const existing = await ctx.db
+      .query("profile")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+    if (existing) {
+      await ctx.db.patch(existing._id, { onboarded: value, updated_at: Date.now() });
+    } else {
+      await ctx.db.insert("profile", {
+        userId,
+        data_json: JSON.stringify(DEFAULT_PROFILE),
+        updated_at: Date.now(),
+        onboarded: value,
+      });
+    }
+    return value;
+  },
+});
+
 export const save = mutation({
   args: { data: v.string() },
   handler: async (ctx, { data }) => {
