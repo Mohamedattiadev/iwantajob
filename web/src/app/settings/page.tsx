@@ -6,7 +6,7 @@ import { api } from "../../../convex/_generated/api";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Check, Trash2, AlertTriangle, Sparkles, Send } from "lucide-react";
+import { Check, Trash2, AlertTriangle, Sparkles, Send, Brain, Network } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/page-header";
 
@@ -31,6 +31,11 @@ export default function SettingsPage() {
   const settings = useQuery(api.userSettings.get);
   const setGroq = useMutation(api.userSettings.setGroqKey);
   const clearGroq = useMutation(api.userSettings.clearGroqKey);
+  const setGemini = useMutation(api.userSettings.setGeminiKey);
+  const clearGemini = useMutation(api.userSettings.clearGeminiKey);
+  const setOR = useMutation(api.userSettings.setOpenrouterKey);
+  const clearOR = useMutation(api.userSettings.clearOpenrouterKey);
+  const setORModel = useMutation(api.userSettings.setOpenrouterModel);
   const setTg = useMutation(api.userSettings.setTelegramToken);
   const clearTg = useMutation(api.userSettings.clearTelegramToken);
   const setChat = useMutation(api.userSettings.setTelegramChatId);
@@ -38,12 +43,18 @@ export default function SettingsPage() {
   const registerWebhook = useAction(api.telegram.registerWebhook);
 
   const [groqKey, setGroqKey] = useState("");
+  const [geminiKey, setGeminiKey] = useState("");
+  const [orKey, setOrKey] = useState("");
+  const [orModel, setOrModel] = useState("");
   const [tgToken, setTgToken] = useState("");
   const [chatId, setChatId] = useState("");
 
   useEffect(() => {
     if (settings?.telegram_chat_id) setChatId(settings.telegram_chat_id);
   }, [settings?.telegram_chat_id]);
+  useEffect(() => {
+    if (settings?.openrouter_model) setOrModel(settings.openrouter_model);
+  }, [settings?.openrouter_model]);
 
   const save = async (
     fn: () => Promise<unknown>,
@@ -60,8 +71,17 @@ export default function SettingsPage() {
   };
 
   const groqTone: PillTone = settings?.has_groq_key ? "ready" : "unset";
+  const geminiTone: PillTone = settings?.has_gemini_key ? "ready" : "unset";
+  const orTone: PillTone = settings?.has_openrouter_key ? "ready" : "unset";
   const tgReady = settings?.has_telegram_token && settings?.telegram_chat_id;
   const tgTone: PillTone = tgReady ? "ready" : settings?.has_telegram_token || settings?.telegram_chat_id ? "incomplete" : "unset";
+
+  const OR_MODEL_HINTS = [
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen-2.5-72b-instruct:free",
+    "deepseek/deepseek-chat-v3.1:free",
+    "google/gemini-2.0-flash-exp:free",
+  ];
 
   return (
     <div className="space-y-8">
@@ -72,6 +92,137 @@ export default function SettingsPage() {
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Gemini — primary LLM */}
+        <Card accentColor="emerald" showAccentLine showCornerGlow>
+          <CardContent className="p-5 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <Brain className="h-4 w-4 text-emerald-400 mt-0.5" />
+                <div>
+                  <div className="font-semibold text-sm">Gemini API key</div>
+                  <div className="text-xs text-muted-foreground">
+                    Powers chat, CV parsing, interview, AI rewrite. Free tier ≈ 15 req/min &amp; 1500/day shared across all users on the server key — add your own to skip the queue.
+                  </div>
+                </div>
+              </div>
+              <StatusPill
+                tone={geminiTone}
+                label={geminiTone === "ready" ? "set" : "server key"}
+                icon={geminiTone === "ready" ? <Check className="h-3 w-3" /> : null}
+              />
+            </div>
+            <div className="flex gap-2">
+              <Input
+                type="password"
+                placeholder="AIza..."
+                value={geminiKey}
+                onChange={(e) => setGeminiKey(e.target.value)}
+              />
+              <Button
+                onClick={() =>
+                  save(
+                    () => setGemini({ key: geminiKey.trim() }),
+                    "Gemini key",
+                    () => setGeminiKey(""),
+                  )
+                }
+                disabled={!geminiKey.trim()}
+              >
+                Save
+              </Button>
+              {settings?.has_gemini_key && (
+                <Button
+                  variant="ghost"
+                  onClick={() => save(() => clearGemini({}), "Gemini key (clear)")}
+                  title="Clear"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Get one at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="underline">aistudio.google.com/apikey</a>.
+            </p>
+          </CardContent>
+        </Card>
+
+        {/* OpenRouter — fallback / model picker */}
+        <Card accentColor="amber" showAccentLine showCornerGlow>
+          <CardContent className="p-5 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <Network className="h-4 w-4 text-amber-400 mt-0.5" />
+                <div>
+                  <div className="font-semibold text-sm">OpenRouter API key</div>
+                  <div className="text-xs text-muted-foreground">
+                    Fallback provider — unlock free models like Llama 3.3 70B, Qwen 2.5 72B, DeepSeek v3. Used when Gemini is rate-limited.
+                  </div>
+                </div>
+              </div>
+              <StatusPill
+                tone={orTone}
+                label={orTone === "ready" ? "set" : "server key"}
+                icon={orTone === "ready" ? <Check className="h-3 w-3" /> : null}
+              />
+            </div>
+            <div className="flex gap-2">
+              <Input
+                type="password"
+                placeholder="sk-or-..."
+                value={orKey}
+                onChange={(e) => setOrKey(e.target.value)}
+              />
+              <Button
+                onClick={() =>
+                  save(
+                    () => setOR({ key: orKey.trim() }),
+                    "OpenRouter key",
+                    () => setOrKey(""),
+                  )
+                }
+                disabled={!orKey.trim()}
+              >
+                Save
+              </Button>
+              {settings?.has_openrouter_key && (
+                <Button
+                  variant="ghost"
+                  onClick={() => save(() => clearOR({}), "OpenRouter key (clear)")}
+                  title="Clear"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                Model (optional)
+              </label>
+              <div className="flex gap-2">
+                <Input
+                  list="or-models"
+                  placeholder="meta-llama/llama-3.3-70b-instruct:free"
+                  value={orModel}
+                  onChange={(e) => setOrModel(e.target.value)}
+                />
+                <datalist id="or-models">
+                  {OR_MODEL_HINTS.map((m) => <option key={m} value={m} />)}
+                </datalist>
+                <Button
+                  onClick={() => save(() => setORModel({ model: orModel.trim() }), "OpenRouter model")}
+                  disabled={!orModel.trim()}
+                >
+                  Save
+                </Button>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Get a key at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer" className="underline">openrouter.ai/keys</a>. Free models append <code>:free</code>.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Groq — voice */}
         <Card accentColor="violet" showAccentLine showCornerGlow>
           <CardContent className="p-5 space-y-4">
             <div className="flex items-start justify-between gap-3">
@@ -80,7 +231,7 @@ export default function SettingsPage() {
                 <div>
                   <div className="font-semibold text-sm">Groq API key</div>
                   <div className="text-xs text-muted-foreground">
-                    Optional — speeds up resume parsing.
+                    Powers voice STT (Whisper) + TTS on /interview. Optional.
                   </div>
                 </div>
               </div>
@@ -122,6 +273,7 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
+        {/* Telegram */}
         <Card accentColor="sky" showAccentLine showCornerGlow>
           <CardContent className="p-5 space-y-5">
             <div className="flex items-start justify-between gap-3">

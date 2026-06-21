@@ -4,6 +4,7 @@ import { v } from "convex/values";
 import { action } from "./_generated/server";
 import { api } from "./_generated/api";
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { resolveGeminiKey } from "./userSettings";
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 const ENDPOINT = (key: string) =>
@@ -85,8 +86,7 @@ type GeminiProfile = {
   certifications?: Array<{ name?: string; issuer?: string; year?: string } | string>;
 };
 
-async function geminiExtractProfile(text: string): Promise<GeminiProfile> {
-  const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+async function geminiExtractProfile(text: string, key: string | null): Promise<GeminiProfile> {
   if (!key) return {};
   const trimmed = text.length > 24000 ? text.slice(0, 24000) : text;
   const prompt = `Extract a CV / resume into STRICT JSON. PDF text was flattened to one line so use semantic cues (section keywords, capitalized headings, bullet markers like ● • -) to split. Return ONLY this shape:
@@ -301,7 +301,8 @@ export const upload = action({
     if (!text.trim()) throw new Error("could not extract text from upload");
 
     const parsed = parseFromText(text);
-    const gemini = await geminiExtractProfile(text);
+    const geminiKey = await resolveGeminiKey(ctx);
+    const gemini = await geminiExtractProfile(text, geminiKey);
 
     const current = (await ctx.runQuery(api.profile.get)) as Profile;
     const merged = mergeProfile(current, parsed, gemini);

@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import { action, query } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
 import { api } from "./_generated/api";
+import { resolveGeminiKey } from "./userSettings";
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 const ENDPOINT = (key: string) =>
@@ -222,7 +223,7 @@ export const send = action({
     tool_calls?: unknown[];
     error?: string;
   }> => {
-    const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    const key = await resolveGeminiKey(ctx);
     if (!key) {
       return {
         error:
@@ -338,10 +339,10 @@ export const improveSearch = action({
     hint: v.optional(v.string()),
   },
   handler: async (
-    _ctx,
+    ctx,
     { query, context, hint },
   ): Promise<{ query: string; error?: string }> => {
-    const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    const key = await resolveGeminiKey(ctx);
     if (!key) return { query, error: "GEMINI_API_KEY not set in Convex env." };
     const ctxHint =
       context === "learn"
@@ -392,13 +393,13 @@ export const rerankSkills = action({
     candidates: v.array(v.string()),
   },
   handler: async (
-    _ctx,
+    ctx,
     { goal, candidates },
   ): Promise<{ ranked: Array<{ skill: string; why: string }>; goal?: string; error?: string; raw?: string }> => {
     const g = goal.trim();
     if (!g) return { ranked: [], error: "goal required" };
     if (!candidates.length) return { ranked: [], goal: g };
-    const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    const key = await resolveGeminiKey(ctx);
     if (!key) return { ranked: [], error: "GEMINI_API_KEY not set in Convex env." };
     const cands = candidates.slice(0, 40);
     const prompt = `You rerank skills by relevance to a user's career goal.
@@ -470,7 +471,7 @@ export const rewrite = action({
     ctx,
     { field, raw, instruction },
   ): Promise<{ text?: string; model?: string; error?: string }> => {
-    const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    const key = await resolveGeminiKey(ctx);
     if (!key) return { error: "GEMINI_API_KEY not set in Convex env." };
 
     const profile = await ctx.runQuery(api.profile.get, {});

@@ -80,6 +80,9 @@ export const get = query({
       .first();
     return {
       has_groq_key: Boolean(row?.groq_key_encrypted),
+      has_gemini_key: Boolean(row?.gemini_key_encrypted),
+      has_openrouter_key: Boolean(row?.openrouter_key_encrypted),
+      openrouter_model: row?.openrouter_model ?? null,
       has_telegram_token: Boolean(row?.telegram_token_encrypted),
       telegram_chat_id: row?.telegram_chat_id ?? null,
       scrape_filters: row?.scrape_filters ?? null,
@@ -131,6 +134,66 @@ export const clearGroqKey = mutation({
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .first();
     if (row) await ctx.db.patch(row._id, { groq_key_encrypted: undefined });
+    return { ok: true };
+  },
+});
+
+export const setGeminiKey = mutation({
+  args: { key: v.string() },
+  handler: async (ctx, { key }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("UNAUTHENTICATED");
+    const sealed = await seal(key);
+    await upsertPatch(ctx, userId, { gemini_key_encrypted: sealed });
+    return { ok: true };
+  },
+});
+
+export const clearGeminiKey = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("UNAUTHENTICATED");
+    const row = await ctx.db
+      .query("user_settings")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+    if (row) await ctx.db.patch(row._id, { gemini_key_encrypted: undefined });
+    return { ok: true };
+  },
+});
+
+export const setOpenrouterKey = mutation({
+  args: { key: v.string() },
+  handler: async (ctx, { key }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("UNAUTHENTICATED");
+    const sealed = await seal(key);
+    await upsertPatch(ctx, userId, { openrouter_key_encrypted: sealed });
+    return { ok: true };
+  },
+});
+
+export const clearOpenrouterKey = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("UNAUTHENTICATED");
+    const row = await ctx.db
+      .query("user_settings")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+    if (row) await ctx.db.patch(row._id, { openrouter_key_encrypted: undefined });
+    return { ok: true };
+  },
+});
+
+export const setOpenrouterModel = mutation({
+  args: { model: v.string() },
+  handler: async (ctx, { model }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("UNAUTHENTICATED");
+    await upsertPatch(ctx, userId, { openrouter_model: model });
     return { ok: true };
   },
 });
@@ -211,6 +274,9 @@ export const _readSecrets = query({
     if (!row) return null;
     return {
       groq_key_encrypted: row.groq_key_encrypted ?? null,
+      gemini_key_encrypted: row.gemini_key_encrypted ?? null,
+      openrouter_key_encrypted: row.openrouter_key_encrypted ?? null,
+      openrouter_model: row.openrouter_model ?? null,
       telegram_token_encrypted: row.telegram_token_encrypted ?? null,
       telegram_chat_id: row.telegram_chat_id ?? null,
     };
@@ -221,15 +287,24 @@ export async function decryptUserSecretsInAction(
   ctx: ActionCtx,
 ): Promise<{
   groq_key: string | null;
+  gemini_key: string | null;
+  openrouter_key: string | null;
+  openrouter_model: string | null;
   telegram_token: string | null;
   telegram_chat_id: string | null;
 }> {
   const row = await ctx.runQuery(api.userSettings._readSecrets, {});
   if (!row) {
-    return { groq_key: null, telegram_token: null, telegram_chat_id: null };
+    return {
+      groq_key: null, gemini_key: null, openrouter_key: null, openrouter_model: null,
+      telegram_token: null, telegram_chat_id: null,
+    };
   }
   return {
     groq_key: row.groq_key_encrypted ? await open(row.groq_key_encrypted) : null,
+    gemini_key: row.gemini_key_encrypted ? await open(row.gemini_key_encrypted) : null,
+    openrouter_key: row.openrouter_key_encrypted ? await open(row.openrouter_key_encrypted) : null,
+    openrouter_model: row.openrouter_model ?? null,
     telegram_token: row.telegram_token_encrypted
       ? await open(row.telegram_token_encrypted)
       : null,
@@ -264,6 +339,35 @@ export const _findByWebhookSecret = internalQuery({
 
 export async function openSealed(blob: string): Promise<string> {
   return open(blob);
+}
+
+// Resolve the Gemini key for the current action — user-supplied takes
+// precedence over the server env var so individual users can route around
+// the global free-tier rate limit by attaching their own key.
+export async function resolveGeminiKey(ctx: ActionCtx): Promise<string | null> {
+  try {
+    const row = await ctx.runQuery(api.userSettings._readSecrets, {});
+    if (row?.gemini_key_encrypted) return await open(row.gemini_key_encrypted);
+  } catch {}
+  return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || null;
+}
+
+export async function resolveOpenrouter(
+  ctx: ActionCtx,
+): Promise<{ key: string | null; model: string | null }> {
+  try {
+    const row = await ctx.runQuery(api.userSettings._readSecrets, {});
+    if (row?.openrouter_key_encrypted) {
+      return {
+        key: await open(row.openrouter_key_encrypted),
+        model: row.openrouter_model || process.env.OPENROUTER_MODEL || null,
+      };
+    }
+  } catch {}
+  return {
+    key: process.env.OPENROUTER_API_KEY || null,
+    model: process.env.OPENROUTER_MODEL || null,
+  };
 }
 
 // Smoke-test helper for round-trip encryption.

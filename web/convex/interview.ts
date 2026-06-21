@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { action, query } from "./_generated/server";
 import { api } from "./_generated/api";
+import { resolveGeminiKey } from "./userSettings";
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 const ENDPOINT = (key: string) =>
@@ -75,8 +76,8 @@ export const send = action({
     ctx,
     { topic, mode, lang, messages },
   ): Promise<{ text?: string; error?: string }> => {
-    const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-    if (!key) return { error: "GEMINI_API_KEY not set in Convex env." };
+    const key = await resolveGeminiKey(ctx);
+    if (!key) return { error: "GEMINI_API_KEY not set. Add one in Settings or set in Convex env." };
 
     const profile = await ctx.runQuery(api.profile.get, {});
     const system = buildSystem({ topic, mode, lang, profile });

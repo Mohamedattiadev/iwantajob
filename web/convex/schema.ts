@@ -177,6 +177,9 @@ export default defineSchema({
   user_settings: defineTable({
     userId: v.id("users"),
     groq_key_encrypted: v.optional(v.string()),
+    gemini_key_encrypted: v.optional(v.string()),
+    openrouter_key_encrypted: v.optional(v.string()),
+    openrouter_model: v.optional(v.string()),
     telegram_token_encrypted: v.optional(v.string()),
     telegram_chat_id: v.optional(v.string()),
     telegram_webhook_secret: v.optional(v.string()),
