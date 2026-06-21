@@ -61,6 +61,68 @@ export default function CvPage() {
   });
   const [templates] = useState<TemplateInfo[]>(CV_TEMPLATES);
   const [pdfOk, setPdfOk] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
+
+  const downloadClientPdf = async () => {
+    if (!draft || pdfBusy) return;
+    setPdfBusy(true);
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.left = "-9999px";
+    iframe.style.top = "0";
+    iframe.style.width = "794px";
+    iframe.style.height = "1123px";
+    iframe.style.border = "0";
+    iframe.setAttribute("aria-hidden", "true");
+    document.body.appendChild(iframe);
+    try {
+      const html = renderHtml(draft, minLevel, template, false);
+      const doc = iframe.contentDocument;
+      if (!doc) throw new Error("iframe doc unavailable");
+      doc.open();
+      doc.write(html);
+      doc.close();
+      await new Promise<void>((resolve) => {
+        if (doc.readyState === "complete") resolve();
+        else iframe.onload = () => resolve();
+      });
+      // Let fonts/layout settle
+      await new Promise((r) => setTimeout(r, 100));
+      const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
+        import("jspdf"),
+        import("html2canvas"),
+      ]);
+      const body = doc.body;
+      const canvas = await html2canvas(body, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: "#ffffff",
+        width: 794,
+        windowWidth: 794,
+      });
+      const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
+      const A4_W = 210;
+      const A4_H = 297;
+      const imgRatio = canvas.height / canvas.width;
+      let pdfW = A4_W;
+      let pdfH = pdfW * imgRatio;
+      if (pdfH > A4_H) {
+        pdfH = A4_H;
+        pdfW = pdfH / imgRatio;
+      }
+      const x = (A4_W - pdfW) / 2;
+      const y = 0;
+      const img = canvas.toDataURL("image/png");
+      pdf.addImage(img, "PNG", x, y, pdfW, pdfH);
+      pdf.save(`cv-${template}.pdf`);
+      toast.success("PDF downloaded");
+    } catch (e) {
+      toast.error(`PDF failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      document.body.removeChild(iframe);
+      setPdfBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (data && !draft) setDraft(structuredClone(data));
@@ -82,25 +144,19 @@ export default function CvPage() {
   const [texSource, setTexSource] = useState<string>("");
   const [pdfUrl, setPdfUrl] = useState<string>("");
   const [pdfErr, setPdfErr] = useState<string>("");
-  const [printUrl, setPrintUrl] = useState<string>("");
   useEffect(() => {
     if (!draft) return;
     const html = renderHtml(draft, minLevel, template);
-    const htmlPrint = renderHtml(draft, minLevel, template, true);
     const tex = renderTex(draft, minLevel, template);
     setTexSource(tex);
     const htmlBlob = new Blob([html], { type: "text/html;charset=utf-8" });
-    const printBlob = new Blob([htmlPrint], { type: "text/html;charset=utf-8" });
     const texBlob = new Blob([tex], { type: "application/x-tex;charset=utf-8" });
     const hUrl = URL.createObjectURL(htmlBlob);
-    const pUrl = URL.createObjectURL(printBlob);
     const tUrl = URL.createObjectURL(texBlob);
     setHtmlUrl(hUrl);
-    setPrintUrl(pUrl);
     setTexUrl(tUrl);
     return () => {
       URL.revokeObjectURL(hUrl);
-      URL.revokeObjectURL(pUrl);
       URL.revokeObjectURL(tUrl);
     };
   }, [draft, minLevel, template]);
@@ -437,11 +493,16 @@ export default function CvPage() {
               </a>
             )
           ) : (
-            <a href={printUrl} target="_blank" rel="noopener noreferrer"
-               className="cv-sidebar__pdf-btn" title="Open print dialog — pick 'Save as PDF'">
+            <button
+              type="button"
+              onClick={downloadClientPdf}
+              disabled={pdfBusy}
+              className="cv-sidebar__pdf-btn"
+              title={`Download ${template} PDF`}
+            >
               <Download className="h-4 w-4" />
-              {sidebarOpen && <span>Get PDF</span>}
-            </a>
+              {sidebarOpen && <span>{pdfBusy ? "Building..." : "Get PDF"}</span>}
+            </button>
           )}
         </div>
       </aside>
