@@ -6,9 +6,26 @@ import { api } from "../../../convex/_generated/api";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Check, Trash2, AlertTriangle } from "lucide-react";
+import { Check, Trash2, AlertTriangle, Sparkles, Send } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/page-header";
+
+type PillTone = "ready" | "incomplete" | "unset";
+
+function StatusPill({ tone, label, icon }: { tone: PillTone; label: string; icon?: React.ReactNode }) {
+  const cls =
+    tone === "ready"
+      ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30"
+      : tone === "incomplete"
+      ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-amber-500/30"
+      : "bg-muted text-muted-foreground ring-border";
+  return (
+    <span className={`inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-[11px] font-semibold ring-1 ${cls}`}>
+      {icon}
+      {label}
+    </span>
+  );
+}
 
 export default function SettingsPage() {
   const settings = useQuery(api.userSettings.get);
@@ -42,179 +59,186 @@ export default function SettingsPage() {
     }
   };
 
+  const groqTone: PillTone = settings?.has_groq_key ? "ready" : "unset";
+  const tgReady = settings?.has_telegram_token && settings?.telegram_chat_id;
+  const tgTone: PillTone = tgReady ? "ready" : settings?.has_telegram_token || settings?.telegram_chat_id ? "incomplete" : "unset";
+
   return (
-    <div className="space-y-8 max-w-2xl">
+    <div className="space-y-8">
       <PageHeader
-        eyebrow="settings"
-        title={<>API keys <em className="font-serif text-muted-foreground not-italic">&amp;</em> integrations</>}
+        eyebrow="06 · settings"
+        title={<><span>API</span> <span className="text-muted-foreground italic">keys &amp; integrations</span></>}
         subtitle="Sealed at rest with AES-GCM. Tokens never leave the backend."
       />
 
-      <Card>
-        <CardContent className="p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="font-semibold text-sm">Groq API key</div>
-              <div className="text-xs text-muted-foreground">
-                Optional — speeds up resume parsing.
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Card accentColor="violet" showAccentLine showCornerGlow>
+          <CardContent className="p-5 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <Sparkles className="h-4 w-4 text-violet-400 mt-0.5" />
+                <div>
+                  <div className="font-semibold text-sm">Groq API key</div>
+                  <div className="text-xs text-muted-foreground">
+                    Optional — speeds up resume parsing.
+                  </div>
+                </div>
               </div>
+              <StatusPill
+                tone={groqTone}
+                label={groqTone === "ready" ? "set" : "unset"}
+                icon={groqTone === "ready" ? <Check className="h-3 w-3" /> : null}
+              />
             </div>
-            {settings?.has_groq_key ? (
-              <span className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
-                <Check className="h-3.5 w-3.5" /> set
-              </span>
-            ) : (
-              <span className="text-xs text-muted-foreground">unset</span>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <Input
-              type="password"
-              placeholder="gsk_..."
-              value={groqKey}
-              onChange={(e) => setGroqKey(e.target.value)}
-            />
-            <Button
-              onClick={() =>
-                save(
-                  () => setGroq({ key: groqKey.trim() }),
-                  "Groq key",
-                  () => setGroqKey(""),
-                )
-              }
-              disabled={!groqKey.trim()}
-            >
-              Save
-            </Button>
-            {settings?.has_groq_key && (
-              <Button
-                variant="ghost"
-                onClick={() => save(() => clearGroq({}), "Groq key (clear)")}
-                title="Clear"
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardContent className="p-5 space-y-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="font-semibold text-sm">Telegram bot</div>
-              <div className="text-xs text-muted-foreground">
-                Bot token + chat ID. Used by &quot;Apply via TG&quot; on the
-                jobs page.
-              </div>
-            </div>
-            {settings?.has_telegram_token && settings?.telegram_chat_id ? (
-              <span className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
-                <Check className="h-3.5 w-3.5" /> ready
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1 text-xs text-amber-600">
-                <AlertTriangle className="h-3.5 w-3.5" /> incomplete
-              </span>
-            )}
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
-              Bot token
-            </label>
             <div className="flex gap-2">
               <Input
                 type="password"
-                placeholder="123456789:ABCdef..."
-                value={tgToken}
-                onChange={(e) => setTgToken(e.target.value)}
+                placeholder="gsk_..."
+                value={groqKey}
+                onChange={(e) => setGroqKey(e.target.value)}
               />
               <Button
                 onClick={() =>
                   save(
-                    () => setTg({ token: tgToken.trim() }),
-                    "Telegram token",
-                    () => setTgToken(""),
+                    () => setGroq({ key: groqKey.trim() }),
+                    "Groq key",
+                    () => setGroqKey(""),
                   )
                 }
-                disabled={!tgToken.trim()}
+                disabled={!groqKey.trim()}
               >
                 Save
               </Button>
-              {settings?.has_telegram_token && (
+              {settings?.has_groq_key && (
                 <Button
                   variant="ghost"
-                  onClick={() => save(() => clearTg({}), "Telegram token (clear)")}
+                  onClick={() => save(() => clearGroq({}), "Groq key (clear)")}
                   title="Clear"
                 >
                   <Trash2 className="h-4 w-4" />
                 </Button>
               )}
             </div>
-          </div>
+          </CardContent>
+        </Card>
 
-          <div className="space-y-1">
-            <label className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
-              Chat ID
-            </label>
-            <div className="flex gap-2">
-              <Input
-                type="text"
-                placeholder="-1001234567890 or 1234567890"
-                value={chatId}
-                onChange={(e) => setChatId(e.target.value)}
-              />
-              <Button
-                onClick={() =>
-                  save(() => setChat({ chat_id: chatId.trim() }), "Chat ID")
+        <Card accentColor="sky" showAccentLine showCornerGlow>
+          <CardContent className="p-5 space-y-5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <Send className="h-4 w-4 text-sky-400 mt-0.5" />
+                <div>
+                  <div className="font-semibold text-sm">Telegram bot</div>
+                  <div className="text-xs text-muted-foreground">
+                    Bot token + chat ID. Used by &quot;Apply via TG&quot; on the jobs page.
+                  </div>
+                </div>
+              </div>
+              <StatusPill
+                tone={tgTone}
+                label={tgTone === "ready" ? "ready" : tgTone === "incomplete" ? "incomplete" : "unset"}
+                icon={
+                  tgTone === "ready" ? <Check className="h-3 w-3" /> :
+                  tgTone === "incomplete" ? <AlertTriangle className="h-3 w-3" /> : null
                 }
-                disabled={!chatId.trim()}
-              >
-                Save
-              </Button>
-              {settings?.telegram_chat_id && (
-                <Button
-                  variant="ghost"
-                  onClick={() => save(() => clearChat({}), "Chat ID (clear)")}
-                  title="Clear"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              )}
+              />
             </div>
-            <p className="text-[11px] text-muted-foreground">
-              Get it from @userinfobot, or look at any update from your bot.
-            </p>
-          </div>
 
-          <div className="flex items-center justify-between pt-2 border-t border-foreground/10">
-            <div>
-              <div className="text-sm font-medium">Confirm/Cancel buttons</div>
-              <div className="text-[11px] text-muted-foreground">
-                Register Telegram webhook so the Confirm/Skip buttons on apply
-                briefs record the application back here.
+            <div className="space-y-1">
+              <label className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                Bot token
+              </label>
+              <div className="flex gap-2">
+                <Input
+                  type="password"
+                  placeholder="123456789:ABCdef..."
+                  value={tgToken}
+                  onChange={(e) => setTgToken(e.target.value)}
+                />
+                <Button
+                  onClick={() =>
+                    save(
+                      () => setTg({ token: tgToken.trim() }),
+                      "Telegram token",
+                      () => setTgToken(""),
+                    )
+                  }
+                  disabled={!tgToken.trim()}
+                >
+                  Save
+                </Button>
+                {settings?.has_telegram_token && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => save(() => clearTg({}), "Telegram token (clear)")}
+                    title="Clear"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                )}
               </div>
             </div>
-            <Button
-              variant="secondary"
-              disabled={!settings?.has_telegram_token}
-              onClick={async () => {
-                try {
-                  const res = await registerWebhook({});
-                  if (res.ok) toast.success("Webhook registered");
-                  else toast.error(res.error ?? "Failed");
-                } catch (e) {
-                  toast.error(e instanceof Error ? e.message : "Failed");
-                }
-              }}
-            >
-              Register webhook
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+
+            <div className="space-y-1">
+              <label className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                Chat ID
+              </label>
+              <div className="flex gap-2">
+                <Input
+                  type="text"
+                  placeholder="-1001234567890 or 1234567890"
+                  value={chatId}
+                  onChange={(e) => setChatId(e.target.value)}
+                />
+                <Button
+                  onClick={() =>
+                    save(() => setChat({ chat_id: chatId.trim() }), "Chat ID")
+                  }
+                  disabled={!chatId.trim()}
+                >
+                  Save
+                </Button>
+                {settings?.telegram_chat_id && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => save(() => clearChat({}), "Chat ID (clear)")}
+                    title="Clear"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Get it from @userinfobot, or look at any update from your bot.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 pt-3 border-t border-foreground/10">
+              <div>
+                <div className="text-sm font-medium">Confirm/Cancel buttons</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Register Telegram webhook so the Confirm/Skip buttons on apply briefs record the application back here.
+                </div>
+              </div>
+              <Button
+                variant="secondary"
+                disabled={!settings?.has_telegram_token}
+                onClick={async () => {
+                  try {
+                    const res = await registerWebhook({});
+                    if (res.ok) toast.success("Webhook registered");
+                    else toast.error(res.error ?? "Failed");
+                  } catch (e) {
+                    toast.error(e instanceof Error ? e.message : "Failed");
+                  }
+                }}
+              >
+                Register webhook
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
