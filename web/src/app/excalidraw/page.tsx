@@ -13,6 +13,13 @@ const Excalidraw = dynamic(
 );
 
 const SLUG = "main";
+const TRANSIENT_KEYS = [
+  "collaborators", "selectedElementIds", "hoveredElementIds",
+  "draggingElement", "resizingElement", "editingElement",
+  "selectionElement", "newElement", "pendingImageElementId",
+  "openMenu", "openPopup", "showStats", "errorMessage",
+  "contextMenu", "snapLines", "originSnapOffset", "activeEmbeddable",
+];
 
 export default function ExcalidrawPage() {
   const [api_, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
@@ -20,6 +27,11 @@ export default function ExcalidrawPage() {
   const miniTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadedRef = useRef(false);
+  // Latest scene snapshot from onChange args. Avoids relying on api_ refs
+  // which can be stale across React strict-mode double-mounts.
+  const latestRef = useRef<{ elements: unknown[]; appState: Record<string, unknown>; files: unknown }>({
+    elements: [], appState: {}, files: null,
+  });
 
   const saved = useQuery(api.sketches.get, { slug: SLUG });
   const saveSketch = useMutation(api.sketches.save);
@@ -37,15 +49,8 @@ export default function ExcalidrawPage() {
     try {
       const parsed = JSON.parse(saved.data_json) as Record<string, unknown>;
       const appState = { ...((parsed.appState ?? {}) as Record<string, unknown>) };
-      // Excalidraw 0.18+ wants collaborators as a Map. JSON gave us a plain
-      // object — swap before passing as initialData.
+      for (const k of TRANSIENT_KEYS) delete appState[k];
       appState.collaborators = new Map();
-      // Drop transient runtime fields we may have inadvertently persisted.
-      for (const k of ["activeEmbeddable", "draggingElement", "resizingElement", "editingElement",
-                       "selectionElement", "newElement", "contextMenu", "snapLines",
-                       "selectedElementIds", "hoveredElementIds", "pendingImageElementId"]) {
-        delete appState[k];
-      }
       setInitialData({ ...parsed, appState });
     } catch {
       setInitialData(null);
@@ -53,15 +58,14 @@ export default function ExcalidrawPage() {
   }, [saved, initialData]);
 
   const refreshMinimap = useCallback(async () => {
-    if (!api_) return;
-    const elements = api_.getSceneElements();
-    if (!elements.length) { setMiniSvg(null); return; }
+    const elements = latestRef.current.elements;
+    if (!elements?.length) { setMiniSvg(null); return; }
     try {
       const mod = await import("@excalidraw/excalidraw");
       const svg = await mod.exportToSvg({
-        elements,
+        elements: elements as never,
         appState: { exportBackground: true, viewBackgroundColor: "#ffffff" } as never,
-        files: api_.getFiles(),
+        files: latestRef.current.files as never,
       });
       svg.setAttribute("width", "100%");
       svg.setAttribute("height", "100%");
@@ -69,36 +73,23 @@ export default function ExcalidrawPage() {
     } catch {
       /* ignore */
     }
-  }, [api_]);
+  }, []);
 
-  useEffect(() => { refreshMinimap(); }, [refreshMinimap]);
-
-  // Mark loaded once Excalidraw has applied initialData. After this, every
-  // onChange event triggers a debounced save. Excalidraw fires onChange
-  // synchronously during mount (with the hydrated scene), so without this
-  // guard we'd round-trip the saved state for no reason.
+  // Mark loaded once Excalidraw has applied initialData so the very first
+  // onChange (from hydrate) doesn't trigger a redundant save.
   useEffect(() => {
-    if (!api_ || initialData === undefined) return;
+    if (initialData === undefined) return;
     const t = setTimeout(() => { loadedRef.current = true; }, 200);
     return () => clearTimeout(t);
-  }, [api_, initialData]);
+  }, [initialData]);
 
   const flushSave = useCallback(() => {
-    if (!api_ || !loadedRef.current) return;
+    if (!loadedRef.current) return;
+    const { elements, appState: rawAppState, files } = latestRef.current;
+    if (!elements) return;
+    const appState: Record<string, unknown> = { ...rawAppState };
+    for (const k of TRANSIENT_KEYS) delete appState[k];
     try {
-      const elements = api_.getSceneElements();
-      const fullAppState = api_.getAppState() as Record<string, unknown>;
-      const appState: Record<string, unknown> = { ...fullAppState };
-      for (const k of [
-        "collaborators", "selectedElementIds", "hoveredElementIds",
-        "draggingElement", "resizingElement", "editingElement",
-        "selectionElement", "newElement", "pendingImageElementId",
-        "openMenu", "openPopup", "showStats", "errorMessage",
-        "contextMenu", "snapLines", "originSnapOffset",
-      ]) {
-        delete appState[k];
-      }
-      const files = api_.getFiles();
       const payload = JSON.stringify({ elements, appState, files });
       setSaveStatus("saving");
       saveSketch({ slug: SLUG, data: payload })
@@ -111,10 +102,10 @@ export default function ExcalidrawPage() {
       console.error("[excalidraw] serialize failed", e);
       setSaveStatus("error");
     }
-  }, [api_, saveSketch]);
+  }, [saveSketch]);
 
-  // Flush pending save on tab hide / before unload so the user doesn't lose
-  // a sketch by reloading inside the 400ms debounce window.
+  // Flush pending save on tab hide / before unload so a reload inside the
+  // 400ms debounce doesn't lose the latest stroke.
   useEffect(() => {
     const onHide = () => flushSave();
     window.addEventListener("beforeunload", onHide);
@@ -125,12 +116,23 @@ export default function ExcalidrawPage() {
     };
   }, [flushSave]);
 
-  const onChange = useCallback(() => {
-    if (miniTimer.current) clearTimeout(miniTimer.current);
-    miniTimer.current = setTimeout(() => { refreshMinimap(); }, 600);
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(flushSave, 400);
-  }, [refreshMinimap, flushSave]);
+  // Read scene state straight from onChange args instead of api_.getSceneElements()
+  // — the imperative API ref can lag a remount in React strict mode, which made
+  // saves persist an empty elements array.
+  const onChange = useCallback(
+    (elements: unknown, appState: unknown, files: unknown) => {
+      latestRef.current = {
+        elements: Array.isArray(elements) ? (elements as unknown[]) : [],
+        appState: (appState ?? {}) as Record<string, unknown>,
+        files,
+      };
+      if (miniTimer.current) clearTimeout(miniTimer.current);
+      miniTimer.current = setTimeout(() => { refreshMinimap(); }, 400);
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(flushSave, 400);
+    },
+    [refreshMinimap, flushSave],
+  );
 
   const fitAll = () => {
     if (!api_) return;

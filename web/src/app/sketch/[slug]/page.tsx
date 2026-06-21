@@ -34,6 +34,9 @@ export default function SketchPage({ params }: { params: Promise<{ slug: string 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const miniTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadedRef = useRef(false);
+  const latestRef = useRef<{ elements: unknown[]; appState: Record<string, unknown>; files: unknown }>({
+    elements: [], appState: {}, files: null,
+  });
 
   useEffect(() => {
     if (initial !== undefined) return;
@@ -62,15 +65,14 @@ export default function SketchPage({ params }: { params: Promise<{ slug: string 
   }, [initial]);
 
   const refreshMinimap = useCallback(async () => {
-    if (!api) return;
-    const elements = api.getSceneElements();
-    if (!elements.length) { setMiniSvg(null); return; }
+    const elements = latestRef.current.elements;
+    if (!elements?.length) { setMiniSvg(null); return; }
     try {
       const mod = await import("@excalidraw/excalidraw");
       const svg = await mod.exportToSvg({
-        elements,
+        elements: elements as never,
         appState: { exportBackground: true, viewBackgroundColor: "#ffffff" } as never,
-        files: api.getFiles(),
+        files: latestRef.current.files as never,
       });
       svg.setAttribute("width", "100%");
       svg.setAttribute("height", "100%");
@@ -78,21 +80,16 @@ export default function SketchPage({ params }: { params: Promise<{ slug: string 
     } catch {
       /* ignore */
     }
-  }, [api]);
-
-  useEffect(() => { refreshMinimap(); }, [refreshMinimap]);
+  }, []);
 
   const flushSave = useCallback(() => {
-    if (!api || !loadedRef.current) return;
+    if (!loadedRef.current) return;
+    const { elements, appState: rawAppState, files } = latestRef.current;
+    if (!elements) return;
+    const appState: Record<string, unknown> = { ...rawAppState };
+    for (const k of TRANSIENT_KEYS) delete appState[k];
     try {
-      const fullAppState = api.getAppState() as Record<string, unknown>;
-      const appState: Record<string, unknown> = { ...fullAppState };
-      for (const k of TRANSIENT_KEYS) delete appState[k];
-      const payload = JSON.stringify({
-        elements: api.getSceneElements(),
-        appState,
-        files: api.getFiles(),
-      });
+      const payload = JSON.stringify({ elements, appState, files });
       setSaveStatus("saving");
       saveSketch({ slug, data: payload })
         .then(() => setSaveStatus("saved"))
@@ -104,7 +101,7 @@ export default function SketchPage({ params }: { params: Promise<{ slug: string 
       console.error("[sketch] serialize failed", e);
       setSaveStatus("error");
     }
-  }, [api, slug, saveSketch]);
+  }, [slug, saveSketch]);
 
   useEffect(() => {
     const onHide = () => flushSave();
@@ -116,12 +113,20 @@ export default function SketchPage({ params }: { params: Promise<{ slug: string 
     };
   }, [flushSave]);
 
-  const onChange = useCallback(() => {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(flushSave, 400);
-    if (miniTimer.current) clearTimeout(miniTimer.current);
-    miniTimer.current = setTimeout(() => { refreshMinimap(); }, 600);
-  }, [flushSave, refreshMinimap]);
+  const onChange = useCallback(
+    (elements: unknown, appState: unknown, files: unknown) => {
+      latestRef.current = {
+        elements: Array.isArray(elements) ? (elements as unknown[]) : [],
+        appState: (appState ?? {}) as Record<string, unknown>,
+        files,
+      };
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(flushSave, 400);
+      if (miniTimer.current) clearTimeout(miniTimer.current);
+      miniTimer.current = setTimeout(() => { refreshMinimap(); }, 400);
+    },
+    [flushSave, refreshMinimap],
+  );
 
   const fitAll = () => {
     if (!api) return;
