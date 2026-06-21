@@ -308,21 +308,21 @@ function preamble(template: string): string {
 \newcommand{\entryhead}[4]{{\bfseries\color{accent}#1}\hfill{\bfseries\color{ruleclr}#2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{2pt}}
 `;
   }
-  // classic
+  // classic — extra breathing room vs the dense templates
   return String.raw`\documentclass[10pt,a4paper]{article}
-` + BASE_PACKAGES + String.raw`\usepackage[a4paper, margin=0.5in]{geometry}
+` + BASE_PACKAGES + String.raw`\usepackage[a4paper, margin=0.55in]{geometry}
 \definecolor{accent}{HTML}{1E3A8A}
 \definecolor{ruleclr}{HTML}{1E3A8A}
 \definecolor{muted}{HTML}{475569}
 \titleformat{\section}{\small\bfseries\color{accent}}{}{0pt}{\MakeUppercase}[\vspace{-2pt}{\color{ruleclr}\titlerule[0.7pt]}]
-\titlespacing*{\section}{0pt}{7pt}{2pt}
-\setlist[itemize]{leftmargin=12pt,nosep,topsep=2pt,partopsep=0pt,itemsep=1.5pt,parsep=0pt,label=\textcolor{accent}{\textbullet}}
-\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{18pt}\setlength{\columnseprule}{0pt}
-\setlength{\parskip}{3pt}
-\renewcommand{\baselinestretch}{1.08}
+\titlespacing*{\section}{0pt}{11pt}{4pt}
+\setlist[itemize]{leftmargin=12pt,nosep,topsep=3pt,partopsep=0pt,itemsep=3pt,parsep=0pt,label=\textcolor{accent}{\textbullet}}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{20pt}\setlength{\columnseprule}{0pt}
+\setlength{\parskip}{5pt}
+\renewcommand{\baselinestretch}{1.18}
 \raggedbottom
 \hypersetup{colorlinks=true,urlcolor=accent}
-\newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\bfseries #2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{2pt}}
+\newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\bfseries #2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{3pt}}
 `;
 }
 

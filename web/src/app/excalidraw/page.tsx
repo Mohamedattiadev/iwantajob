@@ -24,6 +24,7 @@ export default function ExcalidrawPage() {
   const saved = useQuery(api.sketches.get, { slug: SLUG });
   const saveSketch = useMutation(api.sketches.save);
   const [initialData, setInitialData] = useState<unknown | undefined>(undefined);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
 
   // Hydrate once when Convex returns (null = no saved scene → start blank).
   useEffect(() => {
@@ -34,7 +35,18 @@ export default function ExcalidrawPage() {
       return;
     }
     try {
-      setInitialData(JSON.parse(saved.data_json));
+      const parsed = JSON.parse(saved.data_json) as Record<string, unknown>;
+      const appState = { ...((parsed.appState ?? {}) as Record<string, unknown>) };
+      // Excalidraw 0.18+ wants collaborators as a Map. JSON gave us a plain
+      // object — swap before passing as initialData.
+      appState.collaborators = new Map();
+      // Drop transient runtime fields we may have inadvertently persisted.
+      for (const k of ["activeEmbeddable", "draggingElement", "resizingElement", "editingElement",
+                       "selectionElement", "newElement", "contextMenu", "snapLines",
+                       "selectedElementIds", "hoveredElementIds", "pendingImageElementId"]) {
+        delete appState[k];
+      }
+      setInitialData({ ...parsed, appState });
     } catch {
       setInitialData(null);
     }
@@ -61,21 +73,12 @@ export default function ExcalidrawPage() {
 
   useEffect(() => { refreshMinimap(); }, [refreshMinimap]);
 
-  // After initial hydration applies, mark loaded so subsequent onChange
-  // events trigger save. Without this guard, the first onChange from
-  // updateScene would persist an empty/initial state.
+  // Mark loaded once Excalidraw has applied initialData. After this, every
+  // onChange event triggers a debounced save. Excalidraw fires onChange
+  // synchronously during mount (with the hydrated scene), so without this
+  // guard we'd round-trip the saved state for no reason.
   useEffect(() => {
     if (!api_ || initialData === undefined) return;
-    if (initialData) {
-      const d = initialData as { elements?: unknown[]; appState?: Record<string, unknown>; files?: unknown };
-      // Excalidraw 0.18+ expects appState.collaborators as a Map. JSON.parse
-      // restores it as a plain object (or array), which makes the renderer
-      // throw `collaborators.forEach is not a function`. Replace with a
-      // fresh empty Map — collaborator presence is not persisted anyway.
-      const appState = { ...(d.appState ?? {}), collaborators: new Map() };
-      api_.updateScene({ elements: (d.elements ?? []) as never, appState: appState as never });
-      if (d.files) api_.addFiles(Object.values(d.files as Record<string, unknown>) as never);
-    }
     const t = setTimeout(() => { loadedRef.current = true; }, 200);
     return () => clearTimeout(t);
   }, [api_, initialData]);
@@ -97,11 +100,16 @@ export default function ExcalidrawPage() {
       }
       const files = api_.getFiles();
       const payload = JSON.stringify({ elements, appState, files });
-      saveSketch({ slug: SLUG, data: payload }).catch((e) => {
-        console.error("[excalidraw] save failed", e);
-      });
+      setSaveStatus("saving");
+      saveSketch({ slug: SLUG, data: payload })
+        .then(() => setSaveStatus("saved"))
+        .catch((e) => {
+          console.error("[excalidraw] save failed", e);
+          setSaveStatus("error");
+        });
     } catch (e) {
       console.error("[excalidraw] serialize failed", e);
+      setSaveStatus("error");
     }
   }, [api_, saveSketch]);
 
@@ -143,9 +151,16 @@ export default function ExcalidrawPage() {
   return (
     <div className="fixed inset-0 overflow-hidden">
       <Excalidraw
+        initialData={(initialData ?? null) as never}
         onChange={onChange as never}
         excalidrawAPI={(a) => setApi(a)}
       />
+      <div className="absolute top-3 right-3 z-10 text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border bg-white/85 dark:bg-neutral-900/85">
+        {saveStatus === "saving" ? "saving…"
+         : saveStatus === "saved" ? "saved"
+         : saveStatus === "error" ? "save error"
+         : "idle"}
+      </div>
       <div className="absolute bottom-3 right-3 z-10 w-44 h-32 rounded-md border bg-white/95 dark:bg-neutral-900/95 shadow-lg overflow-hidden flex flex-col">
         <div className="flex items-center justify-between px-2 py-1 border-b text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
           <span>minimap</span>
