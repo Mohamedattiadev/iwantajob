@@ -19,7 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { API, fetcher, type Profile } from "@/lib/api";
 import { LEVELS } from "@/lib/proficiency";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api as convexApi } from "../../../convex/_generated/api";
 import { renderMarkdown } from "@/lib/cv-render";
 
@@ -38,6 +38,7 @@ const SECTION_ITEMS: { key: Section; label: string; icon: React.ReactNode }[] = 
 export default function CvPage() {
   const data = useQuery(convexApi.profile.get) as Profile | undefined;
   const saveProfileMut = useMutation(convexApi.profile.save);
+  const uploadCv = useAction(convexApi.cv.upload);
   const isLoading = data === undefined;
   const mutate = async () => {/* convex auto-refetches */};
   const [draft, setDraft] = useState<Profile | null>(null);
@@ -55,8 +56,8 @@ export default function CvPage() {
   // Preview state (lifted from CVPreview so sidebar can control template/tab)
   const [previewTab, setPreviewTab] = useState<"page" | "md" | "tex">("page");
   const [template, setTemplate] = useState<string>(() => {
-    if (typeof window === "undefined") return "classic";
-    return localStorage.getItem("cv:template") || "classic";
+    if (typeof window === "undefined") return "compact";
+    return localStorage.getItem("cv:template") || "compact";
   });
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [pdfOk, setPdfOk] = useState(false);
@@ -131,13 +132,9 @@ export default function CvPage() {
   const upload = async (file: File) => {
     setUploading(true);
     try {
-      const form = new FormData();
-      form.append("file", file);
-      const r = await fetch(`${API}/api/cv/upload`, { method: "POST", body: form });
-      if (!r.ok) throw new Error(`${r.status}`);
-      const body = (await r.json()) as { profile: Profile; meta: { skills_detected: number } };
-      setDraft(structuredClone(body.profile));
-      await saveProfileMut({ data: JSON.stringify(body.profile) });
+      const ab = await file.arrayBuffer();
+      const body = await uploadCv({ filename: file.name, data: ab });
+      setDraft(structuredClone(body.profile as Profile));
       setDirty(false);
       toast.success(`Parsed: ${body.meta.skills_detected} skills detected`);
     } catch (e) {

@@ -9,8 +9,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { API, type Profile } from "@/lib/api";
-import { useMutation } from "convex/react";
+import { type Profile } from "@/lib/api";
+import { useAction, useMutation } from "convex/react";
 import { api as convexApi } from "../../../convex/_generated/api";
 
 function blankProfile(): Profile {
@@ -31,6 +31,7 @@ export default function Welcome() {
   const [step, setStep] = useState<Step>(0);
   const [profile, setProfile] = useState<Profile | null>(null);
   const saveProfileMut = useMutation(convexApi.profile.save);
+  const uploadCv = useAction(convexApi.cv.upload);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -62,17 +63,15 @@ export default function Welcome() {
   const upload = async (file: File) => {
     setUploading(true);
     try {
-      const form = new FormData();
-      form.append("file", file);
-      const r = await fetch(`${API}/api/cv/upload`, { method: "POST", body: form });
-      if (!r.ok) throw new Error(`${r.status}`);
-      const body = (await r.json()) as { profile: Profile; meta: { skills_detected: number } };
+      const ab = await file.arrayBuffer();
+      const body = await uploadCv({ filename: file.name, data: ab });
+      const parsedProfile = body.profile as Profile;
       // Parsed name beats typed only if user left field empty
-      if (!name.trim() && body.profile.personal?.name) setName(body.profile.personal.name);
+      if (!name.trim() && parsedProfile.personal?.name) setName(parsedProfile.personal.name);
       // Otherwise keep user-typed name (don't let parser clobber it)
       const merged: Profile = name.trim()
-        ? { ...body.profile, personal: { ...body.profile.personal, name: name.trim() } }
-        : body.profile;
+        ? { ...parsedProfile, personal: { ...parsedProfile.personal, name: name.trim() } }
+        : parsedProfile;
       setProfile(merged);
       await persistName(merged);
       toast.success(`Parsed: ${body.meta.skills_detected} skills detected`);

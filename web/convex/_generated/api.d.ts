@@ -14,6 +14,7 @@ import type * as auth_ResendOTP from "../auth/ResendOTP.js";
 import type * as chat from "../chat.js";
 import type * as conversations from "../conversations.js";
 import type * as crons from "../crons.js";
+import type * as cv from "../cv.js";
 import type * as http from "../http.js";
 import type * as interview from "../interview.js";
 import type * as jobs from "../jobs.js";
@@ -41,6 +42,7 @@ declare const fullApi: ApiFromModules<{
   chat: typeof chat;
   conversations: typeof conversations;
   crons: typeof crons;
+  cv: typeof cv;
   http: typeof http;
   interview: typeof interview;
   jobs: typeof jobs;
