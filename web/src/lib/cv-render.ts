@@ -30,7 +30,7 @@ const LEVEL_LABEL: Record<number, string> = {
 
 const BULLET_RE = /\s*[●•▪◆■]\s*/;
 
-function splitBullets(raw: string): { header: string; bullets: string[] } {
+export function splitBullets(raw: string): { header: string; bullets: string[] } {
   if (!raw) return { header: "", bullets: [] };
   const s = raw.trim();
   const parts = s

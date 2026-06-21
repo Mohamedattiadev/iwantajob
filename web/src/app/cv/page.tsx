@@ -22,6 +22,7 @@ import { LEVELS } from "@/lib/proficiency";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api as convexApi } from "../../../convex/_generated/api";
 import { renderMarkdown, renderHtml, CV_TEMPLATES } from "@/lib/cv-render";
+import { renderTex } from "@/lib/cv-tex";
 
 type Section = "personal" | "experience" | "projects" | "education" | "skills";
 type ViewMode = "edit" | "split" | "preview";
@@ -75,17 +76,26 @@ export default function CvPage() {
     fetch(`${API}/api/cv/pdf/available`).then(r => r.json()).then(d => setPdfOk(!!d.available)).catch(() => setPdfOk(false));
   }, []);
 
-  // Memoize the rendered HTML so the "Open HTML" link points at a fresh blob
-  // whenever profile / minLevel / template change. URL.revokeObjectURL on
-  // teardown avoids leaks.
+  // Memoize rendered HTML + LaTeX blob URLs. Recompute when profile / minLevel
+  // / template change. URL.revokeObjectURL on teardown avoids leaks.
   const [htmlUrl, setHtmlUrl] = useState<string>("");
+  const [texUrl, setTexUrl] = useState<string>("");
+  const [texSource, setTexSource] = useState<string>("");
   useEffect(() => {
     if (!draft) return;
     const html = renderHtml(draft, minLevel, template);
-    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    setHtmlUrl(url);
-    return () => URL.revokeObjectURL(url);
+    const tex = renderTex(draft, minLevel, template);
+    setTexSource(tex);
+    const htmlBlob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const texBlob = new Blob([tex], { type: "application/x-tex;charset=utf-8" });
+    const hUrl = URL.createObjectURL(htmlBlob);
+    const tUrl = URL.createObjectURL(texBlob);
+    setHtmlUrl(hUrl);
+    setTexUrl(tUrl);
+    return () => {
+      URL.revokeObjectURL(hUrl);
+      URL.revokeObjectURL(tUrl);
+    };
   }, [draft, minLevel, template]);
 
   useEffect(() => {
@@ -349,7 +359,7 @@ export default function CvPage() {
                 <Download className="h-3.5 w-3.5" />
                 <span>md</span>
               </button>
-              <a href={`${API}/api/cv/tex?min_level=${minLevel}&template=${template}`} download="cv.tex"
+              <a href={texUrl} download="cv.tex"
                  title="Download LaTeX" className="cv-sidebar__export-btn">
                 <Download className="h-3.5 w-3.5" />
                 <span>tex</span>
@@ -537,7 +547,9 @@ export default function CvPage() {
                 )}
 
                 {previewTab === "tex" && (
-                  <LatexPane minLevel={minLevel} template={template} bust={v} />
+                  <div className="px-5 pb-5">
+                    <pre className="text-xs leading-relaxed font-mono whitespace-pre-wrap max-h-[85vh] overflow-auto p-4 rounded-lg bg-muted/40 border">{texSource}</pre>
+                  </div>
                 )}
 
                 <p className="px-5 py-3 text-[10px] text-muted-foreground leading-relaxed border-t border-foreground/8">
@@ -559,18 +571,6 @@ function SectionHeader({ icon, title }: { icon: React.ReactNode; title: string }
   return (
     <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground inline-flex items-center gap-2">
       {icon}{title}
-    </div>
-  );
-}
-
-function LatexPane({ minLevel, template, bust }: { minLevel: number; template: string; bust: string }) {
-  const [tex, setTex] = useState("");
-  useEffect(() => {
-    fetch(`${API}/api/cv/tex?min_level=${minLevel}&template=${template}&v=${bust}`).then(r => r.text()).then(setTex).catch(() => {});
-  }, [minLevel, template, bust]);
-  return (
-    <div className="px-5 pb-5">
-      <pre className="text-xs leading-relaxed font-mono whitespace-pre-wrap max-h-[85vh] overflow-auto p-4 rounded-lg bg-muted/40 border">{tex}</pre>
     </div>
   );
 }
