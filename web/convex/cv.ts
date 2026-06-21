@@ -55,11 +55,11 @@ function normalizeSection(key: string): string {
 }
 
 async function extractPdfText(buf: Buffer): Promise<string> {
-  const mod: unknown = await import("pdf-parse");
-  const pdfParse = (mod as { default?: (b: Buffer) => Promise<{ text: string }> }).default
-    ?? (mod as (b: Buffer) => Promise<{ text: string }>);
-  const r = await (pdfParse as (b: Buffer) => Promise<{ text: string }>)(buf);
-  return r.text ?? "";
+  // unpdf is built for serverless/edge — no DOMMatrix, no canvas, just text.
+  const { extractText, getDocumentProxy } = await import("unpdf");
+  const doc = await getDocumentProxy(new Uint8Array(buf));
+  const { text } = await extractText(doc, { mergePages: true });
+  return Array.isArray(text) ? text.join("\n") : (text ?? "");
 }
 
 async function extractDocxText(buf: Buffer): Promise<string> {
