@@ -1,4 +1,5 @@
 "use client";
+import { useCallback, useMemo } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api as convexApi } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -10,10 +11,16 @@ export function useApplications() {
   const updateMut = useMutation(convexApi.applications.update);
   const removeMut = useMutation(convexApi.applications.remove);
 
-  const applications = (data ?? []) as unknown as Application[];
-  const appliedIds = new Set(applications.map((a) => a.job_id));
+  const applications = useMemo(
+    () => (data ?? []) as unknown as Application[],
+    [data],
+  );
+  const appliedIds = useMemo(
+    () => new Set(applications.map((a) => a.job_id)),
+    [applications],
+  );
 
-  const apply = async (job: JobItem): Promise<boolean> => {
+  const apply = useCallback(async (job: JobItem): Promise<boolean> => {
     try {
       await applyMut({
         job_external_id: String(job.id),
@@ -28,19 +35,19 @@ export function useApplications() {
     } catch {
       return false;
     }
-  };
+  }, [applyMut]);
 
-  const remove = async (appId: string) => {
+  const remove = useCallback(async (appId: string) => {
     try {
       await removeMut({ id: appId as Id<"applications"> });
     } catch {/* silent */}
-  };
+  }, [removeMut]);
 
-  const setStatus = async (appId: string, status: Application["status"]) => {
+  const setStatus = useCallback(async (appId: string, status: Application["status"]) => {
     try {
       await updateMut({ id: appId as Id<"applications">, status });
     } catch {/* silent */}
-  };
+  }, [updateMut]);
 
   return {
     applications,
