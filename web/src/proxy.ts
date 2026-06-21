@@ -7,7 +7,6 @@ import {
 const isPublicRoute = createRouteMatcher([
   "/login",
   "/signup",
-  "/welcome",
   "/api/auth",
   "/api/auth/(.*)",
   // /be/* is the rewrite prefix to the FastAPI backend (bound to 127.0.0.1).
