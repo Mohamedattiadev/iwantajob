@@ -21,7 +21,7 @@ import { API, fetcher, type Profile } from "@/lib/api";
 import { LEVELS } from "@/lib/proficiency";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api as convexApi } from "../../../convex/_generated/api";
-import { renderMarkdown } from "@/lib/cv-render";
+import { renderMarkdown, renderHtml, CV_TEMPLATES } from "@/lib/cv-render";
 
 type Section = "personal" | "experience" | "projects" | "education" | "skills";
 type ViewMode = "edit" | "split" | "preview";
@@ -59,7 +59,7 @@ export default function CvPage() {
     if (typeof window === "undefined") return "compact";
     return localStorage.getItem("cv:template") || "compact";
   });
-  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
+  const [templates] = useState<TemplateInfo[]>(CV_TEMPLATES);
   const [pdfOk, setPdfOk] = useState(false);
 
   useEffect(() => {
@@ -71,9 +71,22 @@ export default function CvPage() {
   }, [minLevel, data]);
 
   useEffect(() => {
-    fetch(`${API}/api/cv/pdf/available`).then(r => r.json()).then(d => setPdfOk(!!d.available)).catch(() => {});
-    fetch(`${API}/api/cv/templates`).then(r => r.json()).then(d => setTemplates(d.templates ?? [])).catch(() => {});
+    // PDF still rendered by FastAPI (LaTeX); HTML/templates are local.
+    fetch(`${API}/api/cv/pdf/available`).then(r => r.json()).then(d => setPdfOk(!!d.available)).catch(() => setPdfOk(false));
   }, []);
+
+  // Memoize the rendered HTML so the "Open HTML" link points at a fresh blob
+  // whenever profile / minLevel / template change. URL.revokeObjectURL on
+  // teardown avoids leaks.
+  const [htmlUrl, setHtmlUrl] = useState<string>("");
+  useEffect(() => {
+    if (!draft) return;
+    const html = renderHtml(draft, minLevel, template);
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    setHtmlUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [draft, minLevel, template]);
 
   useEffect(() => {
     try { localStorage.setItem("cv:template", template); } catch {}
@@ -341,7 +354,7 @@ export default function CvPage() {
                 <Download className="h-3.5 w-3.5" />
                 <span>tex</span>
               </a>
-              <a href={`${API}/api/cv/html?min_level=${minLevel}&template=${template}`} target="_blank" rel="noopener noreferrer"
+              <a href={htmlUrl} target="_blank" rel="noopener noreferrer"
                  title="Open HTML" className="cv-sidebar__export-btn">
                 <ExternalLink className="h-3.5 w-3.5" />
                 <span>html</span>
@@ -372,8 +385,8 @@ export default function CvPage() {
               </a>
             )
           ) : (
-            <a href={`${API}/api/cv/html?min_level=${minLevel}&template=${template}&v=${v}`} target="_blank" rel="noopener noreferrer"
-               className="cv-sidebar__pdf-btn" title="Get PDF via print">
+            <a href={htmlUrl} target="_blank" rel="noopener noreferrer"
+               className="cv-sidebar__pdf-btn" title="Get PDF via browser print">
               <Download className="h-4 w-4" />
               {sidebarOpen && <span>Get PDF</span>}
             </a>
@@ -503,7 +516,7 @@ export default function CvPage() {
                         key={v}
                         src={pdfOk
                           ? `${API}/api/cv/pdf?min_level=${minLevel}&template=${template}&v=${v}#toolbar=0&navpanes=0`
-                          : `${API}/api/cv/html?min_level=${minLevel}&template=${template}&v=${v}`}
+                          : htmlUrl}
                         className={`w-full ${viewMode === "preview" ? "h-[88vh]" : "h-[82vh]"} bg-white`}
                         title="CV preview"
                         sandbox={pdfOk ? undefined : ""}
