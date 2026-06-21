@@ -81,6 +81,8 @@ export default function CvPage() {
   const [htmlUrl, setHtmlUrl] = useState<string>("");
   const [texUrl, setTexUrl] = useState<string>("");
   const [texSource, setTexSource] = useState<string>("");
+  const [pdfUrl, setPdfUrl] = useState<string>("");
+  const [pdfErr, setPdfErr] = useState<string>("");
   useEffect(() => {
     if (!draft) return;
     const html = renderHtml(draft, minLevel, template);
@@ -97,6 +99,37 @@ export default function CvPage() {
       URL.revokeObjectURL(tUrl);
     };
   }, [draft, minLevel, template]);
+
+  // Compile the client-rendered .tex to a per-user PDF blob by POSTing it to
+  // FastAPI's stateless /pdf-from-tex compile endpoint. The legacy GET /pdf
+  // route loaded a shared on-disk profile.json which leaked the same CV to
+  // every authenticated user — this path keeps the profile inside Convex.
+  useEffect(() => {
+    if (!texSource || !pdfOk) { setPdfUrl(""); return; }
+    let cancelled = false;
+    let createdUrl = "";
+    (async () => {
+      try {
+        const r = await fetch(`${API}/api/cv/pdf-from-tex`, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-tex" },
+          body: texSource,
+        });
+        if (!r.ok) throw new Error(`compile ${r.status}`);
+        const blob = await r.blob();
+        if (cancelled) return;
+        createdUrl = URL.createObjectURL(blob);
+        setPdfUrl(createdUrl);
+        setPdfErr("");
+      } catch (e) {
+        if (!cancelled) setPdfErr(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
+    };
+  }, [texSource, pdfOk]);
 
   useEffect(() => {
     try { localStorage.setItem("cv:template", template); } catch {}
@@ -375,20 +408,20 @@ export default function CvPage() {
           {pdfOk ? (
             sidebarOpen ? (
               <div className="cv-sidebar__pdf-row">
-                <a href={`${API}/api/cv/pdf?min_level=${minLevel}&template=${template}&v=${v}`}
+                <a href={pdfUrl || htmlUrl}
                    target="_blank" rel="noopener noreferrer"
                    className="cv-sidebar__pdf-btn cv-sidebar__pdf-btn--primary" title={`Open ${template} PDF in new tab`}>
                   <ExternalLink className="h-4 w-4" />
                   <span>Open PDF</span>
                 </a>
-                <a href={`${API}/api/cv/pdf?min_level=${minLevel}&template=${template}&v=${v}&dl=1`}
+                <a href={pdfUrl || htmlUrl}
                    download={`cv-${template}.pdf`}
                    className="cv-sidebar__pdf-btn cv-sidebar__pdf-btn--icon" title={`Download ${template} PDF`}>
                   <Download className="h-4 w-4" />
                 </a>
               </div>
             ) : (
-              <a href={`${API}/api/cv/pdf?min_level=${minLevel}&template=${template}&v=${v}&dl=1`}
+              <a href={pdfUrl || htmlUrl}
                  download={`cv-${template}.pdf`}
                  className="cv-sidebar__pdf-btn" title={`Download ${template} PDF`}>
                 <Download className="h-4 w-4" />
@@ -523,13 +556,13 @@ export default function CvPage() {
                   <div className="px-3 pb-3">
                     <div className="rounded-lg overflow-hidden border bg-white">
                       <iframe
-                        key={v}
-                        src={pdfOk
-                          ? `${API}/api/cv/pdf?min_level=${minLevel}&template=${template}&v=${v}#toolbar=0&navpanes=0`
+                        key={pdfUrl || htmlUrl}
+                        src={(pdfOk && pdfUrl)
+                          ? `${pdfUrl}#toolbar=0&navpanes=0`
                           : htmlUrl}
                         className={`w-full ${viewMode === "preview" ? "h-[88vh]" : "h-[82vh]"} bg-white`}
                         title="CV preview"
-                        sandbox={pdfOk ? undefined : ""}
+                        sandbox={pdfOk && pdfUrl ? undefined : ""}
                       />
                     </div>
                     {pdfOk && (

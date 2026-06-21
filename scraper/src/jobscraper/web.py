@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Response, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import PlainTextResponse, HTMLResponse
@@ -468,6 +468,26 @@ def create_app() -> FastAPI:
         disp = "attachment" if dl else "inline"
         return Response(content=result, media_type="application/pdf",
                         headers={"Content-Disposition": f"{disp}; filename=cv-{template}.pdf"})
+
+    @app.post("/api/cv/pdf-from-tex")
+    async def api_cv_pdf_from_tex(request: Request):
+        """Stateless compile endpoint: client sends rendered .tex source, gets
+        back PDF bytes. Bypasses the per-user profile bug in /api/cv/pdf which
+        reads from a shared on-disk profile.json — every authed user used to
+        get the SAME CV. With this endpoint each user's Convex profile is
+        rendered to .tex client-side and then compiled here."""
+        body = await request.body()
+        if not body:
+            raise HTTPException(400, "empty tex source")
+        tex = body.decode("utf-8", errors="replace")
+        result = latex_mod.compile_pdf(tex)
+        if result is None:
+            raise HTTPException(503, detail="pdflatex not installed")
+        if isinstance(result, tuple):
+            raise HTTPException(500, detail=f"pdflatex compile failed:\n{result[1][:2000]}")
+        from fastapi.responses import Response
+        return Response(content=result, media_type="application/pdf",
+                        headers={"Content-Disposition": "inline; filename=cv.pdf"})
 
     # -------- Applications (apply tracker / dedupe) --------
 

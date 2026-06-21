@@ -67,8 +67,13 @@ export default function ExcalidrawPage() {
   useEffect(() => {
     if (!api_ || initialData === undefined) return;
     if (initialData) {
-      const d = initialData as { elements?: unknown[]; appState?: unknown; files?: unknown };
-      api_.updateScene({ elements: (d.elements ?? []) as never, appState: (d.appState ?? {}) as never });
+      const d = initialData as { elements?: unknown[]; appState?: Record<string, unknown>; files?: unknown };
+      // Excalidraw 0.18+ expects appState.collaborators as a Map. JSON.parse
+      // restores it as a plain object (or array), which makes the renderer
+      // throw `collaborators.forEach is not a function`. Replace with a
+      // fresh empty Map — collaborator presence is not persisted anyway.
+      const appState = { ...(d.appState ?? {}), collaborators: new Map() };
+      api_.updateScene({ elements: (d.elements ?? []) as never, appState: appState as never });
       if (d.files) api_.addFiles(Object.values(d.files as Record<string, unknown>) as never);
     }
     const t = setTimeout(() => { loadedRef.current = true; }, 200);

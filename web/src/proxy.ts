@@ -10,6 +10,11 @@ const isPublicRoute = createRouteMatcher([
   "/welcome",
   "/api/auth",
   "/api/auth/(.*)",
+  // /be/* is the rewrite prefix to the FastAPI backend (bound to 127.0.0.1).
+  // The backend handles its own auth; the Next.js proxy must not 302 those
+  // requests to /login or iframes (e.g. the CV PDF preview) get hijacked
+  // and render the sign-in form instead of the PDF.
+  "/be/(.*)",
 ]);
 
 export default convexAuthNextjsMiddleware(async (request, { convexAuth }) => {
