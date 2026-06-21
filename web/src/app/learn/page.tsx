@@ -16,8 +16,8 @@ import { ProficiencyControl } from "@/components/proficiency";
 import { Pagination } from "@/components/pagination";
 import { useProficiency, LEVELS } from "@/lib/proficiency";
 import { useUserPlans } from "@/lib/plans";
-import { fetcher, API, type LearnResponse, type LearnRow, type Profile } from "@/lib/api";
-import { useMutation, useQuery } from "convex/react";
+import { fetcher, type LearnResponse, type LearnRow, type Profile } from "@/lib/api";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api as convexApi } from "../../../convex/_generated/api";
 import { toast } from "sonner";
 import { AiSearchInput } from "@/components/ai-search-input";
@@ -39,6 +39,7 @@ export default function LearnPage() {
 
   const profileData = useQuery(convexApi.profile.get) as Profile | undefined;
   const saveProfileMut = useMutation(convexApi.profile.save);
+  const rerankAction = useAction(convexApi.chat.rerankSkills);
   const persistGoal = async (g: string) => {
     if (!profileData) return;
     const patched: Profile = {
@@ -98,12 +99,7 @@ export default function LearnPage() {
     setAiLoading(true);
     try {
       const candidates = ranked.slice(0, 40).map((r) => r.skill);
-      const r = await fetch(`${API}/api/learn/rerank`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ goal: g, candidates }),
-      });
-      const d = await r.json();
+      const d = await rerankAction({ goal: g, candidates });
       if (d.error) throw new Error(d.error);
       const rankedRes = d.ranked || [];
       setAiRanked(rankedRes);

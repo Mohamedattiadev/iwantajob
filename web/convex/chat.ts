@@ -386,6 +386,80 @@ export const improveSearch = action({
   },
 });
 
+export const rerankSkills = action({
+  args: {
+    goal: v.string(),
+    candidates: v.array(v.string()),
+  },
+  handler: async (
+    _ctx,
+    { goal, candidates },
+  ): Promise<{ ranked: Array<{ skill: string; why: string }>; goal?: string; error?: string; raw?: string }> => {
+    const g = goal.trim();
+    if (!g) return { ranked: [], error: "goal required" };
+    if (!candidates.length) return { ranked: [], goal: g };
+    const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    if (!key) return { ranked: [], error: "GEMINI_API_KEY not set in Convex env." };
+    const cands = candidates.slice(0, 40);
+    const prompt = `You rerank skills by relevance to a user's career goal.
+
+GOAL: ${g}
+CANDIDATE SKILLS (drawn from real junior job postings):
+${cands.join(", ")}
+
+Return STRICT JSON only — no prose, no markdown — in this exact shape:
+{"ranked": [{"skill": "<one from candidates>", "why": "<<=12 words>"}, ...]}
+- Pick the TOP 5 most relevant skills for the goal.
+- Use only skills from the candidate list (exact spelling).
+- 'why' must be concrete: how it serves the goal.`;
+    const r = await fetch(ENDPOINT(key), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 400,
+          responseMimeType: "application/json",
+          thinkingConfig: { thinkingBudget: 0 },
+        },
+      }),
+    });
+    if (!r.ok) {
+      const body = await r.text();
+      return { ranked: [], error: `Gemini API error: ${r.status} — ${body.slice(0, 300)}` };
+    }
+    const data = await r.json();
+    const parts = (data.candidates ?? [{}])[0]?.content?.parts ?? [];
+    let text = "";
+    for (const p of parts as Array<Record<string, unknown>>) {
+      if (typeof p.text === "string") text += p.text;
+    }
+    let stripped = text.trim();
+    if (stripped.startsWith("```")) {
+      stripped = stripped.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(stripped);
+    } catch {
+      return { ranked: [], error: "model returned non-JSON", raw: stripped.slice(0, 400) };
+    }
+    const candLower = new Map(cands.map((c) => [c.toLowerCase(), c] as const));
+    const out: Array<{ skill: string; why: string }> = [];
+    const arr = (parsed as { ranked?: unknown }).ranked;
+    if (Array.isArray(arr)) {
+      for (const it of arr.slice(0, 5)) {
+        const sk = String((it as { skill?: unknown }).skill ?? "").trim();
+        const why = String((it as { why?: unknown }).why ?? "").trim();
+        const canon = candLower.get(sk.toLowerCase());
+        if (canon) out.push({ skill: canon, why });
+      }
+    }
+    return { ranked: out, goal: g };
+  },
+});
+
 export const rewrite = action({
   args: {
     field: v.string(),
