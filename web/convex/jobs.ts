@@ -458,11 +458,79 @@ async function collectHN(): Promise<CollectedJob[]> {
   return out;
 }
 
+const WWR_FEEDS = [
+  "https://weworkremotely.com/categories/remote-programming-jobs.rss",
+  "https://weworkremotely.com/categories/remote-back-end-programming-jobs.rss",
+  "https://weworkremotely.com/categories/remote-front-end-programming-jobs.rss",
+  "https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss",
+];
+
+function decodeXmlEntities(s: string): string {
+  return s
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+function pickTag(item: string, tag: string): string {
+  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i");
+  const m = item.match(re);
+  return m ? decodeXmlEntities(m[1]).trim() : "";
+}
+
 async function collectWeWantRecruits(): Promise<CollectedJob[]> {
-  // WeWantRecruits has no public JSON API; HTML scrape is fragile and
-  // out of scope for the V8 runtime. Stubbed out — port later when we
-  // either move to a Node action or find an alternate JSON feed.
-  return [];
+  const out: CollectedJob[] = [];
+  const seen = new Set<string>();
+  for (const url of WWR_FEEDS) {
+    let xml = "";
+    try {
+      const r = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (iwantajob/1.0)" },
+      });
+      if (!r.ok) continue;
+      xml = await r.text();
+    } catch {
+      continue;
+    }
+    const items = xml.match(/<item\b[^>]*>[\s\S]*?<\/item>/gi) ?? [];
+    for (const item of items) {
+      const guid = pickTag(item, "guid") || pickTag(item, "link");
+      if (!guid || seen.has(guid)) continue;
+      seen.add(guid);
+      const link = pickTag(item, "link") || guid;
+      let title = pickTag(item, "title");
+      let company: string | undefined;
+      if (title.includes(":")) {
+        const [head, ...rest] = title.split(":");
+        company = head.trim() || undefined;
+        const tail = rest.join(":").trim();
+        if (tail) title = tail;
+      }
+      const pub = pickTag(item, "pubDate");
+      let posted: number | undefined;
+      if (pub) {
+        const t = Date.parse(pub);
+        if (!Number.isNaN(t)) posted = t;
+      }
+      const desc = stripHtml(pickTag(item, "description"));
+      out.push({
+        source: "wwr",
+        source_id: guid,
+        source_url: link,
+        title,
+        company,
+        location: "Remote",
+        remote: true,
+        posted_at: posted,
+        description: desc,
+      });
+    }
+  }
+  return out;
 }
 
 export const runAllCollectors = action({
@@ -473,7 +541,7 @@ export const runAllCollectors = action({
       ["remoteok", collectRemoteOK],
       ["arbeitnow", collectArbeitnow],
       ["hn", collectHN],
-      ["wewantrecruits", collectWeWantRecruits],
+      ["wwr", collectWeWantRecruits],
     ];
     for (const [name, fn] of collectors) {
       try {
