@@ -1,23 +1,38 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { useOnboarded } from "@/lib/onboarding";
+
+const KEY = "jobscraper:onboarded";
+
+function readOnboarded(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    return localStorage.getItem(KEY) === "1";
+  } catch {
+    return true;
+  }
+}
 
 export function OnboardingGate({ children }: { children: React.ReactNode }) {
-  const { onboarded } = useOnboarded();
   const pathname = usePathname();
   const router = useRouter();
+  const [checked, setChecked] = useState(false);
 
   const isPublicRoute = pathname === "/welcome";
 
   useEffect(() => {
-    if (!isPublicRoute && onboarded === false && pathname !== "/welcome") {
-      router.replace("/welcome");
+    if (isPublicRoute) {
+      setChecked(true);
+      return;
     }
-  }, [onboarded, pathname, router, isPublicRoute]);
+    if (!readOnboarded()) {
+      router.replace("/welcome");
+      return;
+    }
+    setChecked(true);
+  }, [pathname, isPublicRoute, router]);
 
-  if (isPublicRoute) return <>{children}</>;
-  if (onboarded === null) return null;
+  if (!checked) return null;
   return <>{children}</>;
 }
