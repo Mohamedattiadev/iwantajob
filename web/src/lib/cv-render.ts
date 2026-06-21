@@ -495,12 +495,18 @@ const TEMPLATE_CSS: Record<string, string> = {
   `,
 };
 
-export function renderHtml(profile: Profile, minLevel = 3, template = "classic"): string {
+export function renderHtml(profile: Profile, minLevel = 3, template = "classic", autoPrint = false): string {
   const tpl = TEMPLATE_CSS[template] ? template : "classic";
   const md = renderMarkdown(profile, minLevel);
   const body = mdToHtml(md);
   const name = profile.personal?.name || "CV";
   const css = TEMPLATE_CSS[tpl];
+  // When autoPrint is true, fire the print dialog as soon as fonts/layout
+  // settle. This lets the "Print to PDF" button work without server-side
+  // PDF rendering — the user picks "Save as PDF" in the print dialog.
+  const printScript = autoPrint
+    ? `<script>window.addEventListener("load", () => setTimeout(() => window.print(), 150));</script>`
+    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -513,6 +519,7 @@ ${css}
 </head>
 <body>
 ${body}
+${printScript}
 </body>
 </html>
 `;

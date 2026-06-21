@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FileText, GraduationCap, Briefcase, Send, Sparkles, RefreshCw, Pencil, Home, Search, X } from "lucide-react";
-import { API, post } from "@/lib/api";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { useAction } from "convex/react";
+import { api as convexApi } from "../../convex/_generated/api";
 
 type Item = {
   id: string;
@@ -23,11 +24,17 @@ export function CommandPalette() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const runAllCollectors = useAction(convexApi.jobs.runAllCollectors);
   const items: Item[] = useMemo(() => {
     const go = (href: string) => () => { setOpen(false); router.push(href); };
     const scrape = async () => {
       setOpen(false);
-      try { await post("/api/scrape"); toast.info("Scrape queued"); } catch { toast.error("Failed"); }
+      try {
+        await runAllCollectors({});
+        toast.success("Scrape done");
+      } catch (e) {
+        toast.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
     };
     const chat = () => { setOpen(false); window.dispatchEvent(new Event("open-chat")); };
     return [
@@ -40,7 +47,7 @@ export function CommandPalette() {
       { id: "act-scrape",group: "Actions", icon: <RefreshCw className="h-4 w-4" />,  label: "Scrape new jobs", run: scrape },
       { id: "act-chat",  group: "Actions", icon: <Sparkles className="h-4 w-4" />,   label: "Open coach (chat)", run: chat },
     ];
-  }, [router]);
+  }, [router, runAllCollectors]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();

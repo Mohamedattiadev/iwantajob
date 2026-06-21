@@ -83,19 +83,25 @@ export default function CvPage() {
   const [texSource, setTexSource] = useState<string>("");
   const [pdfUrl, setPdfUrl] = useState<string>("");
   const [pdfErr, setPdfErr] = useState<string>("");
+  const [printUrl, setPrintUrl] = useState<string>("");
   useEffect(() => {
     if (!draft) return;
     const html = renderHtml(draft, minLevel, template);
+    const htmlPrint = renderHtml(draft, minLevel, template, true);
     const tex = renderTex(draft, minLevel, template);
     setTexSource(tex);
     const htmlBlob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const printBlob = new Blob([htmlPrint], { type: "text/html;charset=utf-8" });
     const texBlob = new Blob([tex], { type: "application/x-tex;charset=utf-8" });
     const hUrl = URL.createObjectURL(htmlBlob);
+    const pUrl = URL.createObjectURL(printBlob);
     const tUrl = URL.createObjectURL(texBlob);
     setHtmlUrl(hUrl);
+    setPrintUrl(pUrl);
     setTexUrl(tUrl);
     return () => {
       URL.revokeObjectURL(hUrl);
+      URL.revokeObjectURL(pUrl);
       URL.revokeObjectURL(tUrl);
     };
   }, [draft, minLevel, template]);
@@ -428,8 +434,8 @@ export default function CvPage() {
               </a>
             )
           ) : (
-            <a href={htmlUrl} target="_blank" rel="noopener noreferrer"
-               className="cv-sidebar__pdf-btn" title="Get PDF via browser print">
+            <a href={printUrl} target="_blank" rel="noopener noreferrer"
+               className="cv-sidebar__pdf-btn" title="Open print dialog — pick 'Save as PDF'">
               <Download className="h-4 w-4" />
               {sidebarOpen && <span>Get PDF</span>}
             </a>

@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { API, fetcher } from "@/lib/api";
 import { PageTabs, ASSISTANT_TABS } from "@/components/page-tabs";
 
 type ToolCall = { name: string; args: Record<string, unknown>; result_preview: unknown };
