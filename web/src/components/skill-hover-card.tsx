@@ -1,11 +1,10 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import useSWR from "swr";
 import { useQuery } from "convex/react";
 import { api as convexApi } from "../../convex/_generated/api";
 import Link from "next/link";
 import { BookOpen, ListChecks, Briefcase, ArrowRight, ExternalLink, Sparkles } from "lucide-react";
-import { fetcher, type JobsResponse } from "@/lib/api";
+import { type JobsResponse } from "@/lib/api";
 import { resourcesFor } from "@/lib/resources";
 import { useSkillMilestones } from "@/lib/milestones";
 import { useUserResources } from "@/lib/user-resources";

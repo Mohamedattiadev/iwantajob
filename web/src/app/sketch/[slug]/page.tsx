@@ -148,12 +148,11 @@ export default function SketchPage({ params }: { params: Promise<{ slug: string 
         onChange={onChange as never}
         excalidrawAPI={(a) => setApi(a)}
       />
-      <div className="absolute top-3 right-3 z-10 text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border bg-white/85 dark:bg-neutral-900/85">
-        {saveStatus === "saving" ? "saving…"
-         : saveStatus === "saved" ? "saved"
-         : saveStatus === "error" ? "save error"
-         : "idle"}
-      </div>
+      {saveStatus === "error" && (
+        <div className="absolute top-3 right-3 z-10 text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400">
+          save error · see console
+        </div>
+      )}
       <div className="absolute bottom-3 right-3 z-10 w-44 h-32 rounded-md border bg-white/95 dark:bg-neutral-900/95 shadow-lg overflow-hidden flex flex-col">
         <div className="flex items-center justify-between px-2 py-1 border-b text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
           <span>minimap</span>

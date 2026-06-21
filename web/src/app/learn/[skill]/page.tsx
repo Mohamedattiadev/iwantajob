@@ -2,7 +2,6 @@
 
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import useSWR from "swr";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import Link from "next/link";
@@ -56,7 +55,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { fetcher, type LearnResponse, type JobsResponse } from "@/lib/api";
+import { type LearnResponse, type JobsResponse } from "@/lib/api";
 import { useProficiency } from "@/lib/proficiency";
 import { ProficiencyControl, ProficiencyLabel } from "@/components/proficiency";
 import { resourcesFor, type Resource } from "@/lib/resources";
@@ -73,7 +72,8 @@ export default function SkillPage({
   const note = useQuery(api.notes.get, { skill });
   const saveNote = useMutation(api.notes.save);
   const resetNote = useMutation(api.notes.reset);
-  const learn = useSWR<LearnResponse>("/api/learn", fetcher);
+  const learnData = useQuery(api.learn.gaps) as LearnResponse | undefined;
+  const learn = { data: learnData, isLoading: learnData === undefined };
   const jobsRaw = useQuery(api.jobs.list, {
     skill,
     min_score: 50,

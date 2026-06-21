@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import useSWR from "swr";
 import Link from "next/link";
 import { ArrowRight, Plus, ChevronDown, Target, Sparkles, X } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -16,7 +15,7 @@ import { ProficiencyControl } from "@/components/proficiency";
 import { Pagination } from "@/components/pagination";
 import { useProficiency, LEVELS } from "@/lib/proficiency";
 import { useUserPlans } from "@/lib/plans";
-import { fetcher, type LearnResponse, type LearnRow, type Profile } from "@/lib/api";
+import { type LearnResponse, type LearnRow, type Profile } from "@/lib/api";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api as convexApi } from "../../../convex/_generated/api";
 import { toast } from "sonner";
@@ -27,7 +26,8 @@ const PAGE_SIZE = 12;
 const TOP_N = 5;
 
 export default function LearnPage() {
-  const { data, isLoading } = useSWR<LearnResponse>("/api/learn", fetcher);
+  const data = useQuery(convexApi.learn.gaps) as LearnResponse | undefined;
+  const isLoading = data === undefined;
   const { map: prof, set, ready } = useProficiency();
   const plans = useUserPlans();
   const [search, setSearch] = useState("");

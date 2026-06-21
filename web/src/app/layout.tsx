@@ -4,7 +4,6 @@ import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
 import { PageWidthProvider } from "@/components/page-width";
-import { SwrProvider } from "@/components/swr-provider";
 import { AppShell } from "@/components/app-shell";
 import { ConvexAuthNextjsServerProvider } from "@convex-dev/auth/nextjs/server";
 import { ConvexClientProvider } from "@/components/convex-client-provider";
@@ -79,10 +78,8 @@ export default function RootLayout({
           <ConvexClientProvider>
             <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
               <PageWidthProvider>
-                <SwrProvider>
-                  <AppShell>{children}</AppShell>
-                  <Toaster richColors closeButton position="bottom-right" />
-                </SwrProvider>
+                <AppShell>{children}</AppShell>
+                <Toaster richColors closeButton position="bottom-right" />
               </PageWidthProvider>
             </ThemeProvider>
           </ConvexClientProvider>

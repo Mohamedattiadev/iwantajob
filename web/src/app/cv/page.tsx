@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import useSWR from "swr";
 import {
   Download, FileText, Upload, Save, RotateCcw, ExternalLink,
   User, Briefcase, GraduationCap, Code, Folder, Check,
@@ -17,7 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { API, fetcher, type Profile } from "@/lib/api";
+import { API, type Profile } from "@/lib/api";
 import { LEVELS } from "@/lib/proficiency";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api as convexApi } from "../../../convex/_generated/api";

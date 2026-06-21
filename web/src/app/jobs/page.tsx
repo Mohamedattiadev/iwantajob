@@ -1,7 +1,6 @@
 "use client";
 
 import { Suspense, useState } from "react";
-import useSWR from "swr";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowRight, Filter, X } from "lucide-react";
