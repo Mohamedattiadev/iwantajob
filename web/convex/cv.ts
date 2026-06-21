@@ -68,18 +68,46 @@ async function extractDocxText(buf: Buffer): Promise<string> {
   return r.value ?? "";
 }
 
-type ParsedSkills = Record<string, number>;
+type GeminiProfile = {
+  personal?: {
+    name?: string;
+    email?: string;
+    phone?: string;
+    location?: string;
+    summary?: string;
+    links?: { github?: string; linkedin?: string; portfolio?: string };
+  };
+  skills?: string[];
+  experience?: Array<{ raw?: string; role?: string; company?: string; start?: string; end?: string; bullets?: string[] }>;
+  projects?: Array<{ raw?: string; name?: string; bullets?: string[] }>;
+  education?: Array<{ raw?: string; degree?: string; school?: string; start?: string; end?: string; gpa?: string }>;
+  languages?: Array<{ name?: string; level?: string }>;
+  certifications?: Array<{ name?: string; issuer?: string; year?: string } | string>;
+};
 
-async function geminiExtractSkills(text: string): Promise<ParsedSkills> {
+async function geminiExtractProfile(text: string): Promise<GeminiProfile> {
   const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!key) return {};
-  const trimmed = text.length > 12000 ? text.slice(0, 12000) : text;
-  const prompt = `Extract technical skills explicitly named in this CV. Return STRICT JSON only:
-{"skills": ["<canonical name>", ...]}
-- Use canonical names (e.g. "JavaScript" not "js", "Node.js" not "nodejs", "PostgreSQL" not "postgres").
-- Include languages, frameworks, libraries, databases, cloud, devops, AI/ML tools, methodologies.
-- Exclude soft skills, generic words, and company names.
-- Max 60 entries.
+  const trimmed = text.length > 24000 ? text.slice(0, 24000) : text;
+  const prompt = `Extract a CV / resume into STRICT JSON. PDF text was flattened to one line so use semantic cues (section keywords, capitalized headings, bullet markers like ● • -) to split. Return ONLY this shape:
+
+{
+  "personal": {"name":"", "email":"", "phone":"", "location":"", "summary":"", "links":{"github":"", "linkedin":"", "portfolio":""}},
+  "skills": ["<canonical name>", ...],
+  "experience": [{"raw": "<one entry as single string with bullets joined by ● >"}],
+  "projects":   [{"raw": "<same>"}],
+  "education":  [{"raw": "<same>"}],
+  "languages":  [{"name":"", "level":""}],
+  "certifications": ["<one cert per item>"]
+}
+
+Rules:
+- Use canonical skill names (e.g. "JavaScript" not "js", "Node.js" not "nodejs", "PostgreSQL" not "postgres"). Include languages, frameworks, libraries, databases, cloud, devops, AI/ML, methodologies. Exclude soft skills.
+- For experience/projects/education entries, emit one object per role/project/school. Put the headline first, then ● bullets joined by " ● ". Example: "Engineer at Acme 2024-present ● built X ● fixed Y".
+- Preserve the candidate's wording. Don't paraphrase.
+- If a field is missing, return "" (not null). If a section has no entries, return [].
+- Phone may have multiple numbers — keep them in one string separated by " / ".
+- Max 60 skills, 10 experience, 10 projects, 10 education, 10 languages, 20 certifications.
 
 CV TEXT:
 ${trimmed}`;
@@ -90,7 +118,7 @@ ${trimmed}`;
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       generationConfig: {
         temperature: 0.1,
-        maxOutputTokens: 800,
+        maxOutputTokens: 4000,
         responseMimeType: "application/json",
         thinkingConfig: { thinkingBudget: 0 },
       },
@@ -105,15 +133,7 @@ ${trimmed}`;
   }
   raw = raw.trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
   try {
-    const parsed = JSON.parse(raw) as { skills?: unknown };
-    const out: ParsedSkills = {};
-    if (Array.isArray(parsed.skills)) {
-      for (const s of parsed.skills.slice(0, 60)) {
-        const name = String(s).trim();
-        if (name) out[name] = 3;
-      }
-    }
-    return out;
+    return JSON.parse(raw) as GeminiProfile;
   } catch {
     return {};
   }
@@ -194,38 +214,63 @@ type Profile = {
   certifications?: unknown[];
 };
 
-function mergeProfile(current: Profile, parsed: ReturnType<typeof parseFromText>, skills: ParsedSkills): Profile {
+function mergeProfile(
+  current: Profile,
+  regexParsed: ReturnType<typeof parseFromText>,
+  gemini: GeminiProfile,
+): Profile {
   const merged: Profile = { ...current };
 
-  // personal — fill empty fields only (preserve user edits)
+  // ---- personal: gemini wins, regex backstops, current preserved if set ----
   const curPers = (current.personal ?? {}) as Record<string, unknown>;
-  const parsedPers = parsed.personal as Record<string, unknown>;
+  const regexPers = regexParsed.personal as Record<string, unknown>;
+  const gemPers = (gemini.personal ?? {}) as Record<string, unknown>;
   const nextPers: Record<string, unknown> = { ...curPers };
-  for (const [k, val] of Object.entries(parsedPers)) {
-    if (k === "links") continue;
-    if (val && !curPers[k]) nextPers[k] = val;
+  for (const k of ["name", "email", "phone", "location", "summary"]) {
+    if (curPers[k]) continue;
+    const v = (gemPers[k] as string) || (regexPers[k] as string) || "";
+    if (v) nextPers[k] = v;
   }
   const curLinks = (curPers.links ?? {}) as Record<string, string>;
-  const parsedLinks = (parsedPers.links ?? {}) as Record<string, string>;
+  const gemLinks = ((gemPers.links ?? {}) as Record<string, string>);
+  const regexLinks = (regexPers.links ?? {}) as Record<string, string>;
   const nextLinks: Record<string, string> = { ...curLinks };
-  for (const [lk, lv] of Object.entries(parsedLinks)) {
-    if (lv && !curLinks[lk]) nextLinks[lk] = lv;
+  for (const lk of ["github", "linkedin", "portfolio"]) {
+    if (curLinks[lk]) continue;
+    const v = gemLinks[lk] || regexLinks[lk] || "";
+    if (v) nextLinks[lk] = v;
   }
   nextPers.links = nextLinks;
   merged.personal = nextPers as Profile["personal"];
 
-  // arrays — adopt parsed if current empty
-  for (const k of ["education", "experience", "projects", "languages"] as const) {
+  // ---- arrays: adopt gemini if current empty (else preserve user edits) ----
+  const adopt = (k: "experience" | "projects" | "education" | "languages", gem: unknown[] | undefined) => {
     const cur = (current[k] ?? []) as unknown[];
-    const next = parsed[k];
-    if (cur.length === 0 && next.length > 0) merged[k] = next as unknown[];
+    if (cur.length > 0) return;
+    if (gem && gem.length > 0) merged[k] = gem as Profile[typeof k];
+    else if (k !== "languages") {
+      const regex = (regexParsed as unknown as Record<string, unknown[]>)[k];
+      if (regex && regex.length > 0) merged[k] = regex as Profile[typeof k];
+    }
+  };
+  adopt("experience", gemini.experience);
+  adopt("projects", gemini.projects);
+  adopt("education", gemini.education);
+  adopt("languages", gemini.languages);
+
+  // certifications: gemini-only (regex parser doesn't extract them)
+  const curCerts = (current.certifications ?? []) as unknown[];
+  if (curCerts.length === 0 && gemini.certifications && gemini.certifications.length > 0) {
+    merged.certifications = gemini.certifications as Profile["certifications"];
   }
 
-  // skills — merge, keep max level
+  // ---- skills: merge, default new ones to level 3 ----
   const curSkills = (current.skills ?? {}) as Record<string, number>;
   const nextSkills: Record<string, number> = { ...curSkills };
-  for (const [sk, lvl] of Object.entries(skills)) {
-    if ((nextSkills[sk] ?? 0) < lvl) nextSkills[sk] = lvl;
+  for (const s of gemini.skills ?? []) {
+    const name = String(s).trim();
+    if (!name) continue;
+    if ((nextSkills[name] ?? 0) < 3) nextSkills[name] = 3;
   }
   merged.skills = nextSkills;
 
@@ -256,10 +301,10 @@ export const upload = action({
     if (!text.trim()) throw new Error("could not extract text from upload");
 
     const parsed = parseFromText(text);
-    const skills = await geminiExtractSkills(text);
+    const gemini = await geminiExtractProfile(text);
 
     const current = (await ctx.runQuery(api.profile.get)) as Profile;
-    const merged = mergeProfile(current, parsed, skills);
+    const merged = mergeProfile(current, parsed, gemini);
     await ctx.runMutation(api.profile.save, { data: JSON.stringify(merged) });
 
     return {
@@ -267,7 +312,7 @@ export const upload = action({
       meta: {
         parsed_at: new Date().toISOString(),
         raw_text_chars: text.length,
-        skills_detected: Object.keys(skills).length,
+        skills_detected: (gemini.skills ?? []).length,
       },
     };
   },

@@ -80,19 +80,49 @@ export default function ExcalidrawPage() {
     return () => clearTimeout(t);
   }, [api_, initialData]);
 
+  const flushSave = useCallback(() => {
+    if (!api_ || !loadedRef.current) return;
+    try {
+      const elements = api_.getSceneElements();
+      const fullAppState = api_.getAppState() as Record<string, unknown>;
+      const appState: Record<string, unknown> = { ...fullAppState };
+      for (const k of [
+        "collaborators", "selectedElementIds", "hoveredElementIds",
+        "draggingElement", "resizingElement", "editingElement",
+        "selectionElement", "newElement", "pendingImageElementId",
+        "openMenu", "openPopup", "showStats", "errorMessage",
+        "contextMenu", "snapLines", "originSnapOffset",
+      ]) {
+        delete appState[k];
+      }
+      const files = api_.getFiles();
+      const payload = JSON.stringify({ elements, appState, files });
+      saveSketch({ slug: SLUG, data: payload }).catch((e) => {
+        console.error("[excalidraw] save failed", e);
+      });
+    } catch (e) {
+      console.error("[excalidraw] serialize failed", e);
+    }
+  }, [api_, saveSketch]);
+
+  // Flush pending save on tab hide / before unload so the user doesn't lose
+  // a sketch by reloading inside the 400ms debounce window.
+  useEffect(() => {
+    const onHide = () => flushSave();
+    window.addEventListener("beforeunload", onHide);
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      window.removeEventListener("beforeunload", onHide);
+      document.removeEventListener("visibilitychange", onHide);
+    };
+  }, [flushSave]);
+
   const onChange = useCallback(() => {
     if (miniTimer.current) clearTimeout(miniTimer.current);
     miniTimer.current = setTimeout(() => { refreshMinimap(); }, 600);
-    if (!api_ || !loadedRef.current) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      const elements = api_.getSceneElements();
-      const appState = api_.getAppState();
-      const files = api_.getFiles();
-      const payload = JSON.stringify({ elements, appState, files });
-      void saveSketch({ slug: SLUG, data: payload });
-    }, 800);
-  }, [refreshMinimap, api_, saveSketch]);
+    saveTimer.current = setTimeout(flushSave, 400);
+  }, [refreshMinimap, flushSave]);
 
   const fitAll = () => {
     if (!api_) return;
