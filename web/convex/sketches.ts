@@ -15,6 +15,35 @@ export const get = query({
   },
 });
 
+export const list = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return [];
+    const rows = await ctx.db
+      .query("sketches")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    return rows
+      .map((r) => ({ slug: r.slug, data_json: r.data_json, updated_at: r.updated_at }))
+      .sort((a, b) => b.updated_at - a.updated_at);
+  },
+});
+
+export const remove = mutation({
+  args: { slug: v.string() },
+  handler: async (ctx, { slug }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("UNAUTHENTICATED");
+    const row = await ctx.db
+      .query("sketches")
+      .withIndex("by_user_and_slug", (q) => q.eq("userId", userId).eq("slug", slug))
+      .first();
+    if (row) await ctx.db.delete(row._id);
+    return { ok: true };
+  },
+});
+
 export const save = mutation({
   args: { slug: v.string(), data: v.string() },
   handler: async (ctx, { slug, data }) => {

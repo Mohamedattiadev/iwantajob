@@ -4,9 +4,11 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Trash2, PenTool, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "../../../convex/_generated/api";
 
 type Entry = {
-  key: string;
+  slug: string;
   label: string;
   href: string;
   count: number;
@@ -31,57 +33,56 @@ async function buildThumb(elements: unknown[]): Promise<string | null> {
   }
 }
 
-function parseKey(key: string): { label: string; href: string } {
-  if (key.startsWith("sketch:skill:")) {
-    const slug = decodeURIComponent(key.slice("sketch:skill:".length));
-    return { label: `Skill · ${slug}`, href: `/learn/${encodeURIComponent(slug)}` };
+function parseSlug(slug: string): { label: string; href: string } {
+  if (slug.startsWith("skill:")) {
+    const s = slug.slice("skill:".length);
+    return { label: `Skill · ${s}`, href: `/learn/${encodeURIComponent(s)}` };
   }
-  const slug = key.slice("sketch:".length);
+  if (slug === "main") return { label: "Main canvas", href: "/excalidraw" };
   return { label: slug, href: `/sketch/${encodeURIComponent(slug)}` };
 }
 
 export default function SketchGalleryPage() {
+  const rows = useQuery(api.sketches.list);
+  const removeSketch = useMutation(api.sketches.remove);
   const [entries, setEntries] = useState<Entry[] | null>(null);
 
   useEffect(() => {
+    if (rows === undefined) return;
     let cancelled = false;
     (async () => {
-      const keys: string[] = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && k.startsWith("sketch:")) keys.push(k);
-      }
       const out: Entry[] = [];
-      for (const key of keys) {
+      for (const r of rows) {
         try {
-          const raw = localStorage.getItem(key);
-          if (!raw) continue;
-          const data = JSON.parse(raw) as { elements?: unknown[] };
+          const data = JSON.parse(r.data_json) as { elements?: unknown[] };
           const elements = data.elements ?? [];
           const thumb = await buildThumb(elements);
-          const { label, href } = parseKey(key);
+          const { label, href } = parseSlug(r.slug);
           out.push({
-            key,
+            slug: r.slug,
             label,
             href,
             count: Array.isArray(elements) ? elements.length : 0,
             thumb,
-            updated: 0,
+            updated: r.updated_at,
           });
         } catch {
           /* skip */
         }
       }
-      out.sort((a, b) => a.label.localeCompare(b.label));
+      out.sort((a, b) => b.updated - a.updated);
       if (!cancelled) setEntries(out);
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [rows]);
 
-  const remove = (key: string) => {
-    if (!confirm(`Delete sketch "${key}"? This cannot be undone.`)) return;
-    localStorage.removeItem(key);
-    setEntries((prev) => (prev ? prev.filter((e) => e.key !== key) : prev));
+  const remove = async (slug: string) => {
+    if (!confirm(`Delete sketch "${slug}"? This cannot be undone.`)) return;
+    try {
+      await removeSketch({ slug });
+    } catch (e) {
+      console.error("[sketch] delete failed", e);
+    }
   };
 
   return (
@@ -90,7 +91,7 @@ export default function SketchGalleryPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">All sketches</h1>
           <p className="text-xs text-muted-foreground mt-1">
-            Every drawing across the app, stored locally in your browser.
+            Every drawing across the app, synced to your account.
           </p>
         </div>
         <Link href="/excalidraw">
@@ -112,7 +113,7 @@ export default function SketchGalleryPage() {
       ) : (
         <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {entries.map((e) => (
-            <li key={e.key} className="group relative rounded-xl border bg-card overflow-hidden hover:border-foreground/30 transition-colors">
+            <li key={e.slug} className="group relative rounded-xl border bg-card overflow-hidden hover:border-foreground/30 transition-colors">
               <Link href={e.href} className="block">
                 <div className="aspect-[4/3] bg-white dark:bg-neutral-100 overflow-hidden flex items-center justify-center">
                   {e.thumb ? (
@@ -129,7 +130,7 @@ export default function SketchGalleryPage() {
                 </div>
               </Link>
               <button
-                onClick={() => remove(e.key)}
+                onClick={() => remove(e.slug)}
                 className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity h-7 w-7 inline-flex items-center justify-center rounded-md border bg-background/90 text-muted-foreground hover:text-rose-500"
                 title="Delete sketch"
               >
