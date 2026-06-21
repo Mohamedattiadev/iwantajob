@@ -192,6 +192,10 @@ export default function CvPage() {
   };
 
   const upload = async (file: File) => {
+    if (file.size > 4_000_000) {
+      toast.error(`File too large (${(file.size / 1_000_000).toFixed(1)}MB). Max 4MB.`);
+      return;
+    }
     setUploading(true);
     try {
       const ab = await file.arrayBuffer();

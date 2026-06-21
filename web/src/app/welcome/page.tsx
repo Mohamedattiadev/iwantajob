@@ -63,6 +63,10 @@ export default function Welcome() {
   const upload = async (file: File) => {
     setUploading(true);
     try {
+      if (file.size > 4_000_000) {
+        toast.error(`File too large (${(file.size / 1_000_000).toFixed(1)}MB). Max 4MB.`);
+        return;
+      }
       const ab = await file.arrayBuffer();
       const body = await uploadCv({ filename: file.name, data: ab });
       const parsedProfile = body.profile as Profile;

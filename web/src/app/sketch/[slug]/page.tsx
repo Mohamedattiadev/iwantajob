@@ -90,6 +90,11 @@ export default function SketchPage({ params }: { params: Promise<{ slug: string 
     for (const k of TRANSIENT_KEYS) delete appState[k];
     try {
       const payload = JSON.stringify({ elements, appState, files });
+      if (payload.length > 900_000) {
+        console.error("[sketch] payload too large:", payload.length, "bytes");
+        setSaveStatus("error");
+        return;
+      }
       setSaveStatus("saving");
       saveSketch({ slug, data: payload })
         .then(() => setSaveStatus("saved"))

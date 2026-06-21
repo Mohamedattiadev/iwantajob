@@ -91,6 +91,14 @@ export default function ExcalidrawPage() {
     for (const k of TRANSIENT_KEYS) delete appState[k];
     try {
       const payload = JSON.stringify({ elements, appState, files });
+      // Convex caps a single mutation arg at ~1MB. Sketches with many
+      // embedded images can easily blow past that; refuse silently-failing
+      // saves and tell the user.
+      if (payload.length > 900_000) {
+        console.error("[excalidraw] payload too large:", payload.length, "bytes");
+        setSaveStatus("error");
+        return;
+      }
       setSaveStatus("saving");
       saveSketch({ slug: SLUG, data: payload })
         .then(() => setSaveStatus("saved"))
