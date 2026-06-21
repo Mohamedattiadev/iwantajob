@@ -439,8 +439,12 @@ def create_app() -> FastAPI:
                 {"id": "sidebar",   "name": "Sidebar",   "desc": "Sky accent. Hairline column divider."},
                 {"id": "compact",   "name": "Compact",   "desc": "Tighter spacing. Fits more on one page."},
                 {"id": "minimal",   "name": "Minimal",   "desc": "Black-and-white. ATS-safe. Maximum readability."},
+                {"id": "banner",    "name": "Banner",    "desc": "Navy full-width header band. Bold visual identity."},
+                {"id": "mono",      "name": "Mono",      "desc": "All-monospace, green accent. Retro CRT / developer."},
+                {"id": "warm",      "name": "Warm",      "desc": "Burgundy italic headings. Editorial / agency feel."},
+                {"id": "neon",      "name": "Neon",      "desc": "Magenta + cyan. Designer / portfolio look."},
             ],
-            "default": "classic",
+            "default": "compact",
         }
 
     @app.get("/api/cv/tex")

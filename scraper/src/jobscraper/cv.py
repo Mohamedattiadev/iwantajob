@@ -186,7 +186,7 @@ def _split_bullets(raw: str) -> tuple[str, list[str]]:
     return parts[0], parts[1:]
 
 
-TEMPLATES = ("classic", "compact", "modern", "elegant", "sidebar", "minimal", "executive", "tech", "academic")
+TEMPLATES = ("classic", "compact", "modern", "elegant", "sidebar", "minimal", "executive", "tech", "academic", "banner", "mono", "warm", "neon")
 DEFAULT_TEMPLATE = "classic"
 
 

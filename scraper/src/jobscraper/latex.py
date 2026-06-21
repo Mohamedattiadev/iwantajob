@@ -121,131 +121,215 @@ def _preamble(template: str) -> str:
 \hypersetup{colorlinks=true,urlcolor=accent}
 \newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\bfseries\color{muted}\small #2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{1pt}}
 """
+    # All non-compact templates below are tightened to fit a normal CV on
+    # one A4 page while preserving each template's visual identity. If a CV
+    # is unusually dense, the compact template remains the safest bet.
+
     if template == "modern":
-        # Bold sans-serif, vivid accent bars, generous spacing.
-        return r"""\documentclass[11pt,a4paper]{article}
-""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.65in]{geometry}
+        # Bold sans-serif, blue accent rule, slim spacing.
+        return r"""\documentclass[10pt,a4paper]{article}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.5in]{geometry}
 \definecolor{accent}{HTML}{2563EB}
 \definecolor{ruleclr}{HTML}{2563EB}
 \definecolor{muted}{HTML}{475569}
-\titleformat{\section}{\normalsize\bfseries\color{accent}}{}{0pt}{\MakeUppercase}[\vspace{-2pt}{\color{ruleclr}\titlerule[1.2pt]}]
-\titlespacing*{\section}{0pt}{16pt}{8pt}
-\setlist[itemize]{leftmargin=14pt,nosep,topsep=4pt,partopsep=0pt,itemsep=4pt,label={\color{accent}$\blacktriangleright$}}
-\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{22pt}\setlength{\columnseprule}{0pt}
-\setlength{\parskip}{5pt}
-\renewcommand{\baselinestretch}{1.18}
+\titleformat{\section}{\small\bfseries\color{accent}}{}{0pt}{\MakeUppercase}[\vspace{-2pt}{\color{ruleclr}\titlerule[1pt]}]
+\titlespacing*{\section}{0pt}{8pt}{3pt}
+\setlist[itemize]{leftmargin=12pt,nosep,topsep=2pt,partopsep=0pt,itemsep=1.5pt,parsep=0pt,label={\color{accent}$\blacktriangleright$}}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{18pt}\setlength{\columnseprule}{0pt}
+\setlength{\parskip}{3pt}
+\renewcommand{\baselinestretch}{1.08}
+\raggedbottom
 \hypersetup{colorlinks=true,urlcolor=accent}
-\newcommand{\entryhead}[4]{{\bfseries\color{accent}#1}\hfill{\bfseries #2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{5pt}}
+\newcommand{\entryhead}[4]{{\bfseries\color{accent}#1}\hfill{\bfseries #2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{2pt}}
 """
     if template == "elegant":
-        # Serif, small caps, hairline rules, airy spacing.
-        return r"""\documentclass[11pt,a4paper]{article}
-""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.75in]{geometry}
+        # Serif, small caps, hairline rules, centered headings.
+        return r"""\documentclass[10pt,a4paper]{article}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.55in]{geometry}
 \definecolor{accent}{HTML}{0F172A}
 \definecolor{ruleclr}{HTML}{94A3B8}
 \definecolor{muted}{HTML}{475569}
-\titleformat{\section}{\centering\normalsize\scshape\color{accent}}{}{0pt}{}[\vspace{-2pt}\begin{center}{\color{ruleclr}\rule{50pt}{0.4pt}}\end{center}\vspace{-6pt}]
-\titlespacing*{\section}{0pt}{18pt}{8pt}
-\setlist[itemize]{leftmargin=16pt,nosep,topsep=5pt,partopsep=0pt,itemsep=4pt,label=\textcolor{muted}{\textbullet}}
-\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{24pt}\setlength{\columnseprule}{0pt}
-\setlength{\parskip}{5pt}
-\renewcommand{\baselinestretch}{1.22}
+\titleformat{\section}{\centering\small\scshape\color{accent}}{}{0pt}{}[\vspace{-3pt}\begin{center}{\color{ruleclr}\rule{40pt}{0.4pt}}\end{center}\vspace{-8pt}]
+\titlespacing*{\section}{0pt}{8pt}{2pt}
+\setlist[itemize]{leftmargin=14pt,nosep,topsep=2pt,partopsep=0pt,itemsep=1.5pt,parsep=0pt,label=\textcolor{muted}{\textbullet}}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{20pt}\setlength{\columnseprule}{0pt}
+\setlength{\parskip}{3pt}
+\renewcommand{\baselinestretch}{1.1}
+\raggedbottom
 \hypersetup{colorlinks=true,urlcolor=accent}
-\newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\bfseries #2}\\\textit{\color{muted}#3}\hfill\textit{\color{muted}#4}\par\vspace{5pt}}
+\newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\bfseries #2}\\\textit{\color{muted}#3}\hfill\textit{\color{muted}#4}\par\vspace{2pt}}
 """
     if template == "sidebar":
+        # Sky accent, vertical column rule, slim spacing.
         return r"""\documentclass[10pt,a4paper]{article}
-""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.55in]{geometry}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.45in]{geometry}
 \definecolor{accent}{HTML}{0EA5E9}
 \definecolor{ruleclr}{HTML}{0EA5E9}
 \definecolor{muted}{HTML}{475569}
-\titleformat{\section}{\normalsize\bfseries\color{accent}}{}{0pt}{\MakeUppercase}[\vspace{-2pt}{\color{ruleclr}\titlerule[0.8pt]}]
-\titlespacing*{\section}{0pt}{14pt}{7pt}
-\setlist[itemize]{leftmargin=13pt,nosep,topsep=3pt,partopsep=0pt,itemsep=3pt,label={\color{accent}$\blacktriangleright$}}
-\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{18pt}\setlength{\columnseprule}{0.4pt}
-\setlength{\parskip}{4pt}
-\renewcommand{\baselinestretch}{1.14}
+\titleformat{\section}{\small\bfseries\color{accent}}{}{0pt}{\MakeUppercase}[\vspace{-2pt}{\color{ruleclr}\titlerule[0.7pt]}]
+\titlespacing*{\section}{0pt}{7pt}{2pt}
+\setlist[itemize]{leftmargin=11pt,nosep,topsep=2pt,partopsep=0pt,itemsep=1.5pt,parsep=0pt,label={\color{accent}$\blacktriangleright$}}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{16pt}\setlength{\columnseprule}{0.4pt}
+\setlength{\parskip}{2pt}
+\renewcommand{\baselinestretch}{1.06}
+\raggedbottom
 \hypersetup{colorlinks=true,urlcolor=accent}
-\newcommand{\entryhead}[4]{{\bfseries\color{accent}#1}\hfill{\bfseries #2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{4pt}}
+\newcommand{\entryhead}[4]{{\bfseries\color{accent}#1}\hfill{\bfseries #2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{2pt}}
 """
     if template == "minimal":
-        # No color, plain serif. ATS-safe, prints clean.
-        return r"""\documentclass[11pt,a4paper]{article}
-""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.7in]{geometry}
+        # No color, plain serif. ATS-safe.
+        return r"""\documentclass[10pt,a4paper]{article}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.5in]{geometry}
 \definecolor{accent}{HTML}{000000}
 \definecolor{ruleclr}{HTML}{000000}
 \definecolor{muted}{HTML}{333333}
-\titleformat{\section}{\normalsize\bfseries}{}{0pt}{\MakeUppercase}[\vspace{-2pt}\hrule\vspace{1pt}]
-\titlespacing*{\section}{0pt}{14pt}{7pt}
-\setlist[itemize]{leftmargin=14pt,nosep,topsep=3pt,partopsep=0pt,itemsep=3pt,label=\textbullet}
-\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{20pt}\setlength{\columnseprule}{0pt}
-\setlength{\parskip}{4pt}
-\renewcommand{\baselinestretch}{1.18}
+\titleformat{\section}{\small\bfseries}{}{0pt}{\MakeUppercase}[\vspace{-2pt}\hrule\vspace{1pt}]
+\titlespacing*{\section}{0pt}{7pt}{2pt}
+\setlist[itemize]{leftmargin=12pt,nosep,topsep=2pt,partopsep=0pt,itemsep=1.5pt,parsep=0pt,label=\textbullet}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{18pt}\setlength{\columnseprule}{0pt}
+\setlength{\parskip}{2pt}
+\renewcommand{\baselinestretch}{1.08}
+\raggedbottom
 \hypersetup{colorlinks=true,urlcolor=accent}
-\newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\bfseries #2}\\\textit{#3}\hfill\textit{#4}\par\vspace{4pt}}
+\newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\bfseries #2}\\\textit{#3}\hfill\textit{#4}\par\vspace{2pt}}
 """
     if template == "executive":
-        # Deep charcoal, serif headings on sans body, formal corporate look.
-        return r"""\documentclass[11pt,a4paper]{article}
-""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.7in]{geometry}
+        # Deep charcoal, serif headings, formal corporate look.
+        return r"""\documentclass[10pt,a4paper]{article}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.5in]{geometry}
 \definecolor{accent}{HTML}{111827}
 \definecolor{ruleclr}{HTML}{9CA3AF}
 \definecolor{muted}{HTML}{4B5563}
-\titleformat{\section}{\large\bfseries\color{accent}}{}{0pt}{}[\vspace{-1pt}{\color{ruleclr}\titlerule[0.5pt]}\vspace{2pt}]
-\titlespacing*{\section}{0pt}{16pt}{8pt}
-\setlist[itemize]{leftmargin=14pt,nosep,topsep=4pt,partopsep=0pt,itemsep=4pt,label=\textcolor{accent}{\textendash}}
-\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{22pt}\setlength{\columnseprule}{0pt}
-\setlength{\parskip}{5pt}
-\renewcommand{\baselinestretch}{1.2}
+\titleformat{\section}{\normalsize\bfseries\color{accent}}{}{0pt}{}[\vspace{-1pt}{\color{ruleclr}\titlerule[0.4pt]}\vspace{1pt}]
+\titlespacing*{\section}{0pt}{8pt}{3pt}
+\setlist[itemize]{leftmargin=12pt,nosep,topsep=2pt,partopsep=0pt,itemsep=2pt,parsep=0pt,label=\textcolor{accent}{\textendash}}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{18pt}\setlength{\columnseprule}{0pt}
+\setlength{\parskip}{3pt}
+\renewcommand{\baselinestretch}{1.1}
+\raggedbottom
 \hypersetup{colorlinks=true,urlcolor=accent}
-\newcommand{\entryhead}[4]{{\large\bfseries #1}\hfill{\bfseries\color{muted} #2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{4pt}}
+\newcommand{\entryhead}[4]{{\normalsize\bfseries #1}\hfill{\bfseries\color{muted} #2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{2pt}}
 """
     if template == "tech":
         # Monospace headings, teal accent, developer-flavored.
         return r"""\documentclass[10pt,a4paper]{article}
-""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.55in]{geometry}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.45in]{geometry}
 \definecolor{accent}{HTML}{0D9488}
 \definecolor{ruleclr}{HTML}{0D9488}
 \definecolor{muted}{HTML}{475569}
-\titleformat{\section}{\small\bfseries\ttfamily\color{accent}}{}{0pt}{}[\vspace{-2pt}{\color{ruleclr}\titlerule[0.6pt]}]
-\titlespacing*{\section}{0pt}{14pt}{7pt}
-\setlist[itemize]{leftmargin=14pt,nosep,topsep=3pt,partopsep=0pt,itemsep=3pt,label={\color{accent}\ttfamily\textgreater}}
-\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{18pt}\setlength{\columnseprule}{0pt}
-\setlength{\parskip}{4pt}
-\renewcommand{\baselinestretch}{1.14}
+\titleformat{\section}{\small\bfseries\ttfamily\color{accent}}{}{0pt}{}[\vspace{-2pt}{\color{ruleclr}\titlerule[0.5pt]}]
+\titlespacing*{\section}{0pt}{7pt}{2pt}
+\setlist[itemize]{leftmargin=12pt,nosep,topsep=2pt,partopsep=0pt,itemsep=1.5pt,parsep=0pt,label={\color{accent}\ttfamily\textgreater}}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{16pt}\setlength{\columnseprule}{0pt}
+\setlength{\parskip}{2pt}
+\renewcommand{\baselinestretch}{1.06}
+\raggedbottom
 \hypersetup{colorlinks=true,urlcolor=accent}
-\newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\ttfamily\small\color{muted} #2}\\\textit{\color{muted}\small #3}\hfill{\ttfamily\small\color{muted} #4}\par\vspace{4pt}}
+\newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\ttfamily\small\color{muted} #2}\\\textit{\color{muted}\small #3}\hfill{\ttfamily\small\color{muted} #4}\par\vspace{2pt}}
 """
     if template == "academic":
-        # Single-column friendly, serif, generous whitespace. Research/grad-school look.
-        return r"""\documentclass[11pt,a4paper]{article}
-""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.85in]{geometry}
+        # Serif, single-column, slightly airier than minimal but still one page.
+        return r"""\documentclass[10pt,a4paper]{article}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.55in]{geometry}
 \definecolor{accent}{HTML}{1F2937}
 \definecolor{ruleclr}{HTML}{CBD5E1}
 \definecolor{muted}{HTML}{4B5563}
-\titleformat{\section}{\normalsize\bfseries\color{accent}}{}{0pt}{}[\vspace{-1pt}{\color{ruleclr}\titlerule[0.4pt]}]
-\titlespacing*{\section}{0pt}{18pt}{9pt}
-\setlist[itemize]{leftmargin=14pt,nosep,topsep=4pt,partopsep=0pt,itemsep=4pt,label=\textcolor{muted}{\textbullet}}
-\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{26pt}\setlength{\columnseprule}{0pt}
-\setlength{\parskip}{6pt}
-\renewcommand{\baselinestretch}{1.24}
+\titleformat{\section}{\small\bfseries\color{accent}}{}{0pt}{}[\vspace{-2pt}{\color{ruleclr}\titlerule[0.4pt]}]
+\titlespacing*{\section}{0pt}{8pt}{2pt}
+\setlist[itemize]{leftmargin=14pt,nosep,topsep=2pt,partopsep=0pt,itemsep=1.5pt,parsep=0pt,label=\textcolor{muted}{\textbullet}}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{20pt}\setlength{\columnseprule}{0pt}
+\setlength{\parskip}{3pt}
+\renewcommand{\baselinestretch}{1.1}
+\raggedbottom
 \hypersetup{colorlinks=true,urlcolor=accent}
-\newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\bfseries #2}\\\textit{\color{muted}#3}\hfill\textit{\color{muted}#4}\par\vspace{5pt}}
+\newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\bfseries #2}\\\textit{\color{muted}#3}\hfill\textit{\color{muted}#4}\par\vspace{2pt}}
 """
-    # classic (default) — navy accent, balanced two-column with breathing room.
-    return r"""\documentclass[11pt,a4paper]{article}
-""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.65in]{geometry}
+    if template == "banner":
+        # Full-width navy header band with reversed-out name. Bold visual id.
+        return r"""\documentclass[10pt,a4paper]{article}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.5in, top=0.3in]{geometry}
+\usepackage{tcolorbox}
 \definecolor{accent}{HTML}{1E3A8A}
 \definecolor{ruleclr}{HTML}{1E3A8A}
 \definecolor{muted}{HTML}{475569}
-\titleformat{\section}{\normalsize\bfseries\color{accent}}{}{0pt}{\MakeUppercase}[\vspace{-2pt}{\color{ruleclr}\titlerule[0.8pt]}]
-\titlespacing*{\section}{0pt}{14pt}{7pt}
-\setlist[itemize]{leftmargin=14pt,nosep,topsep=3pt,partopsep=0pt,itemsep=3pt,label=\textcolor{accent}{\textbullet}}
-\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{20pt}\setlength{\columnseprule}{0pt}
-\setlength{\parskip}{4pt}
-\renewcommand{\baselinestretch}{1.16}
+\definecolor{bannerbg}{HTML}{1E3A8A}
+\titleformat{\section}{\small\bfseries\color{accent}}{}{0pt}{\MakeUppercase}[\vspace{-2pt}{\color{ruleclr}\titlerule[0.8pt]}]
+\titlespacing*{\section}{0pt}{7pt}{2pt}
+\setlist[itemize]{leftmargin=12pt,nosep,topsep=2pt,partopsep=0pt,itemsep=1.5pt,parsep=0pt,label=\textcolor{accent}{\textbullet}}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{18pt}\setlength{\columnseprule}{0pt}
+\setlength{\parskip}{3pt}
+\renewcommand{\baselinestretch}{1.08}
+\raggedbottom
 \hypersetup{colorlinks=true,urlcolor=accent}
-\newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\bfseries #2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{4pt}}
+\newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\bfseries\color{muted}\small #2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{2pt}}
+"""
+    if template == "mono":
+        # All-monospace, retro CRT look. Strong identity for devs.
+        return r"""\documentclass[10pt,a4paper]{article}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.5in]{geometry}
+\renewcommand{\familydefault}{\ttdefault}
+\definecolor{accent}{HTML}{166534}
+\definecolor{ruleclr}{HTML}{86EFAC}
+\definecolor{muted}{HTML}{4B5563}
+\titleformat{\section}{\small\bfseries\color{accent}}{}{0pt}{}[\vspace{-2pt}{\color{ruleclr}\titlerule[0.6pt]}]
+\titlespacing*{\section}{0pt}{8pt}{2pt}
+\setlist[itemize]{leftmargin=12pt,nosep,topsep=2pt,partopsep=0pt,itemsep=1.5pt,parsep=0pt,label={\color{accent}\#}}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{16pt}\setlength{\columnseprule}{0pt}
+\setlength{\parskip}{3pt}
+\renewcommand{\baselinestretch}{1.08}
+\raggedbottom
+\hypersetup{colorlinks=true,urlcolor=accent}
+\newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\small\color{muted} #2}\\{\small\color{muted} #3}\hfill{\small\color{muted} #4}\par\vspace{2pt}}
+"""
+    if template == "warm":
+        # Burgundy + cream accent. Editorial / agency feel.
+        return r"""\documentclass[10pt,a4paper]{article}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.55in]{geometry}
+\definecolor{accent}{HTML}{9F1239}
+\definecolor{ruleclr}{HTML}{F4C2C2}
+\definecolor{muted}{HTML}{57534E}
+\titleformat{\section}{\normalsize\bfseries\itshape\color{accent}}{}{0pt}{}[\vspace{-2pt}{\color{ruleclr}\titlerule[1.4pt]}]
+\titlespacing*{\section}{0pt}{8pt}{3pt}
+\setlist[itemize]{leftmargin=14pt,nosep,topsep=2pt,partopsep=0pt,itemsep=1.5pt,parsep=0pt,label=\textcolor{accent}{\textbullet}}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{20pt}\setlength{\columnseprule}{0pt}
+\setlength{\parskip}{3pt}
+\renewcommand{\baselinestretch}{1.08}
+\raggedbottom
+\hypersetup{colorlinks=true,urlcolor=accent}
+\newcommand{\entryhead}[4]{{\bfseries\color{accent}#1}\hfill{\bfseries #2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{2pt}}
+"""
+    if template == "neon":
+        # Magenta + cyan glow. Designer / portfolio CV.
+        return r"""\documentclass[10pt,a4paper]{article}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.5in]{geometry}
+\definecolor{accent}{HTML}{D946EF}
+\definecolor{ruleclr}{HTML}{06B6D4}
+\definecolor{muted}{HTML}{475569}
+\titleformat{\section}{\small\bfseries\color{accent}}{}{0pt}{\MakeUppercase}[\vspace{-2pt}{\color{ruleclr}\titlerule[1.2pt]}]
+\titlespacing*{\section}{0pt}{7pt}{2pt}
+\setlist[itemize]{leftmargin=12pt,nosep,topsep=2pt,partopsep=0pt,itemsep=1.5pt,parsep=0pt,label={\color{ruleclr}$\bullet$}}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{16pt}\setlength{\columnseprule}{0pt}
+\setlength{\parskip}{2pt}
+\renewcommand{\baselinestretch}{1.06}
+\raggedbottom
+\hypersetup{colorlinks=true,urlcolor=accent}
+\newcommand{\entryhead}[4]{{\bfseries\color{accent}#1}\hfill{\bfseries\color{ruleclr}#2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{2pt}}
+"""
+    # classic (default) — navy accent, balanced, one-page-friendly.
+    return r"""\documentclass[10pt,a4paper]{article}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.5in]{geometry}
+\definecolor{accent}{HTML}{1E3A8A}
+\definecolor{ruleclr}{HTML}{1E3A8A}
+\definecolor{muted}{HTML}{475569}
+\titleformat{\section}{\small\bfseries\color{accent}}{}{0pt}{\MakeUppercase}[\vspace{-2pt}{\color{ruleclr}\titlerule[0.7pt]}]
+\titlespacing*{\section}{0pt}{7pt}{2pt}
+\setlist[itemize]{leftmargin=12pt,nosep,topsep=2pt,partopsep=0pt,itemsep=1.5pt,parsep=0pt,label=\textcolor{accent}{\textbullet}}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{18pt}\setlength{\columnseprule}{0pt}
+\setlength{\parskip}{3pt}
+\renewcommand{\baselinestretch}{1.08}
+\raggedbottom
+\hypersetup{colorlinks=true,urlcolor=accent}
+\newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\bfseries #2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{2pt}}
 """
 
 
@@ -280,14 +364,24 @@ def render_tex(profile: dict[str, Any] | None = None, min_level: int = 3, templa
     contact = r" \ \textbar\ ".join(contact_bits)
 
     body: list[str] = [preamble, r"\begin{document}", ""]
-    # Header banner — full width
-    body.append(r"\begin{center}")
-    body.append(rf"{{\LARGE\bfseries\color{{accent}} {name}}}\\[2pt]")
-    if title_line:
-        body.append(rf"{{\large\color{{muted}} {title_line}}}\\[4pt]")
-    body.append(rf"\small {contact}")
-    body.append(r"\end{center}")
-    body.append(r"\vspace{2pt}{\color{ruleclr}\hrule height 0.6pt}\vspace{4pt}")
+    # Header — most templates use a centered name + rule; "banner" wraps the
+    # name in a full-width colored box.
+    if tpl == "banner":
+        body.append(r"\noindent\begin{tcolorbox}[colback=bannerbg,colframe=bannerbg,boxrule=0pt,arc=0pt,left=10pt,right=10pt,top=6pt,bottom=6pt]")
+        body.append(rf"{{\LARGE\bfseries\color{{white}} {name}}}\\[2pt]")
+        if title_line:
+            body.append(rf"{{\small\color{{white!85}} {title_line}}}\\[2pt]")
+        body.append(rf"{{\footnotesize\color{{white!90}} {contact}}}")
+        body.append(r"\end{tcolorbox}")
+        body.append(r"\vspace{4pt}")
+    else:
+        body.append(r"\begin{center}")
+        body.append(rf"{{\LARGE\bfseries\color{{accent}} {name}}}\\[2pt]")
+        if title_line:
+            body.append(rf"{{\large\color{{muted}} {title_line}}}\\[4pt]")
+        body.append(rf"\small {contact}")
+        body.append(r"\end{center}")
+        body.append(r"\vspace{2pt}{\color{ruleclr}\hrule height 0.6pt}\vspace{4pt}")
     body.append("")
 
     # Pre-compute section blocks for left/right columns

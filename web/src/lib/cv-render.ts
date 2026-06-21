@@ -199,15 +199,19 @@ export function renderMarkdown(profile: Profile, minLevel = 3): string {
 // ---------- HTML render (mirrors scraper/cv.py render_html) ----------
 
 export const CV_TEMPLATES: Array<{ id: string; name: string; desc: string }> = [
-  { id: "classic",   name: "Classic",   desc: "Navy accent. Balanced two-column. Safe default." },
-  { id: "modern",    name: "Modern",    desc: "Bold blue. Generous spacing. Easy to skim." },
-  { id: "executive", name: "Executive", desc: "Formal corporate. Charcoal serif. Senior-leadership feel." },
-  { id: "academic",  name: "Academic",  desc: "Research/grad-school. Airy single-column serif." },
-  { id: "tech",      name: "Tech",      desc: "Developer-flavored. Monospace headings. Teal accent." },
-  { id: "elegant",   name: "Elegant",   desc: "Serif small-caps. Centered headings. Hairline rules." },
+  { id: "compact",   name: "Compact",   desc: "Tight one-page. Default for fresh uploads." },
+  { id: "classic",   name: "Classic",   desc: "Navy accent. Balanced. Safe default." },
+  { id: "modern",    name: "Modern",    desc: "Bold blue rule. Sharp sans-serif." },
+  { id: "executive", name: "Executive", desc: "Charcoal serif. Senior-leadership feel." },
+  { id: "academic",  name: "Academic",  desc: "Serif single-column. Research / grad-school." },
+  { id: "tech",      name: "Tech",      desc: "Teal monospace headings. Developer feel." },
+  { id: "elegant",   name: "Elegant",   desc: "Serif small-caps. Centered hairline rules." },
   { id: "sidebar",   name: "Sidebar",   desc: "Sky accent. Hairline column divider." },
-  { id: "compact",   name: "Compact",   desc: "Tighter spacing. Fits more on one page." },
-  { id: "minimal",   name: "Minimal",   desc: "Black-and-white. ATS-safe. Maximum readability." },
+  { id: "minimal",   name: "Minimal",   desc: "Black-and-white serif. ATS-safe." },
+  { id: "banner",    name: "Banner",    desc: "Navy full-width header band. Bold ID." },
+  { id: "mono",      name: "Mono",      desc: "All-monospace, green. Retro CRT / dev." },
+  { id: "warm",      name: "Warm",      desc: "Burgundy italic. Editorial / agency." },
+  { id: "neon",      name: "Neon",      desc: "Magenta + cyan. Designer / portfolio." },
 ];
 
 function escapeHtml(s: string): string {
@@ -398,6 +402,82 @@ const TEMPLATE_CSS: Record<string, string> = {
     a    { color: #0d9488; text-decoration: none; }
     strong { color: #0f172a; }
     em   { color: #475569; font-style: normal; }
+  `,
+  banner: `
+    @page { size: A4; margin: 12mm; }
+    body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+           max-width: 760px; margin: 0 auto; padding: 0 24px 16px;
+           color: #111; line-height: 1.4; font-size: 12.5px; }
+    h1   { background: #1E3A8A; color: #fff; margin: 0 -24px 12px;
+           padding: 16px 24px 14px; font-size: 26px; font-weight: 700; letter-spacing: -0.01em; }
+    h1 + p { color: #cbd5e1; background: #1E3A8A; margin: -12px -24px 14px;
+             padding: 0 24px 12px; font-size: 11.5px; }
+    h1 + p a { color: #cbd5e1; }
+    h2   { font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em;
+           color: #1E3A8A; margin: 14px 0 4px;
+           border-bottom: 1px solid #1E3A8A; padding-bottom: 2px; }
+    p    { margin: 3px 0; }
+    ul   { margin: 3px 0 8px 18px; padding: 0; }
+    li   { margin: 1.5px 0; }
+    a    { color: #1E3A8A; text-decoration: none; }
+    strong { color: #000; }
+    em   { color: #475569; font-style: normal; }
+  `,
+  mono: `
+    @page { size: A4; margin: 12mm; }
+    body { font-family: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+           max-width: 760px; margin: 18px auto; padding: 0 22px;
+           color: #111; line-height: 1.35; font-size: 11.5px; }
+    h1   { font-size: 22px; margin: 0 0 2px; font-weight: 700; color: #166534; }
+    h1 + p { color: #4B5563; font-size: 11px; margin: 0 0 12px; }
+    h2   { font-size: 11px; color: #166534; margin: 12px 0 3px;
+           border-bottom: 0.5px solid #86EFAC; padding-bottom: 1px; }
+    h2::before { content: "# "; color: #166534; }
+    p    { margin: 2px 0; }
+    ul   { margin: 2px 0 6px 16px; padding: 0; list-style: none; }
+    li   { margin: 1px 0; position: relative; padding-left: 12px; }
+    li::before { content: "#"; color: #166534; position: absolute; left: 0; font-weight: 600; }
+    a    { color: #166534; text-decoration: none; }
+    strong { color: #000; }
+    em   { color: #4B5563; font-style: normal; }
+  `,
+  warm: `
+    @page { size: A4; margin: 12mm; }
+    body { font-family: "Georgia", "Times New Roman", serif;
+           max-width: 740px; margin: 24px auto; padding: 0 26px;
+           color: #1c1917; line-height: 1.45; font-size: 12.5px; }
+    h1   { font-size: 28px; margin: 0 0 3px; font-weight: 700; color: #9F1239; letter-spacing: 0.005em; }
+    h1 + p { color: #57534E; font-size: 11.5px; margin: 0 0 14px; font-style: italic; }
+    h2   { font-size: 13px; font-style: italic; color: #9F1239;
+           margin: 14px 0 4px; border-bottom: 1.4px solid #F4C2C2; padding-bottom: 2px; font-weight: 700; }
+    p    { margin: 3px 0; }
+    ul   { margin: 3px 0 8px 18px; padding: 0; }
+    li   { margin: 2px 0; }
+    li::marker { color: #9F1239; }
+    a    { color: #9F1239; text-decoration: none; }
+    strong { color: #1c1917; }
+    em   { color: #57534E; font-style: italic; }
+  `,
+  neon: `
+    @page { size: A4; margin: 12mm; }
+    body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+           max-width: 760px; margin: 18px auto; padding: 0 22px;
+           color: #0f172a; line-height: 1.38; font-size: 12px; }
+    h1   { font-size: 26px; margin: 0 0 2px; font-weight: 800; letter-spacing: -0.01em;
+           background: linear-gradient(90deg, #D946EF 0%, #06B6D4 100%);
+           -webkit-background-clip: text; background-clip: text; color: transparent; }
+    h1 + p { color: #475569; font-size: 11.5px; margin: 0 0 12px;
+             padding-bottom: 6px; border-bottom: 1.4px solid #06B6D4; }
+    h2   { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.18em;
+           color: #D946EF; margin: 12px 0 3px; font-weight: 700;
+           border-bottom: 1.4px solid #06B6D4; padding-bottom: 1px; }
+    p    { margin: 2px 0; }
+    ul   { margin: 2px 0 6px 16px; padding: 0; list-style: none; }
+    li   { margin: 1.5px 0; position: relative; padding-left: 12px; }
+    li::before { content: "●"; color: #06B6D4; position: absolute; left: 0; font-size: 9px; top: 3px; }
+    a    { color: #D946EF; text-decoration: none; }
+    strong { color: #0f172a; }
+    em   { color: #475569; font-style: normal; font-weight: 500; }
   `,
   academic: `
     body { font-family: "Georgia", "Times New Roman", serif;
