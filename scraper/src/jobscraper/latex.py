@@ -100,19 +100,26 @@ def _preamble(template: str) -> str:
     and define \\entryhead{role}{company}{location}{period}.
     """
     if template == "compact":
+        # Aggressively tightened to fit a typical CV on ONE page. If content
+        # is too long, LaTeX will still overflow — reduce min_level or trim
+        # bullets. But for normal junior CVs this preamble holds one page.
         return r"""\documentclass[10pt,a4paper]{article}
-""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.55in]{geometry}
+""" + _BASE_PACKAGES + r"""\usepackage[a4paper, margin=0.4in, top=0.35in, bottom=0.35in]{geometry}
+\usepackage{anyfontsize}
+\AtBeginDocument{\fontsize{9.5pt}{11.2pt}\selectfont}
 \definecolor{accent}{HTML}{1F2937}
 \definecolor{ruleclr}{HTML}{D1D5DB}
 \definecolor{muted}{HTML}{6B7280}
-\titleformat{\section}{\small\bfseries\color{accent}}{}{0pt}{\MakeUppercase}[\vspace{-1pt}{\color{ruleclr}\titlerule[0.6pt]}]
-\titlespacing*{\section}{0pt}{12pt}{6pt}
-\setlist[itemize]{leftmargin=12pt,nosep,topsep=3pt,partopsep=0pt,itemsep=3pt,label=\textcolor{accent}{\textbullet}}
-\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{18pt}\setlength{\columnseprule}{0pt}
-\setlength{\parskip}{4pt}
-\renewcommand{\baselinestretch}{1.12}
+\titleformat{\section}{\small\bfseries\color{accent}}{}{0pt}{\MakeUppercase}[\vspace{-2pt}{\color{ruleclr}\titlerule[0.5pt]}]
+\titlespacing*{\section}{0pt}{6pt}{2pt}
+\setlist[itemize]{leftmargin=10pt,nosep,topsep=1pt,partopsep=0pt,itemsep=1pt,parsep=0pt,label=\textcolor{accent}{\textbullet}}
+\pagenumbering{gobble}\setlength{\parindent}{0pt}\setlength{\columnsep}{16pt}\setlength{\columnseprule}{0pt}
+\setlength{\parskip}{2pt}
+\renewcommand{\baselinestretch}{1.02}
+\raggedbottom
+\sloppy
 \hypersetup{colorlinks=true,urlcolor=accent}
-\newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\bfseries\color{muted}\small #2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{3pt}}
+\newcommand{\entryhead}[4]{{\bfseries #1}\hfill{\bfseries\color{muted}\small #2}\\\textit{\color{muted}\small #3}\hfill\textit{\color{muted}\small #4}\par\vspace{1pt}}
 """
     if template == "modern":
         # Bold sans-serif, vivid accent bars, generous spacing.
