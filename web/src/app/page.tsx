@@ -1,13 +1,20 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useMemo } from "react";
 import { ArrowRight, FileText, GraduationCap, Briefcase, Send, Sparkles, BadgeCheck, Pencil } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrapeButton } from "@/components/scrape-button";
 import { MagicCard, Gradient, AnimatedNumber, Bento } from "@/components/eye-candy";
-import { ShaderBackground } from "@/components/shader-background";
+
+// Shader uses WebGL2 and runs an animation loop — defer it out of the
+// initial bundle so home-page TTI isn't gated on shader compilation.
+const ShaderBackground = dynamic(
+  () => import("@/components/shader-background").then((m) => ({ default: m.ShaderBackground })),
+  { ssr: false, loading: () => null },
+);
 import { PageHeader, SectionTitle } from "@/components/page-header";
 import { type JobsResponse, type Profile, type Application } from "@/lib/api";
 import { useQuery } from "convex/react";

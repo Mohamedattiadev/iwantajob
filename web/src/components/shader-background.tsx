@@ -192,13 +192,18 @@ export function ShaderBackground({ className = '' }: { className?: string }) {
     }
     raf = requestAnimationFrame(frame)
 
-    // Pause when offscreen
+    // Pause when offscreen OR when the tab is hidden — saves GPU + battery.
     const io = new IntersectionObserver((entries) => {
-      const vis = entries[0]?.isIntersecting
+      const vis = entries[0]?.isIntersecting && !document.hidden
       if (vis && !raf && !reduced) raf = requestAnimationFrame(frame)
       if (!vis && raf) { cancelAnimationFrame(raf); raf = 0 }
     })
     io.observe(canvas)
+    const onVis = () => {
+      if (document.hidden && raf) { cancelAnimationFrame(raf); raf = 0 }
+      else if (!document.hidden && !raf && !reduced) raf = requestAnimationFrame(frame)
+    }
+    document.addEventListener("visibilitychange", onVis)
 
     const ro = new ResizeObserver(() => {
       if (reduced) {
@@ -221,6 +226,7 @@ export function ShaderBackground({ className = '' }: { className?: string }) {
       io.disconnect()
       ro.disconnect()
       mo.disconnect()
+      document.removeEventListener("visibilitychange", onVis)
       gl.deleteProgram(prog)
       gl.deleteShader(vs)
       gl.deleteShader(fs)

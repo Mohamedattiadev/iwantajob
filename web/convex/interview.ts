@@ -1,11 +1,43 @@
 import { v } from "convex/values";
 import { action, query } from "./_generated/server";
 import { api } from "./_generated/api";
-import { resolveGeminiKey } from "./userSettings";
+import { resolveGeminiKey, resolveOpenrouter } from "./userSettings";
+import type { ActionCtx } from "./_generated/server";
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 const ENDPOINT = (key: string) =>
   `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${key}`;
+
+async function openrouterText(
+  ctx: ActionCtx,
+  system: string,
+  user: string,
+  opts: { temperature?: number; maxTokens?: number } = {},
+): Promise<{ text?: string; error?: string }> {
+  const { key, model } = await resolveOpenrouter(ctx);
+  if (!key) return { error: "openrouter unavailable" };
+  const m = model || "meta-llama/llama-3.3-70b-instruct:free";
+  const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: m,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      temperature: opts.temperature ?? 0.6,
+      max_tokens: opts.maxTokens ?? 200,
+    }),
+  });
+  if (!r.ok) {
+    const body = await r.text();
+    return { error: `OpenRouter ${r.status}: ${body.slice(0, 200)}` };
+  }
+  const data = await r.json();
+  const text = data?.choices?.[0]?.message?.content ?? "";
+  return { text: String(text).trim() };
+}
 
 export const status = query({
   args: {},
@@ -107,6 +139,11 @@ export const send = action({
       }),
     });
     if (!r.ok) {
+      // 503/429: try OpenRouter fallback for speech-style reply.
+      if (r.status === 503 || r.status === 429 || r.status === 500) {
+        const fb = await openrouterText(ctx, system, userPrompt, { temperature: 0.6, maxTokens: 180 });
+        if (fb.text) return { text: fb.text };
+      }
       const body = await r.text();
       return { error: `Gemini API ${r.status}: ${body.slice(0, 300)}` };
     }

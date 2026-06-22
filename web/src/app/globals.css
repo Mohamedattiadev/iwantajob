@@ -1187,7 +1187,14 @@ html.sketch-fullscreen .chat-widget-launcher,
 html.sketch-fullscreen .chat-widget-panel,
 html.sketch-fullscreen .tasks-launcher,
 html.sketch-fullscreen .scratch-launcher,
-html.sketch-fullscreen .ambient-bg { display: none !important; }
+html.sketch-fullscreen .ambient-bg,
+body.canvas-fullscreen .chat-widget-launcher,
+body.canvas-fullscreen .chat-widget-panel,
+body.canvas-fullscreen .tasks-launcher,
+body.canvas-fullscreen .scratch-launcher { display: none !important; }
+
+/* Keep page content clear of the floating FAB cluster. */
+.app-main--with-fabs { padding-bottom: 5.5rem; }
 
 /* iPad / pen popover — wider so the 180px QR fits cleanly. */
 .excal-pad-panel { list-style: none; display: block; padding: 0; min-width: 220px; }

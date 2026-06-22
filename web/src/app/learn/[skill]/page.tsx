@@ -87,12 +87,19 @@ export default function SkillPage({
   const [draft, setDraft] = useState<string>("");
   const [mode, setMode] = useState<"preview" | "edit">("preview");
   type Tab = "note" | "voice" | "sketch" | "milestones" | "resources" | "jobs";
-  const [tab, setTab] = useState<Tab>(() => {
-    if (typeof window === "undefined") return "note";
-    const v = localStorage.getItem(`learn:tab:${skill}`) as Tab | null;
-    return v && ["note", "voice", "sketch", "milestones", "resources", "jobs"].includes(v) ? v : "note";
-  });
+  const [tab, setTab] = useState<Tab>("note");
+  const tabHydrated = useRef(false);
   useEffect(() => {
+    try {
+      const v = localStorage.getItem(`learn:tab:${skill}`) as Tab | null;
+      if (v && ["note", "voice", "sketch", "milestones", "resources", "jobs"].includes(v)) {
+        setTab(v);
+      }
+    } catch {}
+    tabHydrated.current = true;
+  }, [skill]);
+  useEffect(() => {
+    if (!tabHydrated.current) return;
     try { localStorage.setItem(`learn:tab:${skill}`, tab); } catch {}
   }, [tab, skill]);
   const [saving, setSaving] = useState(false);
@@ -439,7 +446,11 @@ function SkillSketch({ skill }: { skill: string }) {
       if (e.key === "Escape") setFull(false);
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    document.body.classList.add("canvas-fullscreen");
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.classList.remove("canvas-fullscreen");
+    };
   }, [full]);
 
   useEffect(() => {

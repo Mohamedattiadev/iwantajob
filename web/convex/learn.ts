@@ -50,12 +50,15 @@ export const gaps = query({
       .order("desc")
       .take(SAMPLE_SIZE);
 
-    // Junior-or-unknown jobs that pass score threshold against user's skills.
+    // Junior-or-unknown jobs. If user has rated skills, narrow by score;
+    // otherwise show full pool so first-session users still see gaps.
+    const hasSkills = Object.keys(userSkills).length > 0;
     const real: typeof sample = [];
     for (const j of sample) {
       const b = seniorityBucket(j.title);
       if (b === "senior" || b === "mid") continue;
-      if (scoreJob(j, userSkills) >= REAL_THRESHOLD) real.push(j);
+      if (hasSkills && scoreJob(j, userSkills) < REAL_THRESHOLD) continue;
+      real.push(j);
     }
 
     // Skill frequency across the relevant job pool using the canonical

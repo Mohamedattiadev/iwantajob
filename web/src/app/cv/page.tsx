@@ -47,7 +47,7 @@ export default function CvPage() {
   const [minLevel, setMinLevel] = useState(3);
   const [mdPreview, setMdPreview] = useState<string>("");
   const [section, setSection] = useState<Section>("personal");
-  const [viewMode, setViewMode] = useState<ViewMode>("edit");
+  const [viewMode, setViewMode] = useState<ViewMode>("preview");
   const [autoSaved, setAutoSaved] = useState<number | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -625,15 +625,21 @@ export default function CvPage() {
                 {previewTab === "page" && (
                   <div className="px-3 pb-3">
                     <div className="rounded-lg overflow-hidden border bg-white">
-                      <iframe
-                        key={pdfUrl || htmlUrl}
-                        src={(pdfOk && pdfUrl)
-                          ? `${pdfUrl}#toolbar=0&navpanes=0`
-                          : htmlUrl}
-                        className={`w-full ${viewMode === "preview" ? "h-[88vh]" : "h-[82vh]"} bg-white`}
-                        title="CV preview"
-                        sandbox={pdfOk && pdfUrl ? undefined : ""}
-                      />
+                      {(pdfUrl || htmlUrl) ? (
+                        <iframe
+                          key={pdfUrl || htmlUrl}
+                          src={(pdfOk && pdfUrl)
+                            ? `${pdfUrl}#toolbar=0&navpanes=0`
+                            : htmlUrl}
+                          className={`w-full ${viewMode === "preview" ? "h-[88vh]" : "h-[82vh]"} bg-white`}
+                          title="CV preview"
+                          sandbox={pdfOk && pdfUrl ? undefined : ""}
+                        />
+                      ) : (
+                        <div className={`w-full ${viewMode === "preview" ? "h-[88vh]" : "h-[82vh]"} bg-white grid place-items-center text-xs text-muted-foreground`}>
+                          Rendering preview…
+                        </div>
+                      )}
                     </div>
                     {pdfOk && (
                       <p className="px-1 pt-2 text-[10px] text-muted-foreground">

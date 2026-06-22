@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api as convexApi } from "../../convex/_generated/api";
 import Link from "next/link";
@@ -17,32 +17,27 @@ type Props = {
 
 const CARD_W = 380;
 const GAP = 12;
+const EDGE = 8; // viewport breathing room
+
+type Anchor = { top: number; bottom: number; left: number; right: number };
 
 export function SkillHoverCard({ skill, children, why }: Props) {
   const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const [anchor, setAnchor] = useState<Anchor | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const compute = () => {
+  const capture = () => {
     const r = wrapRef.current?.getBoundingClientRect();
     if (!r) return;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    // Always anchor to right of row. If it would overflow viewport, clamp to
-    // the right edge instead of flipping sides.
-    const EDGE = 32; // breathing room from viewport right edge
-    const ideal = r.right + GAP;
-    const left = Math.min(ideal, vw - CARD_W - EDGE);
-    const top = Math.min(Math.max(8, r.top), vh - 200);
-    setPos({ top, left });
+    setAnchor({ top: r.top, bottom: r.bottom, left: r.left, right: r.right });
   };
 
   const onEnter = () => {
     if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null; }
     if (open) return;
-    openTimer.current = setTimeout(() => { compute(); setOpen(true); }, 220);
+    openTimer.current = setTimeout(() => { capture(); setOpen(true); }, 220);
   };
   const onLeave = () => {
     if (openTimer.current) { clearTimeout(openTimer.current); openTimer.current = null; }
@@ -51,7 +46,7 @@ export function SkillHoverCard({ skill, children, why }: Props) {
 
   useEffect(() => {
     if (!open) return;
-    const onScroll = () => compute();
+    const onScroll = () => capture();
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onScroll);
     return () => {
@@ -68,12 +63,12 @@ export function SkillHoverCard({ skill, children, why }: Props) {
   return (
     <div ref={wrapRef} className="relative" onMouseEnter={onEnter} onMouseLeave={onLeave}>
       {children}
-      {open && pos && <HoverPanel skill={skill} why={why} pos={pos} />}
+      {open && anchor && <HoverPanel skill={skill} why={why} anchor={anchor} />}
     </div>
   );
 }
 
-function HoverPanel({ skill, why, pos }: { skill: string; why?: string; pos: { top: number; left: number } }) {
+function HoverPanel({ skill, why, anchor }: { skill: string; why?: string; anchor: Anchor }) {
   const curated = resourcesFor(skill);
   const userRes = useUserResources(skill);
   const ms = useSkillMilestones(skill);
@@ -86,10 +81,56 @@ function HoverPanel({ skill, why, pos }: { skill: string; why?: string; pos: { t
   const allRes = [...userRes.items, ...curated];
   const doneCount = ms.items.filter((m) => m.done).length;
 
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; maxHeight: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const place = () => {
+      const el = panelRef.current;
+      if (!el) return;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const available = vh - 2 * EDGE;
+      const desired = Math.min(el.scrollHeight, Math.min(600, available));
+      const cardH = desired;
+
+      // Horizontal: anchor right of row, clamp to right edge.
+      const ideal = anchor.right + GAP;
+      let left = Math.min(ideal, vw - CARD_W - EDGE);
+      left = Math.max(EDGE, left);
+
+      // Vertical: prefer top-aligned with anchor. If card would overflow bottom,
+      // flip upward (align bottom with anchor.bottom). Then clamp into viewport.
+      let top = anchor.top;
+      if (top + cardH > vh - EDGE) {
+        top = anchor.bottom - cardH;
+      }
+      top = Math.max(EDGE, Math.min(top, vh - cardH - EDGE));
+
+      setPos({ top, left, maxHeight: cardH });
+    };
+    place();
+    const onWin = () => place();
+    window.addEventListener("resize", onWin);
+    window.addEventListener("scroll", onWin, true);
+    return () => {
+      window.removeEventListener("resize", onWin);
+      window.removeEventListener("scroll", onWin, true);
+    };
+  }, [anchor, allRes.length, ms.items.length, jobsQ.data?.items.length]);
+
   return (
     <div
+      ref={panelRef}
       role="dialog"
-      style={{ position: "fixed", top: pos.top, left: pos.left, width: CARD_W, maxHeight: "min(70vh, 600px)" }}
+      style={{
+        position: "fixed",
+        top: pos?.top ?? -9999,
+        left: pos?.left ?? -9999,
+        width: CARD_W,
+        maxHeight: pos?.maxHeight ?? "min(70vh, 600px)",
+        visibility: pos ? "visible" : "hidden",
+      }}
       className="z-50 max-w-[92vw] rounded-xl border border-border/80 bg-popover/95 backdrop-blur-xl shadow-2xl p-4 overflow-y-auto animate-in fade-in zoom-in-95 duration-150"
     >
       <div className="flex items-center justify-between mb-3">

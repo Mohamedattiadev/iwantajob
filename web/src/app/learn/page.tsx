@@ -221,13 +221,14 @@ export default function LearnPage() {
               const why = whyOf(row.skill);
               return (
                 <li key={row.skill}>
-                <SkillHoverCard skill={row.skill} why={why}>
                 <div className="px-4 py-3 rounded-xl border bg-card hover:bg-accent/30 transition-colors">
                   <div className="flex items-start gap-3">
                     <div className="text-2xl font-mono text-muted-foreground tabular-nums w-8 shrink-0">{i + 1}</div>
                     <div className="flex-1 min-w-0 space-y-2">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <Link href={`/learn/${encodeURIComponent(row.skill)}`} className="text-lg font-semibold hover:underline">{row.skill}</Link>
+                        <SkillHoverCard skill={row.skill} why={why}>
+                          <Link href={`/learn/${encodeURIComponent(row.skill)}`} className="text-lg font-semibold hover:underline">{row.skill}</Link>
+                        </SkillHoverCard>
                         <Badge variant="outline" className="text-[10px] capitalize">{row.category}</Badge>
                         <span className="text-xs text-muted-foreground">{row.count} jobs ({row.pct}%)</span>
                       </div>
@@ -237,16 +238,10 @@ export default function LearnPage() {
                         </div>
                       )}
                       <ProficiencyControl value={lvl} onChange={(v) => set(row.skill, v)} size="sm" />
-                      <div className="flex items-center gap-3 text-xs">
-                        <Link href={`/learn/${encodeURIComponent(row.skill)}`} className="text-primary hover:underline inline-flex items-center gap-1">
-                          notes <ArrowRight className="h-3 w-3" />
-                        </Link>
-                        <Link href={`/jobs?skill=${encodeURIComponent(row.skill)}`} className="text-muted-foreground hover:text-foreground">
-                          see jobs
-                        </Link>
+                      <div className="flex items-center justify-end gap-3 text-xs">
                         <button
                           onClick={() => plans.add({ title: `Master ${row.skill}`, skill: row.skill })}
-                          className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 ml-auto"
+                          className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
                         >
                           <Plus className="h-3 w-3" /> add to plan
                         </button>
@@ -254,7 +249,6 @@ export default function LearnPage() {
                     </div>
                   </div>
                 </div>
-                </SkillHoverCard>
                 </li>
               );
             })}
@@ -277,7 +271,7 @@ export default function LearnPage() {
               <AiSearchInput
                 value={search}
                 onChange={onSearch}
-                placeholder="Search skill… (✨ AI normalizes name)"
+                placeholder="Search skill… (AI normalizes name)"
                 context="skills"
               />
             </div>
@@ -290,22 +284,24 @@ export default function LearnPage() {
                     const lvl = prof[row.skill] ?? 0;
                     return (
                       <li key={row.skill}>
-                        <Link href={`/learn/${encodeURIComponent(row.skill)}`}
-                          className="group block px-4 py-3 rounded-xl border bg-card hover:bg-accent/40 transition-colors h-full">
-                          <div className="flex items-start gap-3">
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="font-medium group-hover:underline">{row.skill}</span>
-                                {row.onCv && <Badge variant="secondary" className="text-[10px]">on CV</Badge>}
+                        <SkillHoverCard skill={row.skill}>
+                          <Link href={`/learn/${encodeURIComponent(row.skill)}`}
+                            className="group block px-4 py-3 rounded-xl border bg-card hover:bg-accent/40 transition-colors h-full">
+                            <div className="flex items-start gap-3">
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-medium group-hover:underline">{row.skill}</span>
+                                  {row.onCv && <Badge variant="secondary" className="text-[10px]">on CV</Badge>}
+                                </div>
+                                <div className="text-xs text-muted-foreground mt-1">{row.count} jobs · lvl {lvl}/5</div>
+                                <div className="mt-2" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                                  <ProficiencyControl value={lvl} onChange={(v) => set(row.skill, v)} size="sm" />
+                                </div>
                               </div>
-                              <div className="text-xs text-muted-foreground mt-1">{row.count} jobs · lvl {lvl}/5</div>
-                              <div className="mt-2" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                                <ProficiencyControl value={lvl} onChange={(v) => set(row.skill, v)} size="sm" />
-                              </div>
+                              <ArrowRight className="h-4 w-4 text-muted-foreground mt-0.5 group-hover:translate-x-1 transition-transform shrink-0" />
                             </div>
-                            <ArrowRight className="h-4 w-4 text-muted-foreground mt-0.5 group-hover:translate-x-1 transition-transform shrink-0" />
-                          </div>
-                        </Link>
+                          </Link>
+                        </SkillHoverCard>
                       </li>
                     );
                   })}

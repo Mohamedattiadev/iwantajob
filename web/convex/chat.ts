@@ -2,7 +2,38 @@ import { v } from "convex/values";
 import { action, query } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
 import { api } from "./_generated/api";
-import { resolveGeminiKey } from "./userSettings";
+import { resolveGeminiKey, resolveOpenrouter } from "./userSettings";
+
+async function openrouterText(
+  ctx: ActionCtx,
+  system: string,
+  user: string,
+  opts: { temperature?: number; maxTokens?: number } = {},
+): Promise<{ text?: string; error?: string }> {
+  const { key, model } = await resolveOpenrouter(ctx);
+  if (!key) return { error: "openrouter unavailable" };
+  const m = model || "meta-llama/llama-3.3-70b-instruct:free";
+  const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: m,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      temperature: opts.temperature ?? 0.4,
+      max_tokens: opts.maxTokens ?? 800,
+    }),
+  });
+  if (!r.ok) {
+    const body = await r.text();
+    return { error: `OpenRouter ${r.status}: ${body.slice(0, 200)}` };
+  }
+  const data = await r.json();
+  const text = data?.choices?.[0]?.message?.content ?? "";
+  return { text: String(text).trim() };
+}
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 const ENDPOINT = (key: string) =>
@@ -288,6 +319,16 @@ You have tools to read/write the user's skill notes, list/update applications, a
         body: JSON.stringify(payload),
       });
       if (!r.ok) {
+        // 503/429/500: try OpenRouter fallback (text-only, no tools).
+        if (r.status === 503 || r.status === 429 || r.status === 500) {
+          const userBlob = (messages as Msg[])
+            .map((m) => `${m.role === "user" ? "USER" : "ASSISTANT"}: ${m.content}`)
+            .join("\n");
+          const fb = await openrouterText(ctx, sysPrompt, userBlob, { temperature: 0.4, maxTokens: 1000 });
+          if (fb.text) {
+            return { text: fb.text, model: "openrouter-fallback", tool_calls: toolTrace };
+          }
+        }
         const body = await r.text();
         return {
           error: `Gemini API error: ${r.status} — ${body.slice(0, 300)}`,

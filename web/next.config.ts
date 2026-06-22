@@ -24,7 +24,13 @@ const nextConfig: NextConfig = {
     "172.28.*.*", "172.29.*.*", "172.30.*.*", "172.31.*.*",
   ],
   experimental: {
-    optimizePackageImports: ["@base-ui/react", "@excalidraw/excalidraw"],
+    optimizePackageImports: [
+      "@base-ui/react",
+      "@excalidraw/excalidraw",
+      "lucide-react",
+      "sonner",
+      "@radix-ui/react-tooltip",
+    ],
   },
   async rewrites() {
     // Dedicated `/be/api/*` prefix avoids colliding with Next.js route

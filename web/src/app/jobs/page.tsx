@@ -224,7 +224,7 @@ function JobsPageInner() {
           <AiSearchInput
             value={q}
             onChange={setQ_}
-            placeholder="Search title, company, description… (✨ AI sharpens keywords)"
+            placeholder="Search title, company, description… (AI sharpens keywords)"
             context="jobs"
             className="flex-1"
           />

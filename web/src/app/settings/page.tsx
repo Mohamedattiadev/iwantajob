@@ -20,7 +20,7 @@ function StatusPill({ tone, label, icon }: { tone: PillTone; label: string; icon
       ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-amber-500/30"
       : "bg-muted text-muted-foreground ring-border";
   return (
-    <span className={`inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-[11px] font-semibold ring-1 ${cls}`}>
+    <span className={`inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-[11px] font-semibold ring-1 whitespace-nowrap shrink-0 ${cls}`}>
       {icon}
       {label}
     </span>
