@@ -32,7 +32,11 @@ export default function Welcome() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const saveProfileMut = useMutation(convexApi.profile.save);
   const uploadCv = useAction(convexApi.cv.upload);
+  const parseTextCv = useAction(convexApi.cv.parseText);
   const [uploading, setUploading] = useState(false);
+  const [pasting, setPasting] = useState(false);
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pastedText, setPastedText] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   // Step 1
@@ -84,6 +88,31 @@ export default function Welcome() {
       toast.error(`Upload failed: ${e instanceof Error ? e.message : e}`);
     } finally {
       setUploading(false);
+    }
+  };
+
+  const parsePasted = async () => {
+    const text = pastedText.trim();
+    if (text.length < 40) {
+      toast.error("Paste at least a few lines of your CV.");
+      return;
+    }
+    setPasting(true);
+    try {
+      const body = await parseTextCv({ text });
+      const parsedProfile = body.profile as Profile;
+      if (!name.trim() && parsedProfile.personal?.name) setName(parsedProfile.personal.name);
+      const merged: Profile = name.trim()
+        ? { ...parsedProfile, personal: { ...parsedProfile.personal, name: name.trim() } }
+        : parsedProfile;
+      setProfile(merged);
+      await persistName(merged);
+      toast.success(`Parsed: ${body.meta.skills_detected} skills detected`);
+      setStep(2);
+    } catch (e) {
+      toast.error(`Parse failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setPasting(false);
     }
   };
 
@@ -170,6 +199,15 @@ export default function Welcome() {
                   variant="outline"
                   size="lg"
                   disabled={!name.trim()}
+                  onClick={() => setPasteOpen((v) => !v)}
+                  title={!name.trim() ? "Enter your name first" : ""}
+                >
+                  {pasteOpen ? "Hide paste" : "Paste CV text"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="lg"
+                  disabled={!name.trim()}
                   onClick={async () => { await persistName(); setStep(2); }}
                   title={!name.trim() ? "Enter your name first" : ""}
                 >
@@ -177,6 +215,30 @@ export default function Welcome() {
                 </Button>
               </div>
             </div>
+            {pasteOpen && (
+              <div className="pt-3 space-y-2 border-t border-foreground/10">
+                <p className="text-xs text-muted-foreground">
+                  Paste your CV as plain text (LinkedIn copy/paste works). Same parser as the PDF path. Skips the 10-field form.
+                </p>
+                <Textarea
+                  rows={8}
+                  value={pastedText}
+                  onChange={(e) => setPastedText(e.target.value)}
+                  placeholder="Paste full CV text here..."
+                  className="font-mono text-xs"
+                />
+                <div className="flex justify-end">
+                  <Button
+                    onClick={parsePasted}
+                    disabled={pasting || pastedText.trim().length < 40 || !name.trim()}
+                    size="lg"
+                  >
+                    <Sparkles className="mr-2 h-4 w-4" />
+                    {pasting ? "Parsing..." : "Extract skills + experience"}
+                  </Button>
+                </div>
+              </div>
+            )}
           </CardContent></Card>
         )}
 

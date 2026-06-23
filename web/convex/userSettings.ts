@@ -247,13 +247,56 @@ export const clearTelegramChatId = mutation({
   },
 });
 
+// scrape_filters is a comma-separated list of keywords OR a JSON object.
+// Validate shape here so downstream readers can trust it.
+function normalizeScrapeFilters(input: string): string {
+  const trimmed = input.trim();
+  if (trimmed === "") return "";
+  if (trimmed.length > 500) throw new Error("scrape_filters too long (max 500 chars)");
+  // Strip control chars (incl. \0) — they break URL encoding and shell escaping.
+  if (/[ -]/.test(trimmed)) {
+    throw new Error("scrape_filters contains invalid characters");
+  }
+  // If JSON-shaped, parse + require plain object/array of strings.
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(trimmed); } catch {
+      throw new Error("scrape_filters looks like JSON but did not parse");
+    }
+    if (Array.isArray(parsed)) {
+      if (!parsed.every((x) => typeof x === "string")) {
+        throw new Error("scrape_filters JSON array must contain strings only");
+      }
+    } else if (parsed && typeof parsed === "object") {
+      for (const v of Object.values(parsed as Record<string, unknown>)) {
+        if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean") {
+          throw new Error("scrape_filters JSON object values must be scalars");
+        }
+      }
+    } else {
+      throw new Error("scrape_filters JSON must be object or array");
+    }
+    return JSON.stringify(parsed);
+  }
+  // Comma-list form: keep alpha-num + comma + space + dash + dot + plus + hash.
+  if (!/^[\w ,.\-+#/]+$/.test(trimmed)) {
+    throw new Error("scrape_filters comma-list contains unsupported characters");
+  }
+  return trimmed
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(",");
+}
+
 export const setScrapeFilters = mutation({
   args: { filters: v.string() },
   handler: async (ctx, { filters }) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("UNAUTHENTICATED");
-    await upsertPatch(ctx, userId, { scrape_filters: filters });
-    return { ok: true };
+    const cleaned = normalizeScrapeFilters(filters);
+    await upsertPatch(ctx, userId, { scrape_filters: cleaned });
+    return { ok: true, filters: cleaned };
   },
 });
 

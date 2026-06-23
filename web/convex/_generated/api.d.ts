@@ -17,6 +17,7 @@ import type * as crons from "../crons.js";
 import type * as cv from "../cv.js";
 import type * as http from "../http.js";
 import type * as interview from "../interview.js";
+import type * as jobActions from "../jobActions.js";
 import type * as jobs from "../jobs.js";
 import type * as learn from "../learn.js";
 import type * as milestones from "../milestones.js";
@@ -47,6 +48,7 @@ declare const fullApi: ApiFromModules<{
   cv: typeof cv;
   http: typeof http;
   interview: typeof interview;
+  jobActions: typeof jobActions;
   jobs: typeof jobs;
   learn: typeof learn;
   milestones: typeof milestones;

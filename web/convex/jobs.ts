@@ -3,20 +3,55 @@ import { action, internalMutation, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { getAuthUserId } from "@convex-dev/auth/server";
 
+// Alias map: canonical skill name -> additional spellings that should
+// count as a match. Lowercase. Word-boundary applied at match time.
+const SKILL_ALIASES: Record<string, string[]> = {
+  javascript: ["js", "ecmascript"],
+  typescript: ["ts"],
+  "node.js": ["nodejs", "node"],
+  python: ["py", "python3"],
+  postgresql: ["postgres", "psql"],
+  "c#": ["csharp", "c sharp", ".net"],
+  "c++": ["cpp", "cplusplus"],
+  golang: ["go"],
+  kubernetes: ["k8s"],
+  "react.js": ["react", "reactjs"],
+  react: ["reactjs"],
+  "vue.js": ["vue", "vuejs"],
+  "next.js": ["next", "nextjs"],
+  tensorflow: ["tf"],
+};
+
+// Build word-boundary regex for a needle. Handles `.` `+` `#` properly
+// (e.g. "C++", "C#", "Node.js") since `\b` doesn't fire around them.
+function needleRegex(raw: string): RegExp {
+  const esc = raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const left = /^[\w]/.test(raw) ? "(?<![\\w])" : "(?<![\\w.+#])";
+  const right = /[\w]$/.test(raw) ? "(?![\\w])" : "(?![\\w.+#])";
+  return new RegExp(`${left}${esc}${right}`, "i");
+}
+
+function skillMatches(text: string, skill: string): boolean {
+  const low = skill.toLowerCase();
+  if (needleRegex(low).test(text)) return true;
+  const aliases = SKILL_ALIASES[low];
+  if (!aliases) return false;
+  return aliases.some((a) => needleRegex(a).test(text));
+}
+
 // Skill scoring: count how many of the user's skills appear in the
-// job's text. Returns 0..100. Cheap, deterministic, runs at read time.
+// job's text. Returns 0..100. Word-boundary + alias-aware.
 function scoreJob(
   job: { title: string; description?: string },
   userSkills: Record<string, number>,
 ): number {
   if (!userSkills || Object.keys(userSkills).length === 0) return 50;
-  const text = `${job.title} ${job.description ?? ""}`.toLowerCase();
+  const text = `${job.title} ${job.description ?? ""}`;
   let hits = 0;
   let weight = 0;
   for (const [skill, lvl] of Object.entries(userSkills)) {
     if (typeof lvl !== "number" || lvl < 1) continue;
-    const needle = skill.toLowerCase();
-    if (text.includes(needle)) {
+    if (skillMatches(text, skill)) {
       hits += 1;
       weight += lvl;
     }
@@ -42,22 +77,45 @@ export const list = query({
     seniority: v.optional(v.string()),
     min_score: v.optional(v.number()),
     limit: v.optional(v.number()),
+    // view: "all" excludes hidden, "saved" returns only saved,
+    // "hidden" returns only hidden. Default "all".
+    view: v.optional(v.union(v.literal("all"), v.literal("saved"), v.literal("hidden"))),
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
-    const profile = userId
-      ? await ctx.db
+
+    const view = args.view ?? "all";
+    const hiddenSet = new Set<string>();
+    const savedSet = new Set<string>();
+    if (userId) {
+      const actions = await ctx.db
+        .query("job_actions")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect();
+      for (const a of actions) {
+        if (a.action === "hidden") hiddenSet.add(a.job_external_id);
+        else if (a.action === "saved") savedSet.add(a.job_external_id);
+      }
+    }
+    const userSkills: Record<string, number> = {};
+    if (userId) {
+      const profRows = await ctx.db
+        .query("proficiency")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect();
+      if (profRows.length > 0) {
+        for (const r of profRows) userSkills[r.skill] = r.level;
+      } else {
+        const profile = await ctx.db
           .query("profile")
           .withIndex("by_user", (q) => q.eq("userId", userId))
-          .first()
-      : null;
-    let userSkills: Record<string, number> = {};
-    if (profile) {
-      try {
-        const p = JSON.parse(profile.data_json);
-        userSkills = (p?.skills ?? {}) as Record<string, number>;
-      } catch {
-        userSkills = {};
+          .first();
+        if (profile) {
+          try {
+            const p = JSON.parse(profile.data_json);
+            Object.assign(userSkills, (p?.skills ?? {}) as Record<string, number>);
+          } catch { /* ignore */ }
+        }
       }
     }
 
@@ -82,6 +140,10 @@ export const list = query({
 
     const out = [];
     for (const r of rows) {
+      const rid = r._id as string;
+      if (view === "all" && hiddenSet.has(rid)) continue;
+      if (view === "saved" && !savedSet.has(rid)) continue;
+      if (view === "hidden" && !hiddenSet.has(rid)) continue;
       const score = scoreJob(r, userSkills);
       if (score < minScore) continue;
       if (q) {
@@ -89,8 +151,8 @@ export const list = query({
         if (!hay.includes(q)) continue;
       }
       if (wantSkill) {
-        const hay = `${r.title} ${r.description ?? ""}`.toLowerCase();
-        if (!hay.includes(wantSkill)) continue;
+        const hay = `${r.title} ${r.description ?? ""}`;
+        if (!skillMatches(hay, wantSkill)) continue;
       }
       if (wantSeniority && wantSeniority !== "any") {
         const bucket = seniorityBucket(r.title);
@@ -100,10 +162,10 @@ export const list = query({
           continue;
         }
       }
-      const titleDesc = `${r.title} ${r.description ?? ""}`.toLowerCase();
+      const titleDesc = `${r.title} ${r.description ?? ""}`;
       const matchedSkills: Array<{ skill: string; category: string }> = [];
       for (const sk of Object.keys(userSkills)) {
-        if (titleDesc.includes(sk.toLowerCase())) {
+        if (skillMatches(titleDesc, sk)) {
           matchedSkills.push({ skill: sk, category: "skill" });
         }
       }
@@ -164,19 +226,30 @@ export const stats = query({
   args: {},
   handler: async (ctx) => {
     const userId = await getAuthUserId(ctx);
-    const profile = userId
-      ? await ctx.db
+    let userSkills: Record<string, number> = {};
+    if (userId) {
+      const profRows = await ctx.db
+        .query("proficiency")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect();
+      if (profRows.length > 0) {
+        for (const r of profRows) userSkills[r.skill] = r.level;
+      } else {
+        // Backfill read-path: proficiency empty but profile blob may have
+        // skills. Use those so existing users aren't broken until their
+        // next profile.save triggers the proficiency sync.
+        const profile = await ctx.db
           .query("profile")
           .withIndex("by_user", (q) => q.eq("userId", userId))
-          .first()
-      : null;
-    let userSkills: Record<string, number> = {};
-    if (profile) {
-      try {
-        const p = JSON.parse(profile.data_json);
-        userSkills = (p?.skills ?? {}) as Record<string, number>;
-      } catch {
-        userSkills = {};
+          .first();
+        if (profile) {
+          try {
+            const p = JSON.parse(profile.data_json);
+            userSkills = (p?.skills ?? {}) as Record<string, number>;
+          } catch {
+            userSkills = {};
+          }
+        }
       }
     }
     const have = new Set(Object.keys(userSkills).map((s) => s.toLowerCase()));
@@ -204,12 +277,12 @@ export const stats = query({
         const score = scoreJob(j, userSkills);
         if (score >= REAL_THRESHOLD) {
           realCount += 1;
-          const text = `${j.title} ${j.description ?? ""}`.toLowerCase();
+          const text = `${j.title} ${j.description ?? ""}`;
           for (const sk of Object.keys(userSkills)) {
-            const needle = sk.toLowerCase();
-            if (text.includes(needle)) {
-              skillCounts[needle] = (skillCounts[needle] ?? 0) + 1;
-              skillOrig[needle] = sk;
+            if (skillMatches(text, sk)) {
+              const key = sk.toLowerCase();
+              skillCounts[key] = (skillCounts[key] ?? 0) + 1;
+              skillOrig[key] = sk;
             }
           }
         }

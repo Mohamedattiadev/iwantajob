@@ -1,7 +1,7 @@
 "use node";
 
 import { v } from "convex/values";
-import { action } from "./_generated/server";
+import { action, type ActionCtx } from "./_generated/server";
 import { api } from "./_generated/api";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { resolveGeminiKey } from "./userSettings";
@@ -277,6 +277,27 @@ function mergeProfile(
   return merged;
 }
 
+async function ingestText(
+  ctx: ActionCtx,
+  text: string,
+): Promise<{ profile: Profile; meta: { parsed_at: string; raw_text_chars: number; skills_detected: number } }> {
+  if (!text.trim()) throw new Error("empty CV text");
+  const parsed = parseFromText(text);
+  const geminiKey = await resolveGeminiKey(ctx);
+  const gemini = await geminiExtractProfile(text, geminiKey);
+  const current = (await ctx.runQuery(api.profile.get)) as Profile;
+  const merged = mergeProfile(current, parsed, gemini);
+  await ctx.runMutation(api.profile.save, { data: JSON.stringify(merged) });
+  return {
+    profile: merged,
+    meta: {
+      parsed_at: new Date().toISOString(),
+      raw_text_chars: text.length,
+      skills_detected: (gemini.skills ?? []).length,
+    },
+  };
+}
+
 export const upload = action({
   args: { filename: v.string(), data: v.bytes() },
   handler: async (
@@ -299,22 +320,19 @@ export const upload = action({
     else text = buf.toString("utf-8");
 
     if (!text.trim()) throw new Error("could not extract text from upload");
+    return ingestText(ctx, text);
+  },
+});
 
-    const parsed = parseFromText(text);
-    const geminiKey = await resolveGeminiKey(ctx);
-    const gemini = await geminiExtractProfile(text, geminiKey);
-
-    const current = (await ctx.runQuery(api.profile.get)) as Profile;
-    const merged = mergeProfile(current, parsed, gemini);
-    await ctx.runMutation(api.profile.save, { data: JSON.stringify(merged) });
-
-    return {
-      profile: merged,
-      meta: {
-        parsed_at: new Date().toISOString(),
-        raw_text_chars: text.length,
-        skills_detected: (gemini.skills ?? []).length,
-      },
-    };
+export const parseText = action({
+  args: { text: v.string() },
+  handler: async (
+    ctx,
+    { text },
+  ): Promise<{ profile: Profile; meta: { parsed_at: string; raw_text_chars: number; skills_detected: number } }> => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("UNAUTHENTICATED");
+    if (text.length > 200_000) throw new Error("text too large (max 200k chars)");
+    return ingestText(ctx, text);
   },
 });

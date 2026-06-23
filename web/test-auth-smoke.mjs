@@ -1,5 +1,8 @@
-// Authenticated prod smoke. Signs up a fresh test user, walks the gated
-// routes, and reports console errors + which routes render content.
+// Authenticated smoke. Signs up a fresh test user, walks the onboarding
+// wizard so gated routes don't bounce, then walks every gated route and
+// reports console errors + actual final URL. PASS = status<500, the route
+// did NOT bounce back to /login or /welcome, AND no unwhitelisted console
+// errors fired.
 // Run: node test-auth-smoke.mjs [base-url]
 import { chromium } from "playwright";
 
@@ -14,6 +17,9 @@ const IGNORE = [
   /Failed to load resource: the server responded with a status of 404/,
   /Download the React DevTools/,
   /\[Convex.* Auth\]/,
+  // Chromium info: editors (excalidraw, MDX) attach beforeunload on mount.
+  // Browser blocks the confirm panel until first user gesture; not an app bug.
+  /beforeunload.* without.* user gesture|never had a user gesture/i,
 ];
 const shouldIgnore = (t) => IGNORE.some((r) => r.test(t));
 
@@ -32,11 +38,10 @@ page.on("pageerror", (e) => allErrors.push({ where: page.url(), text: `pageerror
 
 console.log(`Test user: ${EMAIL}`);
 
-// Sign up
+// --- Sign up -------------------------------------------------------------
 await page.goto(BASE + "/login");
 await page.waitForSelector('input[type="email"]');
-// The page renders the form twice (SSR + hydration shell). Use the *last* one,
-// which is the live React-controlled instance.
+// SSR + hydration renders the form twice; use the live (last) instance.
 const form = page.locator("form").last();
 const switchBtn = page.getByRole("button", { name: /Need an account.*Sign up/i }).last();
 if (await switchBtn.count() > 0) {
@@ -45,13 +50,60 @@ if (await switchBtn.count() > 0) {
 }
 await form.locator('input[type="email"]').fill(EMAIL);
 await form.locator('input[type="password"]').fill(PASSWORD);
-await page.waitForTimeout(400);
 await form.locator('button[type="submit"]').click();
-await page.waitForLoadState("networkidle", { timeout: 30000 });
+
+// Wait for auth-driven router.replace away from /login. networkidle is
+// not sufficient — the navigation happens *after* the React commit that
+// follows the auth response, which can land outside the network-quiet window.
+try {
+  await page.waitForURL((u) => !u.toString().includes("/login"), { timeout: 30000 });
+} catch {
+  console.log(`SIGNUP STUCK ON: ${page.url()}`);
+  await browser.close();
+  process.exit(2);
+}
 console.log(`After signup → ${page.url()}`);
 
-// If we land on /welcome, skip the wizard by going directly to / — onboarded flag may still block.
-// Walk each gated route and report.
+// --- Walk onboarding wizard so OnboardingGate stops bouncing to /welcome.
+// The wizard has 4 steps (Hi → name → goals → done). Skip what we can.
+if (!page.url().includes("/welcome")) {
+  await page.goto(BASE + "/welcome");
+}
+await page.waitForLoadState("domcontentloaded");
+
+async function clickByName(re) {
+  const btn = page.getByRole("button", { name: re }).first();
+  if (await btn.count() > 0 && await btn.isEnabled()) {
+    await btn.click();
+    await page.waitForTimeout(250);
+    return true;
+  }
+  return false;
+}
+
+// Step 0: "Let's go"
+await clickByName(/let'?s go/i);
+// Step 1: type a name + skip CV upload
+const nameInput = page.locator('input[placeholder*="Mohamed" i]').first();
+if (await nameInput.count() > 0) {
+  await nameInput.fill("Smoke Test");
+  await page.waitForTimeout(150);
+}
+await clickByName(/skip.*fill manually|skip — fill manually/i);
+// Step 2: skip Q&A
+await clickByName(/^skip$/i);
+// Step 3: open dashboard
+await clickByName(/open dashboard/i);
+
+// Wait for landing on / (or any non-welcome URL)
+try {
+  await page.waitForURL((u) => !u.toString().includes("/welcome"), { timeout: 15000 });
+} catch {
+  console.log(`STUCK IN WIZARD AT: ${page.url()}`);
+}
+console.log(`After wizard → ${page.url()}`);
+
+// --- Walk gated routes ---------------------------------------------------
 const results = [];
 for (const path of GATED) {
   allErrors.length = 0;
@@ -60,9 +112,9 @@ for (const path of GATED) {
   let err = "";
   try {
     const r = await page.goto(BASE + path, { waitUntil: "networkidle", timeout: 30000 });
-    final = page.url().replace(BASE, "");
+    await page.waitForTimeout(800);
+    final = page.url().replace(BASE, "") || "/";
     ok = r && r.status() < 500;
-    await page.waitForTimeout(1000);
   } catch (e) {
     err = e.message;
   }
@@ -73,9 +125,12 @@ await browser.close();
 
 let fail = 0;
 for (const r of results) {
-  const pass = r.ok && r.errors.length === 0 && !r.err;
+  const bounced = r.final.startsWith("/login") || (r.final.startsWith("/welcome") && r.path !== "/welcome");
+  const pass = r.ok && r.errors.length === 0 && !r.err && !bounced;
   if (!pass) fail++;
-  console.log(`${pass ? "PASS" : "FAIL"}  ${r.path.padEnd(14)} → ${r.final}${r.err ? `  ERR=${r.err}` : ""}`);
+  const tag = pass ? "PASS" : "FAIL";
+  const reason = bounced ? "  bounced" : r.err ? `  ERR=${r.err}` : r.errors.length ? `  ${r.errors.length} console err` : "";
+  console.log(`${tag}  ${r.path.padEnd(14)} → ${r.final}${reason}`);
   for (const e of r.errors) console.log(`        ${e.text.slice(0, 220)}`);
 }
 console.log(`\n${results.length - fail}/${results.length} passed`);

@@ -1,6 +1,8 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
+import type { Id } from "./_generated/dataModel";
 
 const DEFAULT_PROFILE = {
   personal: { name: "", email: "", phone: "", location: "", links: {}, summary: "" },
@@ -66,13 +68,44 @@ export const setOnboarded = mutation({
   },
 });
 
+// Sync skills from profile blob into proficiency table so reads
+// (jobs scoring, learn page) don't depend on the JSON document.
+// Preserves any per-skill level already in proficiency (don't clobber
+// user-set 0–5 ratings) and inserts missing ones at the parsed level.
+async function syncSkillsToProficiency(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  skills: Record<string, unknown> | undefined | null,
+): Promise<void> {
+  if (!skills || typeof skills !== "object") return;
+  const rows = await ctx.db
+    .query("proficiency")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+  const existing = new Map(rows.map((r) => [r.skill, r]));
+  for (const [name, lvlRaw] of Object.entries(skills)) {
+    const skill = String(name).trim();
+    if (!skill) continue;
+    const lvl = typeof lvlRaw === "number" && Number.isFinite(lvlRaw)
+      ? Math.max(0, Math.min(5, Math.round(lvlRaw)))
+      : 3;
+    const row = existing.get(skill);
+    if (row) {
+      // Keep user's chosen level; only insert if missing.
+      continue;
+    }
+    await ctx.db.insert("proficiency", { userId, skill, level: lvl });
+  }
+}
+
 export const save = mutation({
   args: { data: v.string() },
   handler: async (ctx, { data }) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("UNAUTHENTICATED");
+    let parsed: { skills?: Record<string, unknown> };
     try {
-      JSON.parse(data);
+      parsed = JSON.parse(data);
     } catch {
       throw new Error("INVALID_JSON");
     }
@@ -85,6 +118,7 @@ export const save = mutation({
     } else {
       await ctx.db.insert("profile", { userId, data_json: data, updated_at: Date.now() });
     }
-    return JSON.parse(data);
+    await syncSkillsToProficiency(ctx, userId, parsed.skills);
+    return parsed;
   },
 });

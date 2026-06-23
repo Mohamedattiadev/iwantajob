@@ -1,9 +1,8 @@
 "use client";
 
-import { Suspense, memo, useCallback, useState } from "react";
-import Link from "next/link";
+import { Suspense, memo, useCallback, useDeferredValue, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowRight, Filter, X } from "lucide-react";
+import { ArrowRight, Filter, X, EyeOff, Bookmark, BookmarkCheck, Undo2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -27,6 +26,7 @@ import { Pagination } from "@/components/pagination";
 import { AiSearchInput } from "@/components/ai-search-input";
 import { type JobsResponse, type JobItem } from "@/lib/api";
 import { useApplications } from "@/lib/applications";
+import { useJobActions, type JobActionKind } from "@/lib/job-actions";
 import { CheckCircle2, Send } from "lucide-react";
 import { toast } from "sonner";
 import { useAction, useQuery } from "convex/react";
@@ -36,21 +36,27 @@ import type { Id } from "../../../convex/_generated/dataModel";
 type JobCardProps = {
   job: JobItem;
   isApplied: boolean;
+  isHidden: boolean;
+  isSaved: boolean;
   tgAvailable: boolean;
   isTgSending: boolean;
   onPickSkill: (skill: string) => void;
   onTelegramApply: (jobId: string) => void;
   onMarkApplied: (job: JobItem) => void;
+  onSetAction: (jobId: string, action: JobActionKind) => void;
 };
 
 const JobCard = memo(function JobCard({
   job: j,
   isApplied,
+  isHidden,
+  isSaved,
   tgAvailable,
   isTgSending,
   onPickSkill,
   onTelegramApply,
   onMarkApplied,
+  onSetAction,
 }: JobCardProps) {
   const scoreTone =
     j.score >= 80 ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30"
@@ -58,7 +64,7 @@ const JobCard = memo(function JobCard({
     : "bg-muted text-muted-foreground ring-foreground/10";
   return (
     <li>
-      <article className={`group h-full flex flex-col rounded-2xl border bg-card hover:shadow-lg hover:border-foreground/20 transition-all ${isApplied ? "opacity-75" : ""}`}>
+      <article className={`group h-full flex flex-col rounded-2xl border bg-card hover:shadow-lg hover:border-foreground/20 transition-all ${isApplied || isHidden ? "opacity-75" : ""} ${isSaved ? "ring-1 ring-amber-500/40" : ""}`}>
         <div className="p-5 pb-3 flex-1 flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3">
             <h3 className="font-semibold text-base leading-snug line-clamp-2 flex-1">{j.title}</h3>
@@ -90,7 +96,7 @@ const JobCard = memo(function JobCard({
             </div>
           )}
         </div>
-        <div className="px-4 py-3 border-t bg-muted/30 rounded-b-2xl flex items-center gap-2">
+        <div className="px-4 py-3 border-t bg-muted/30 rounded-b-2xl flex items-center gap-1.5">
           <a
             href={j.source_url}
             target="_blank"
@@ -100,6 +106,22 @@ const JobCard = memo(function JobCard({
           >
             Open <ArrowRight className="h-3 w-3 ml-1" />
           </a>
+          <button
+            type="button"
+            onClick={(e) => { e.preventDefault(); onSetAction(j.id, isSaved ? "none" : "saved"); }}
+            className={`inline-flex items-center justify-center h-9 w-9 rounded-lg text-xs transition-colors ${isSaved ? "text-amber-600 dark:text-amber-400 bg-amber-500/10 hover:bg-amber-500/20" : "text-muted-foreground hover:text-foreground hover:bg-background"}`}
+            title={isSaved ? "Unsave" : "Save for later"}
+          >
+            {isSaved ? <BookmarkCheck className="h-4 w-4" /> : <Bookmark className="h-4 w-4" />}
+          </button>
+          <button
+            type="button"
+            onClick={(e) => { e.preventDefault(); onSetAction(j.id, isHidden ? "none" : "hidden"); }}
+            className="inline-flex items-center justify-center h-9 w-9 rounded-lg text-xs text-muted-foreground hover:text-foreground hover:bg-background transition-colors"
+            title={isHidden ? "Unhide" : "Hide"}
+          >
+            {isHidden ? <Undo2 className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+          </button>
           <div className="flex-1" />
           {isApplied ? (
             <span className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-xs font-semibold">
@@ -140,9 +162,27 @@ function JobsPageInner() {
   const [seniority, setSeniority] = useState(sp.get("seniority") ?? "junior_or_unknown");
   const [minScore, setMinScore] = useState(sp.get("min_score") ?? "50");
   const [skill, setSkill] = useState(sp.get("skill") ?? "all");
+  const initView = (sp.get("view") ?? "all") as "all" | "saved" | "hidden";
+  const [view, setView] = useState<"all" | "saved" | "hidden">(initView);
   const [showFilters, setShowFilters] = useState(false);
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 12;
+
+  // Sync filter state -> URL so reloads keep filters. `q` is deferred so we
+  // do not router.replace on every keystroke; React batches it during typing.
+  const deferredQ = useDeferredValue(q);
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (deferredQ) next.set("q", deferredQ);
+    if (source !== "all") next.set("source", source);
+    if (seniority !== "junior_or_unknown") next.set("seniority", seniority);
+    if (minScore !== "50") next.set("min_score", minScore);
+    if (skill !== "all") next.set("skill", skill);
+    if (view !== "all") next.set("view", view);
+    const qs = next.toString();
+    const cur = sp.toString();
+    if (qs !== cur) router.replace(qs ? `/jobs?${qs}` : "/jobs", { scroll: false });
+  }, [deferredQ, source, seniority, minScore, skill, view, router, sp]);
 
   const raw = useQuery(convexApi.jobs.list, {
     q: q || undefined,
@@ -150,12 +190,19 @@ function JobsPageInner() {
     seniority: seniority || undefined,
     skill: skill !== "all" ? skill : undefined,
     min_score: Number(minScore) || 0,
+    view,
     limit: 100,
   });
   const data = raw as JobsResponse | undefined;
   const isLoading = raw === undefined;
 
   const { appliedIds, apply } = useApplications();
+  const { hiddenIds, savedIds, setAction } = useJobActions();
+  const handleSetAction = useCallback(async (jobId: string, action: JobActionKind) => {
+    const ok = await setAction(jobId, action);
+    if (ok && action === "saved") toast.success("Saved");
+    else if (ok && action === "hidden") toast.success("Hidden");
+  }, [setAction]);
   const tgStatus = useQuery(convexApi.telegram.status);
   const sendBrief = useAction(convexApi.telegram.sendApplyBrief);
   const [tgLoading, setTgLoading] = useState<string | null>(null);
@@ -197,7 +244,8 @@ function JobsPageInner() {
     setSeniority("junior_or_unknown");
     setMinScore("50");
     setSkill("all");
-    router.push("/jobs");
+    setView("all");
+    setPage(1);
   };
 
   const activeFilters = [
@@ -236,6 +284,24 @@ function JobsPageInner() {
             <Filter className="h-4 w-4 mr-2" />
             Filters{activeFilters.length > 0 ? ` · ${activeFilters.length}` : ""}
           </Button>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {(["all", "saved", "hidden"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => { setView(v); setPage(1); }}
+              className={`px-3 h-8 rounded-full text-xs font-medium capitalize transition-colors ${
+                view === v
+                  ? "bg-foreground text-background"
+                  : "bg-muted text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {v === "saved" && <Bookmark className="inline h-3 w-3 mr-1" />}
+              {v === "hidden" && <EyeOff className="inline h-3 w-3 mr-1" />}
+              {v} {v === "saved" && savedIds.size > 0 ? `· ${savedIds.size}` : ""}{v === "hidden" && hiddenIds.size > 0 ? `· ${hiddenIds.size}` : ""}
+            </button>
+          ))}
         </div>
         {activeFilters.length > 0 && (
           <div className="flex items-center gap-2 flex-wrap">
@@ -316,18 +382,23 @@ function JobsPageInner() {
         <div className="py-16 text-center text-sm text-muted-foreground">No matches. Try resetting filters.</div>
       ) : (
         <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {(data?.items ?? []).slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map((j) => (
-            <JobCard
-              key={j.id}
-              job={j}
-              isApplied={appliedIds.has(j.id)}
-              tgAvailable={!!tgStatus?.available}
-              isTgSending={tgLoading === j.id}
-              onPickSkill={handlePickSkill}
-              onTelegramApply={telegramApply}
-              onMarkApplied={handleMarkApplied}
-            />
-          ))}
+          {(data?.items ?? [])
+            .slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+            .map((j) => (
+              <JobCard
+                key={j.id}
+                job={j}
+                isApplied={appliedIds.has(j.id)}
+                isHidden={hiddenIds.has(j.id)}
+                isSaved={savedIds.has(j.id)}
+                tgAvailable={!!tgStatus?.available}
+                isTgSending={tgLoading === j.id}
+                onPickSkill={handlePickSkill}
+                onTelegramApply={telegramApply}
+                onMarkApplied={handleMarkApplied}
+                onSetAction={handleSetAction}
+              />
+            ))}
         </ul>
       )}
 

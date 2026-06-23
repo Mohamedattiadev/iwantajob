@@ -124,6 +124,18 @@ export default defineSchema({
     onboarded: v.optional(v.boolean()),
   }).index("by_user", ["userId"]),
 
+  // Per-user job actions: hide / save. Keyed by (userId, job_external_id).
+  // Distinct from applications (which carries status transitions).
+  job_actions: defineTable({
+    userId: v.id("users"),
+    job_external_id: v.string(),
+    action: v.string(),
+    updated_at: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_and_action", ["userId", "action"])
+    .index("by_user_and_job_ext", ["userId", "job_external_id"]),
+
   cv_drafts: defineTable({
     userId: v.id("users"),
     name: v.string(),
