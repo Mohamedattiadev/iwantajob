@@ -25,7 +25,8 @@ export type JobItem = {
   currency: string | null;
   score: number;
   is_intern?: boolean;
-  skills: { skill: string; category: string }[];
+  skills: { skill: string; category: string; level?: number }[];
+  missed_skills?: { skill: string; level: number }[];
   description_excerpt: string;
 };
 

@@ -163,10 +163,13 @@ export const list = query({
         }
       }
       const titleDesc = `${r.title} ${r.description ?? ""}`;
-      const matchedSkills: Array<{ skill: string; category: string }> = [];
-      for (const sk of Object.keys(userSkills)) {
+      const matchedSkills: Array<{ skill: string; category: string; level: number }> = [];
+      const missedUserSkills: Array<{ skill: string; level: number }> = [];
+      for (const [sk, lvl] of Object.entries(userSkills)) {
         if (skillMatches(titleDesc, sk)) {
-          matchedSkills.push({ skill: sk, category: "skill" });
+          matchedSkills.push({ skill: sk, category: "skill", level: lvl });
+        } else if (typeof lvl === "number" && lvl >= 1) {
+          missedUserSkills.push({ skill: sk, level: lvl });
         }
       }
       out.push({
@@ -183,6 +186,7 @@ export const list = query({
         salary_max: r.salary_max ?? null,
         currency: r.currency ?? null,
         skills: matchedSkills,
+        missed_skills: missedUserSkills,
         description_excerpt: (r.description ?? "").slice(0, 240),
         score,
       });

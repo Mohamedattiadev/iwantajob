@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { action, query, httpAction } from "./_generated/server";
+import { action, query, httpAction, internalAction, internalQuery } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { decryptUserSecretsInAction, openSealed } from "./userSettings";
@@ -322,4 +322,81 @@ export const webhook = httpAction(async (ctx, req) => {
     text: "unknown action",
   });
   return new Response("ok", { status: 200 });
+});
+
+// ---- Daily follow-up reminders ------------------------------------------
+
+const FOLLOW_UP_DAYS = 7;
+
+export const _listTelegramUsers = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const rows = await ctx.db.query("user_settings").collect();
+    return rows
+      .filter((r) => r.telegram_token_encrypted && r.telegram_chat_id)
+      .map((r) => ({
+        userId: r.userId,
+        token_encrypted: r.telegram_token_encrypted as string,
+        chat_id: r.telegram_chat_id as string,
+      }));
+  },
+});
+
+export const _listStaleApplications = internalQuery({
+  args: { userId: v.id("users"), cutoff: v.number() },
+  handler: async (ctx, { userId, cutoff }) => {
+    const rows = await ctx.db
+      .query("applications")
+      .withIndex("by_user_and_status", (q) => q.eq("userId", userId).eq("status", "applied"))
+      .collect();
+    return rows
+      .filter((a) => a.applied_at < cutoff)
+      .map((a) => ({
+        id: a._id,
+        job_title: a.job_title,
+        job_company: a.job_company ?? null,
+        job_source_url: a.job_source_url ?? null,
+        applied_at: a.applied_at,
+      }));
+  },
+});
+
+type TgUser = { userId: Id<"users">; token_encrypted: string; chat_id: string };
+type StaleApp = { id: Id<"applications">; job_title: string; job_company: string | null; job_source_url: string | null; applied_at: number };
+
+export const sendFollowUpReminders = internalAction({
+  args: {},
+  handler: async (ctx): Promise<{ users: number; notified: number }> => {
+    const users: TgUser[] = await ctx.runQuery(internal.telegram._listTelegramUsers, {});
+    const cutoff = Date.now() - FOLLOW_UP_DAYS * 24 * 60 * 60 * 1000;
+    let sent = 0;
+    for (const u of users) {
+      const stale: StaleApp[] = await ctx.runQuery(internal.telegram._listStaleApplications, {
+        userId: u.userId,
+        cutoff,
+      });
+      if (stale.length === 0) continue;
+      const token = await openSealed(u.token_encrypted);
+      const lines = stale.slice(0, 10).map((a) => {
+        const days = Math.floor((Date.now() - a.applied_at) / (24 * 60 * 60 * 1000));
+        const title = escapeHtml(a.job_title);
+        const company = escapeHtml(a.job_company ?? "?");
+        const url = a.job_source_url ? ` · <a href="${escapeHtml(a.job_source_url)}">open</a>` : "";
+        return `• <b>${title}</b> at ${company} — applied ${days}d ago${url}`;
+      });
+      const more = stale.length > 10 ? `\n\n…and ${stale.length - 10} more.` : "";
+      const msg =
+        `<b>📬 Follow-up reminders</b>\n` +
+        `${stale.length} application${stale.length === 1 ? "" : "s"} idle > ${FOLLOW_UP_DAYS} days. Ping the recruiter, ` +
+        `or move to "ghost" if it's a no-go.\n\n${lines.join("\n")}${more}`;
+      await tgPost(token, "sendMessage", {
+        chat_id: u.chat_id,
+        text: msg,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      });
+      sent += 1;
+    }
+    return { users: users.length, notified: sent };
+  },
 });

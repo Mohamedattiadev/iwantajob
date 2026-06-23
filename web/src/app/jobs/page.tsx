@@ -20,6 +20,10 @@ import {
   CollapsibleContent,
 } from "@/components/ui/collapsible";
 import { ScrapeButton } from "@/components/scrape-button";
+import { ScoreBreakdown } from "@/components/score-breakdown";
+import { TailorCvModal } from "@/components/tailor-cv-modal";
+import { Sparkles } from "lucide-react";
+import type { Profile } from "@/lib/api";
 import { PageHeader } from "@/components/page-header";
 import { PageTabs, JOBS_TABS } from "@/components/page-tabs";
 import { Pagination } from "@/components/pagination";
@@ -44,6 +48,7 @@ type JobCardProps = {
   onTelegramApply: (jobId: string) => void;
   onMarkApplied: (job: JobItem) => void;
   onSetAction: (jobId: string, action: JobActionKind) => void;
+  onTailor: (job: JobItem) => void;
 };
 
 const JobCard = memo(function JobCard({
@@ -57,6 +62,7 @@ const JobCard = memo(function JobCard({
   onTelegramApply,
   onMarkApplied,
   onSetAction,
+  onTailor,
 }: JobCardProps) {
   const scoreTone =
     j.score >= 80 ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30"
@@ -68,9 +74,12 @@ const JobCard = memo(function JobCard({
         <div className="p-5 pb-3 flex-1 flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3">
             <h3 className="font-semibold text-base leading-snug line-clamp-2 flex-1">{j.title}</h3>
-            <span className={`shrink-0 inline-flex items-center justify-center min-w-[40px] h-7 px-2 rounded-full text-xs font-bold tabular-nums ring-1 ${scoreTone}`} title="Match score">
-              {j.score}
-            </span>
+            <ScoreBreakdown
+              score={j.score}
+              matched={j.skills}
+              missed={j.missed_skills ?? []}
+              toneClass={scoreTone}
+            />
           </div>
           <div className="text-sm text-foreground/80 font-medium line-clamp-1">{j.company ?? "Unknown company"}</div>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
@@ -121,6 +130,15 @@ const JobCard = memo(function JobCard({
             title={isHidden ? "Unhide" : "Hide"}
           >
             {isHidden ? <Undo2 className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+          </button>
+          <button
+            type="button"
+            onClick={(e) => { e.preventDefault(); onTailor(j); }}
+            className="inline-flex items-center justify-center gap-1 h-9 px-2.5 rounded-lg text-xs text-muted-foreground hover:text-foreground hover:bg-background transition-colors"
+            title="Tailor CV for this role"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Tailor</span>
           </button>
           <div className="flex-1" />
           {isApplied ? (
@@ -229,6 +247,16 @@ function JobsPageInner() {
     const ok = await apply(j);
     if (ok) toast.success("Marked applied");
   }, [apply]);
+
+  const profile = useQuery(convexApi.profile.get) as Profile | undefined;
+  const [tailorJob, setTailorJob] = useState<JobItem | null>(null);
+  const handleTailor = useCallback((j: JobItem) => {
+    if (!profile) {
+      toast.error("Profile loading. Try again in a moment.");
+      return;
+    }
+    setTailorJob(j);
+  }, [profile]);
 
   // Filter-setter wrappers that also reset to page 1
   const withReset = <T,>(setter: (v: T) => void) => (v: T) => { setter(v); setPage(1); };
@@ -397,6 +425,7 @@ function JobsPageInner() {
                 onTelegramApply={telegramApply}
                 onMarkApplied={handleMarkApplied}
                 onSetAction={handleSetAction}
+                onTailor={handleTailor}
               />
             ))}
         </ul>
@@ -409,6 +438,16 @@ function JobsPageInner() {
           totalShown={data.items.length}
           total={data.total}
           onChange={(p) => { setPage(p); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+        />
+      )}
+
+      {tailorJob && profile && (
+        <TailorCvModal
+          jobId={tailorJob.id as Id<"jobs_pool">}
+          jobTitle={tailorJob.title}
+          jobCompany={tailorJob.company}
+          profile={profile}
+          onClose={() => setTailorJob(null)}
         />
       )}
     </div>

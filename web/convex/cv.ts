@@ -336,3 +336,109 @@ export const parseText = action({
     return ingestText(ctx, text);
   },
 });
+
+type TailoredResult = {
+  summary: string;
+  experience: Array<{ original: string; tailored: string }>;
+  projects: Array<{ original: string; tailored: string }>;
+  job: { id: string; title: string; company: string | null };
+};
+
+async function geminiTailor(
+  key: string,
+  job: { title: string; company: string | null; description: string },
+  profile: Profile,
+): Promise<{ summary: string; experience: string[]; projects: string[] }> {
+  const expRaw = ((profile.experience ?? []) as Array<{ raw?: string }>).map((e) => e.raw ?? "");
+  const projRaw = ((profile.projects ?? []) as Array<{ raw?: string }>).map((p) => p.raw ?? "");
+  const desc = job.description.length > 8000 ? job.description.slice(0, 8000) : job.description;
+  const prompt = `Tailor the candidate's CV bullets to this job. Return STRICT JSON only:
+
+{
+  "summary": "<rewritten 2-3 sentence summary tuned to this role>",
+  "experience": ["<rewritten entry 1>", "<rewritten entry 2>", ...],
+  "projects": ["<rewritten entry 1>", ...]
+}
+
+Rules:
+- Same number of experience entries as input. Same for projects.
+- Each entry: headline first, bullets joined by " ● " (same format as input).
+- Re-order/re-word bullets to surface skills/keywords from the job description.
+- Keep facts truthful — never invent companies, dates, employers, or metrics.
+- If candidate truly doesn't have a relevant signal for an entry, return it unchanged.
+- Max 4 bullets per entry. Lead each bullet with a strong verb.
+
+JOB
+Title: ${job.title}
+Company: ${job.company ?? "(unknown)"}
+Description:
+${desc}
+
+CURRENT SUMMARY
+${profile.personal?.summary ?? ""}
+
+CURRENT EXPERIENCE ENTRIES (one per line, prefixed with [n]):
+${expRaw.map((e, i) => `[${i}] ${e}`).join("\n")}
+
+CURRENT PROJECT ENTRIES:
+${projRaw.map((p, i) => `[${i}] ${p}`).join("\n")}`;
+  const r = await fetch(ENDPOINT(key), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.4,
+        maxOutputTokens: 4000,
+        responseMimeType: "application/json",
+        thinkingConfig: { thinkingBudget: 0 },
+      },
+    }),
+  });
+  if (!r.ok) throw new Error(`Gemini tailor failed: ${r.status}`);
+  const data = await r.json();
+  const parts = (data.candidates ?? [{}])[0]?.content?.parts ?? [];
+  let raw = "";
+  for (const p of parts as Array<Record<string, unknown>>) {
+    if (typeof p.text === "string") raw += p.text;
+  }
+  raw = raw.trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+  const parsed = JSON.parse(raw) as { summary?: string; experience?: string[]; projects?: string[] };
+  return {
+    summary: parsed.summary ?? "",
+    experience: Array.isArray(parsed.experience) ? parsed.experience : [],
+    projects: Array.isArray(parsed.projects) ? parsed.projects : [],
+  };
+}
+
+export const tailor = action({
+  args: { jobId: v.id("jobs_pool") },
+  handler: async (ctx, { jobId }): Promise<TailoredResult> => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("UNAUTHENTICATED");
+    const job = await ctx.runQuery(api.jobs._getById, { id: jobId });
+    if (!job) throw new Error("job not found");
+    const profile = (await ctx.runQuery(api.profile.get)) as Profile;
+    const key = await resolveGeminiKey(ctx);
+    if (!key) throw new Error("Set a Gemini API key in Settings to tailor.");
+    const tailored = await geminiTailor(
+      key,
+      { title: job.title, company: job.company ?? null, description: job.description ?? "" },
+      profile,
+    );
+    const expIn = ((profile.experience ?? []) as Array<{ raw?: string }>).map((e) => e.raw ?? "");
+    const projIn = ((profile.projects ?? []) as Array<{ raw?: string }>).map((p) => p.raw ?? "");
+    return {
+      summary: tailored.summary || (profile.personal?.summary ?? ""),
+      experience: expIn.map((original, i) => ({
+        original,
+        tailored: tailored.experience[i] ?? original,
+      })),
+      projects: projIn.map((original, i) => ({
+        original,
+        tailored: tailored.projects[i] ?? original,
+      })),
+      job: { id: jobId, title: job.title, company: job.company ?? null },
+    };
+  },
+});

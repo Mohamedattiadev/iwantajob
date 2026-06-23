@@ -15,6 +15,7 @@ import type * as chat from "../chat.js";
 import type * as conversations from "../conversations.js";
 import type * as crons from "../crons.js";
 import type * as cv from "../cv.js";
+import type * as cv_drafts from "../cv_drafts.js";
 import type * as http from "../http.js";
 import type * as interview from "../interview.js";
 import type * as jobActions from "../jobActions.js";
@@ -46,6 +47,7 @@ declare const fullApi: ApiFromModules<{
   conversations: typeof conversations;
   crons: typeof crons;
   cv: typeof cv;
+  cv_drafts: typeof cv_drafts;
   http: typeof http;
   interview: typeof interview;
   jobActions: typeof jobActions;
