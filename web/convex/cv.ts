@@ -382,20 +382,33 @@ ${expRaw.map((e, i) => `[${i}] ${e}`).join("\n")}
 
 CURRENT PROJECT ENTRIES:
 ${projRaw.map((p, i) => `[${i}] ${p}`).join("\n")}`;
-  const r = await fetch(ENDPOINT(key), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.4,
-        maxOutputTokens: 4000,
-        responseMimeType: "application/json",
-        thinkingConfig: { thinkingBudget: 0 },
-      },
-    }),
-  });
-  if (!r.ok) throw new Error(`Gemini tailor failed: ${r.status}`);
+  let r: Response | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    r = await fetch(ENDPOINT(key), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.4,
+          maxOutputTokens: 4000,
+          responseMimeType: "application/json",
+          thinkingConfig: { thinkingBudget: 0 },
+        },
+      }),
+    });
+    if (r.ok) break;
+    // 429/503 are transient — exponential backoff before giving up.
+    if (r.status !== 429 && r.status !== 503) break;
+    await new Promise((res) => setTimeout(res, 600 * (attempt + 1)));
+  }
+  if (!r || !r.ok) {
+    const status = r?.status ?? 0;
+    if (status === 429 || status === 503) {
+      throw new Error("Gemini is overloaded right now. Try again in a minute.");
+    }
+    throw new Error(`Gemini tailor failed: ${status}`);
+  }
   const data = await r.json();
   const parts = (data.candidates ?? [{}])[0]?.content?.parts ?? [];
   let raw = "";
