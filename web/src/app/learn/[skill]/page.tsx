@@ -4,6 +4,7 @@ import { use, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
+import { useSketch, useSketchSave } from "@/lib/sketch-store";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import type {
@@ -411,8 +412,8 @@ export default function SkillPage({
 
 function SkillSketch({ skill }: { skill: string }) {
   const slug = `skill:${skill}`;
-  const saved = useQuery(api.sketches.get, { slug });
-  const saveSketchMut = useMutation(api.sketches.save);
+  const saved = useSketch(slug);
+  const saveSketchMut = useSketchSave();
   const [initial, setInitial] = useState<ExcalidrawInitialDataState | null | undefined>(undefined);
   const [full, setFull] = useState(false);
   const [api_, setApi] = useState<ExcalidrawImperativeAPI | null>(null);

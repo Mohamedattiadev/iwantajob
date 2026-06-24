@@ -4,8 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Trash2, PenTool, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useMutation, useQuery } from "convex/react";
-import { api } from "../../../convex/_generated/api";
+import { useSketchList, useSketchRemove } from "@/lib/sketch-store";
 
 type Entry = {
   slug: string;
@@ -43,8 +42,8 @@ function parseSlug(slug: string): { label: string; href: string } {
 }
 
 export default function SketchGalleryPage() {
-  const rows = useQuery(api.sketches.list);
-  const removeSketch = useMutation(api.sketches.remove);
+  const rows = useSketchList();
+  const removeSketch = useSketchRemove();
   const [entries, setEntries] = useState<Entry[] | null>(null);
 
   useEffect(() => {

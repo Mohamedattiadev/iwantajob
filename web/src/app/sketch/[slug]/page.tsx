@@ -7,8 +7,7 @@ import type {
   ExcalidrawInitialDataState,
 } from "@excalidraw/excalidraw/types";
 import "@excalidraw/excalidraw/index.css";
-import { useMutation, useQuery } from "convex/react";
-import { api as convexApi } from "../../../../convex/_generated/api";
+import { useSketch, useSketchSave } from "@/lib/sketch-store";
 
 const Excalidraw = dynamic(
   async () => (await import("@excalidraw/excalidraw")).Excalidraw,
@@ -25,8 +24,8 @@ const TRANSIENT_KEYS = [
 
 export default function SketchPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = use(params);
-  const saved = useQuery(convexApi.sketches.get, { slug });
-  const saveSketch = useMutation(convexApi.sketches.save);
+  const saved = useSketch(slug);
+  const saveSketch = useSketchSave();
   const [initial, setInitial] = useState<ExcalidrawInitialDataState | null | undefined>(undefined);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
