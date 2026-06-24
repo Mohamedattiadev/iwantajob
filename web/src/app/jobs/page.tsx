@@ -42,8 +42,10 @@ type JobCardProps = {
   isApplied: boolean;
   isHidden: boolean;
   isSaved: boolean;
+  isSelected: boolean;
   tgAvailable: boolean;
   isTgSending: boolean;
+  onSelect: (jobId: string) => void;
   onPickSkill: (skill: string) => void;
   onTelegramApply: (jobId: string) => void;
   onMarkApplied: (job: JobItem) => void;
@@ -56,8 +58,10 @@ const JobCard = memo(function JobCard({
   isApplied,
   isHidden,
   isSaved,
+  isSelected,
   tgAvailable,
   isTgSending,
+  onSelect,
   onPickSkill,
   onTelegramApply,
   onMarkApplied,
@@ -70,7 +74,10 @@ const JobCard = memo(function JobCard({
     : "bg-muted text-muted-foreground ring-foreground/10";
   return (
     <li>
-      <article className={`group h-full flex flex-col rounded-2xl border bg-card hover:shadow-lg hover:border-foreground/20 transition-all ${isApplied || isHidden ? "opacity-75" : ""} ${isSaved ? "ring-1 ring-amber-500/40" : ""}`}>
+      <article
+        onClick={() => onSelect(j.id)}
+        className={`group h-full flex flex-col rounded-2xl border bg-card hover:shadow-lg hover:border-foreground/20 transition-all cursor-pointer ${isApplied || isHidden ? "opacity-75" : ""} ${isSaved ? "ring-1 ring-amber-500/40" : ""} ${isSelected ? "border-primary/60 ring-2 ring-primary/40" : ""}`}
+      >
         <div className="p-5 pb-3 flex-1 flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3">
             <h3 className="font-semibold text-base leading-snug line-clamp-2 flex-1">{j.title}</h3>
@@ -194,6 +201,154 @@ const JobCard = memo(function JobCard({
   );
 });
 
+type JobDetailAsideProps = {
+  jobId: string | null;
+  fallback: JobItem | null;
+  items: JobItem[];
+  isApplied: boolean;
+  isSaved: boolean;
+  isHidden: boolean;
+  tgAvailable: boolean;
+  isTgSending: boolean;
+  onSetAction: (jobId: string, action: JobActionKind) => void;
+  onMarkApplied: (job: JobItem) => void;
+  onTelegramApply: (jobId: string) => void;
+  onTailor: (job: JobItem) => void;
+  onPickSkill: (skill: string) => void;
+};
+
+function JobDetailAside({
+  jobId, fallback, items, isApplied, isSaved, isHidden,
+  tgAvailable, isTgSending,
+  onSetAction, onMarkApplied, onTelegramApply, onTailor, onPickSkill,
+}: JobDetailAsideProps) {
+  const j = (jobId ? items.find((x) => x.id === jobId) : null) ?? fallback;
+  const full = useQuery(
+    convexApi.jobs._getById,
+    j ? { id: j.id as Id<"jobs_pool"> } : "skip",
+  );
+  if (!j) {
+    return (
+      <div className="rounded-2xl border bg-card p-6 text-sm text-muted-foreground">
+        Pick a job on the left.
+      </div>
+    );
+  }
+  const desc = full?.description ?? j.description_excerpt;
+  return (
+    <div className="rounded-2xl border bg-card shadow-sm overflow-hidden flex flex-col max-h-[calc(100vh-6rem)]">
+      <div className="p-5 pb-3 border-b space-y-2">
+        <div className="flex items-start justify-between gap-3">
+          <h3 className="font-semibold text-lg leading-snug">{j.title}</h3>
+          <span className="text-xs font-semibold tabular-nums px-2 py-0.5 rounded-md bg-foreground/[0.06] ring-1 ring-foreground/10 shrink-0">{j.score}</span>
+        </div>
+        <div className="text-sm font-medium text-foreground/80">{j.company ?? "Unknown company"}</div>
+        <div className="flex flex-wrap gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+          <span className="font-mono uppercase">{j.source}</span>
+          {j.location && (<><span>·</span><span>{j.location}</span></>)}
+          {j.posted_at && (<><span>·</span><span>{j.posted_at.slice(0, 10)}</span></>)}
+          {j.seniority && (<><span>·</span><span className="capitalize">{j.seniority.replace(/_/g, " ")}</span></>)}
+          {(j.salary_min || j.salary_max) && (
+            <><span>·</span><span>{j.currency ?? "$"}{j.salary_min ?? "?"}–{j.salary_max ?? "?"}</span></>
+          )}
+        </div>
+        {j.fit_has_reqs && (
+          <div className={`text-xs px-2 py-1 rounded-md ${
+            j.fit_ok
+              ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+              : "bg-rose-500/10 text-rose-700 dark:text-rose-300"
+          }`}>
+            {j.fit_ok ? "✓ You match the hard requirements" : `✗ ${(j.fit_reasons ?? []).join(" · ")}`}
+          </div>
+        )}
+      </div>
+      <div className="flex-1 min-h-0 overflow-auto p-5 space-y-4 text-sm">
+        {j.skills.length > 0 && (
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Matched skills</div>
+            <div className="flex flex-wrap gap-1.5">
+              {j.skills.map((sk) => (
+                <button key={sk.skill} type="button" onClick={() => onPickSkill(sk.skill)}
+                  className="px-2 py-0.5 rounded-md text-[10px] bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 ring-1 ring-emerald-500/20 hover:bg-emerald-500/20">
+                  {sk.skill}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {(j.missed_skills ?? []).length > 0 && (
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Your skills not in posting</div>
+            <div className="flex flex-wrap gap-1.5">
+              {(j.missed_skills ?? []).slice(0, 12).map((sk) => (
+                <span key={sk.skill} className="px-2 py-0.5 rounded-md text-[10px] bg-muted text-muted-foreground">{sk.skill}</span>
+              ))}
+            </div>
+          </div>
+        )}
+        {(j.req_languages ?? []).length > 0 && (
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Required languages</div>
+            <div className="flex flex-wrap gap-1.5">
+              {(j.req_languages ?? []).map((l, i) => (
+                <span key={i} className="px-2 py-0.5 rounded-md text-[10px] bg-foreground/[0.05] ring-1 ring-foreground/10 uppercase">{l.code} {l.level}</span>
+              ))}
+            </div>
+          </div>
+        )}
+        {(j.req_other ?? []).length > 0 && (
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Other requirements</div>
+            <ul className="text-xs space-y-1">
+              {(j.req_other ?? []).map((o, i) => (<li key={i} className="text-muted-foreground">· {o}</li>))}
+            </ul>
+          </div>
+        )}
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Description</div>
+          <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">{desc}</p>
+        </div>
+      </div>
+      <div className="border-t bg-muted/30 p-3 flex items-center gap-1.5 flex-wrap">
+        <a href={j.source_url} target="_blank" rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 h-9 px-3 rounded-lg text-xs text-foreground/80 hover:text-foreground hover:bg-background">
+          Open <ArrowRight className="h-3 w-3" />
+        </a>
+        <button type="button" onClick={() => onSetAction(j.id, isSaved ? "none" : "saved")}
+          className={`inline-flex items-center justify-center h-9 w-9 rounded-lg text-xs ${isSaved ? "text-amber-600 bg-amber-500/10" : "text-muted-foreground hover:text-foreground hover:bg-background"}`}
+          title={isSaved ? "Unsave" : "Save"}>
+          {isSaved ? <BookmarkCheck className="h-4 w-4" /> : <Bookmark className="h-4 w-4" />}
+        </button>
+        <button type="button" onClick={() => onSetAction(j.id, isHidden ? "none" : "hidden")}
+          className="inline-flex items-center justify-center h-9 w-9 rounded-lg text-xs text-muted-foreground hover:text-foreground hover:bg-background"
+          title={isHidden ? "Unhide" : "Hide"}>
+          {isHidden ? <Undo2 className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+        </button>
+        <button type="button" onClick={() => onTailor(j)}
+          className="inline-flex items-center gap-1 h-9 px-2.5 rounded-lg text-xs text-muted-foreground hover:text-foreground hover:bg-background">
+          <Sparkles className="h-3.5 w-3.5" /> Tailor
+        </button>
+        <div className="flex-1" />
+        {isApplied ? (
+          <span className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-xs font-semibold">
+            <CheckCircle2 className="h-3.5 w-3.5" /> Applied
+          </span>
+        ) : tgAvailable ? (
+          <button type="button" disabled={isTgSending} onClick={() => onTelegramApply(j.id)}
+            className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-sky-600 text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50">
+            <Send className="h-3.5 w-3.5" /> {isTgSending ? "Sending..." : "Apply via TG"}
+          </button>
+        ) : (
+          <button type="button" onClick={() => onMarkApplied(j)}
+            className="inline-flex h-9 px-4 rounded-lg bg-foreground text-background text-xs font-semibold hover:opacity-90">
+            Mark applied
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function JobsPageInner() {
   const router = useRouter();
   const sp = useSearchParams();
@@ -206,6 +361,7 @@ function JobsPageInner() {
   const initView = (sp.get("view") ?? "all") as "all" | "saved" | "hidden";
   const [view, setView] = useState<"all" | "saved" | "hidden">(initView);
   const [hideMisfits, setHideMisfits] = useState(sp.get("hide_misfits") === "1");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 12;
@@ -437,7 +593,7 @@ function JobsPageInner() {
         </Collapsible>
       </div>
 
-      {/* Job list */}
+      {/* Job list + sticky detail aside */}
       {isLoading && !data ? (
         <div className="space-y-2">
           {Array.from({ length: 8 }).map((_, i) => (
@@ -447,36 +603,58 @@ function JobsPageInner() {
       ) : data?.items.length === 0 ? (
         <div className="py-16 text-center text-sm text-muted-foreground">No matches. Try resetting filters.</div>
       ) : (
-        <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {(data?.items ?? [])
-            .slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
-            .map((j) => (
-              <JobCard
-                key={j.id}
-                job={j}
-                isApplied={appliedIds.has(j.id)}
-                isHidden={hiddenIds.has(j.id)}
-                isSaved={savedIds.has(j.id)}
-                tgAvailable={!!tgStatus?.available}
-                isTgSending={tgLoading === j.id}
-                onPickSkill={handlePickSkill}
-                onTelegramApply={telegramApply}
-                onMarkApplied={handleMarkApplied}
-                onSetAction={handleSetAction}
-                onTailor={handleTailor}
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] xl:grid-cols-[1fr_400px] gap-6 items-start">
+          <div className="space-y-4 min-w-0">
+            <ul className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {(data?.items ?? [])
+                .slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+                .map((j) => (
+                  <JobCard
+                    key={j.id}
+                    job={j}
+                    isApplied={appliedIds.has(j.id)}
+                    isHidden={hiddenIds.has(j.id)}
+                    isSaved={savedIds.has(j.id)}
+                    isSelected={selectedId === j.id}
+                    tgAvailable={!!tgStatus?.available}
+                    isTgSending={tgLoading === j.id}
+                    onSelect={setSelectedId}
+                    onPickSkill={handlePickSkill}
+                    onTelegramApply={telegramApply}
+                    onMarkApplied={handleMarkApplied}
+                    onSetAction={handleSetAction}
+                    onTailor={handleTailor}
+                  />
+                ))}
+            </ul>
+            {data && data.items.length > 0 && (
+              <Pagination
+                page={page}
+                pageSize={PAGE_SIZE}
+                totalShown={data.items.length}
+                total={data.total}
+                onChange={(p) => { setPage(p); window.scrollTo({ top: 0, behavior: "smooth" }); }}
               />
-            ))}
-        </ul>
-      )}
-
-      {data && data.items.length > 0 && (
-        <Pagination
-          page={page}
-          pageSize={PAGE_SIZE}
-          totalShown={data.items.length}
-          total={data.total}
-          onChange={(p) => { setPage(p); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-        />
+            )}
+          </div>
+          <aside className="hidden lg:block sticky top-20 self-start">
+            <JobDetailAside
+              jobId={selectedId}
+              fallback={(data?.items ?? [])[0] ?? null}
+              isApplied={selectedId ? appliedIds.has(selectedId) : false}
+              isSaved={selectedId ? savedIds.has(selectedId) : false}
+              isHidden={selectedId ? hiddenIds.has(selectedId) : false}
+              tgAvailable={!!tgStatus?.available}
+              isTgSending={selectedId !== null && tgLoading === selectedId}
+              onSetAction={handleSetAction}
+              onMarkApplied={handleMarkApplied}
+              onTelegramApply={telegramApply}
+              onTailor={handleTailor}
+              onPickSkill={handlePickSkill}
+              items={data?.items ?? []}
+            />
+          </aside>
+        </div>
       )}
 
       {tailorJob && profile && (
