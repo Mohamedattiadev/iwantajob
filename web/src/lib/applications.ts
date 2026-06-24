@@ -49,6 +49,12 @@ export function useApplications() {
     } catch {/* silent */}
   }, [updateMut]);
 
+  const setNotes = useCallback(async (appId: string, notes: string) => {
+    try {
+      await updateMut({ id: appId as Id<"applications">, notes });
+    } catch {/* silent */}
+  }, [updateMut]);
+
   return {
     applications,
     appliedIds,
@@ -56,5 +62,6 @@ export function useApplications() {
     apply,
     remove,
     setStatus,
+    setNotes,
   };
 }

@@ -192,6 +192,93 @@ ${desc.slice(0, 6000)}`;
   },
 });
 
+// One-shot 2-line summary per job. Cached forever on the doc — re-run
+// only via explicit force. Same Gemini-then-OpenRouter pattern used by
+// chat.translate so a busy free tier doesn't break the feature.
+const SUMMARY_PROMPT = `Summarize this job posting in exactly 2 short lines, max 220 chars total.
+Line 1: role + main stack/domain.
+Line 2: who they want (level, key reqs) + standout perk if any.
+No bullets, no preamble, no quotes. Plain text only.`;
+
+export const summarize = action({
+  args: { jobId: v.id("jobs_pool"), force: v.optional(v.boolean()) },
+  handler: async (
+    ctx,
+    { jobId, force },
+  ): Promise<{ tldr: string; cached?: boolean; error?: string }> => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("UNAUTHENTICATED");
+    const job = await ctx.runQuery(internal.jobFit._getJobForSummary, { jobId });
+    if (!job) return { tldr: "", error: "job not found" };
+    if (!force && job.tldr) return { tldr: job.tldr, cached: true };
+    const desc = (job.description || "").slice(0, 5000);
+    if (desc.length < 60) return { tldr: "", error: "description too short" };
+    const userPrompt = `TITLE: ${job.title}\nCOMPANY: ${job.company ?? "n/a"}\n\n${desc}`;
+    const key = await resolveGeminiKey(ctx);
+    let lastErr = "";
+    if (key) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const r = await fetch(ENDPOINT(key), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: SUMMARY_PROMPT }] },
+            contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+            generationConfig: {
+              temperature: 0.2,
+              maxOutputTokens: 120,
+              thinkingConfig: { thinkingBudget: 0 },
+            },
+          }),
+        });
+        if (r.ok) {
+          const data = await r.json();
+          const parts = (data.candidates ?? [{}])[0]?.content?.parts ?? [];
+          let text = "";
+          for (const p of parts as Array<Record<string, unknown>>) {
+            if (typeof p.text === "string") text += p.text;
+          }
+          const tldr = text.trim().slice(0, 280);
+          if (tldr) {
+            await ctx.runMutation(internal.jobFit._patchTldr, { jobId, tldr });
+            return { tldr };
+          }
+        }
+        const body = r.ok ? "" : await r.text();
+        lastErr = `Gemini ${r.status}: ${body.slice(0, 160)}`;
+        if (r.status === 503 || r.status === 429 || r.status === 500) {
+          await new Promise((res) => setTimeout(res, 600 * (attempt + 1)));
+          continue;
+        }
+        break;
+      }
+    }
+    return { tldr: "", error: lastErr || "summarize failed" };
+  },
+});
+
+export const _getJobForSummary = internalQuery({
+  args: { jobId: v.id("jobs_pool") },
+  handler: async (ctx, { jobId }) => {
+    const j = await ctx.db.get(jobId);
+    if (!j) return null;
+    return {
+      title: j.title,
+      company: j.company ?? null,
+      description: j.description ?? "",
+      tldr: j.tldr ?? null,
+    };
+  },
+});
+
+export const _patchTldr = internalMutation({
+  args: { jobId: v.id("jobs_pool"), tldr: v.string() },
+  handler: async (ctx, { jobId, tldr }) => {
+    await ctx.db.patch(jobId, { tldr, tldr_at: Date.now() });
+    return { ok: true };
+  },
+});
+
 // Batch backfill — iterate jobs missing extraction. Caller invokes
 // repeatedly until `processed === 0`.
 export const _listMissing = internalQuery({

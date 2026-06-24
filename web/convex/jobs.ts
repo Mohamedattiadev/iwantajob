@@ -359,6 +359,7 @@ export const list = query({
         req_onsite_city: r.req_onsite_city ?? null,
         req_years_min: r.req_years_min ?? null,
         req_other: r.req_other ?? null,
+        tldr: r.tldr ?? null,
       });
       if (out.length >= limit) break;
     }

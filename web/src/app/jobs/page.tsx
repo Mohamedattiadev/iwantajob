@@ -2,7 +2,8 @@
 
 import { Suspense, memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowRight, Filter, X, EyeOff, Bookmark, BookmarkCheck, Undo2, Languages, Loader2 } from "lucide-react";
+import { ArrowRight, Filter, X, EyeOff, Bookmark, BookmarkCheck, Undo2, Languages, Loader2, Briefcase, Building2 } from "lucide-react";
+import { convert, formatMoney, useRates } from "@/lib/currency";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -224,6 +225,7 @@ type JobDetailAsideProps = {
   onTailor: (job: JobItem) => void;
   onPickSkill: (skill: string) => void;
   onSetStatus: (appId: string, status: Application["status"]) => void;
+  onSetNotes: (appId: string, notes: string) => void;
 };
 
 const STAGES: { key: Application["status"]; label: string; idx: number; color: string }[] = [
@@ -236,7 +238,7 @@ const STAGES: { key: Application["status"]; label: string; idx: number; color: s
 function JobDetailAside({
   jobId, fallback, items, isApplied, isSaved, isHidden,
   tgAvailable, isTgSending, application,
-  onSetAction, onMarkApplied, onTelegramApply, onTailor, onPickSkill, onSetStatus,
+  onSetAction, onMarkApplied, onTelegramApply, onTailor, onPickSkill, onSetStatus, onSetNotes,
 }: JobDetailAsideProps) {
   const j = (jobId ? items.find((x) => x.id === jobId) : null) ?? fallback;
   const full = useQuery(
@@ -287,6 +289,63 @@ function JobDetailAside({
     }
   };
   const desc = showTranslated && translated ? translated : rawDesc;
+
+  // AI TL;DR (cached on job doc — only fires when user clicks).
+  const summarizeAction = useAction(convexApi.jobFit.summarize);
+  const [tldr, setTldr] = useState<string | null>(j.tldr ?? null);
+  const [summarizing, setSummarizing] = useState(false);
+  useEffect(() => { setTldr(j?.tldr ?? null); }, [j?.id, j?.tldr]);
+  const onSummarize = async () => {
+    if (summarizing || !j) return;
+    setSummarizing(true);
+    try {
+      const r = await summarizeAction({ jobId: j.id as Id<"jobs_pool"> });
+      if (r.error) throw new Error(r.error);
+      setTldr(r.tldr);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Summarize failed");
+    } finally {
+      setSummarizing(false);
+    }
+  };
+
+  // Salary conversion.
+  const rates = useRates();
+  const salaryAvg = (() => {
+    if (!j.salary_min && !j.salary_max) return null;
+    const lo = j.salary_min ?? j.salary_max ?? 0;
+    const hi = j.salary_max ?? j.salary_min ?? 0;
+    const code = (j.currency || "USD").toUpperCase();
+    return { lo, hi, code };
+  })();
+  const salaryConv = salaryAvg
+    ? {
+        usdLo: convert(salaryAvg.lo, salaryAvg.code, "USD", rates),
+        usdHi: convert(salaryAvg.hi, salaryAvg.code, "USD", rates),
+        tryLo: convert(salaryAvg.lo, salaryAvg.code, "TRY", rates),
+        tryHi: convert(salaryAvg.hi, salaryAvg.code, "TRY", rates),
+      }
+    : null;
+
+  // Notes textarea (debounced save).
+  const [notesDraft, setNotesDraft] = useState(application?.notes ?? "");
+  useEffect(() => { setNotesDraft(application?.notes ?? ""); }, [application?.id]);
+  useEffect(() => {
+    if (!application) return;
+    if ((application.notes ?? "") === notesDraft) return;
+    const t = setTimeout(() => { onSetNotes(application.id, notesDraft); }, 700);
+    return () => clearTimeout(t);
+  }, [notesDraft, application, onSetNotes]);
+
+  // Recruiter / company search links.
+  const companyLinks = j.company
+    ? {
+        linkedin: `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(j.company)}`,
+        recruiter: `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(`${j.company} recruiter`)}`,
+        glassdoor: `https://www.glassdoor.com/Search/results.htm?keyword=${encodeURIComponent(j.company)}`,
+      }
+    : null;
+
   return (
     <div className="rounded-2xl border bg-card shadow-sm overflow-hidden flex flex-col max-h-[calc(100vh-6rem)]">
       <div className="p-5 pb-3 border-b space-y-2">
@@ -300,10 +359,41 @@ function JobDetailAside({
           {j.location && (<><span>·</span><span>{j.location}</span></>)}
           {j.posted_at && (<><span>·</span><span>{j.posted_at.slice(0, 10)}</span></>)}
           {j.seniority && (<><span>·</span><span className="capitalize">{j.seniority.replace(/_/g, " ")}</span></>)}
-          {(j.salary_min || j.salary_max) && (
-            <><span>·</span><span>{j.currency ?? "$"}{j.salary_min ?? "?"}–{j.salary_max ?? "?"}</span></>
-          )}
         </div>
+        {salaryConv && (
+          <div className="text-[11px] text-muted-foreground space-y-0.5">
+            <div>
+              <span className="font-mono">{salaryAvg!.code}</span>{" "}
+              {salaryAvg!.lo === salaryAvg!.hi
+                ? salaryAvg!.lo.toLocaleString()
+                : `${salaryAvg!.lo.toLocaleString()}–${salaryAvg!.hi.toLocaleString()}`}
+            </div>
+            <div className="flex flex-wrap gap-x-3">
+              <span>≈ {formatMoney(salaryConv.usdLo, "USD")}{salaryAvg!.lo !== salaryAvg!.hi ? `–${formatMoney(salaryConv.usdHi, "USD")}` : ""}</span>
+              <span>≈ {formatMoney(salaryConv.tryLo, "TRY")}{salaryAvg!.lo !== salaryAvg!.hi ? `–${formatMoney(salaryConv.tryHi, "TRY")}` : ""}</span>
+            </div>
+          </div>
+        )}
+        {(tldr || true) && (
+          <div className="text-xs leading-relaxed text-foreground/85 bg-primary/5 ring-1 ring-primary/15 rounded-md px-2.5 py-2">
+            {tldr ? (
+              <div className="flex items-start gap-2">
+                <Sparkles className="h-3 w-3 text-primary mt-0.5 shrink-0" />
+                <div className="flex-1 whitespace-pre-wrap">{tldr}</div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={onSummarize}
+                disabled={summarizing}
+                className="inline-flex items-center gap-1.5 text-[11px] text-primary hover:underline disabled:opacity-50"
+              >
+                {summarizing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+                {summarizing ? "Summarizing…" : "AI summarize this posting"}
+              </button>
+            )}
+          </div>
+        )}
         {j.fit_has_reqs && (
           <div className={`text-xs px-2 py-1 rounded-md ${
             j.fit_ok
@@ -349,6 +439,42 @@ function JobDetailAside({
             </div>
           );
         })()}
+
+        {application && (
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Notes</div>
+            <textarea
+              value={notesDraft}
+              onChange={(e) => setNotesDraft(e.target.value)}
+              rows={3}
+              placeholder="Anything you want to remember about this application…"
+              className="w-full text-xs rounded-md bg-background border border-border/60 p-2 focus:outline-none focus:ring-2 focus:ring-primary/40"
+            />
+            {notesDraft !== (application.notes ?? "") && (
+              <div className="text-[10px] text-muted-foreground mt-0.5">Saving…</div>
+            )}
+          </div>
+        )}
+
+        {companyLinks && (
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Company / recruiter</div>
+            <div className="flex flex-wrap gap-1.5">
+              <a href={companyLinks.linkedin} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] bg-foreground/[0.04] ring-1 ring-foreground/10 hover:bg-foreground/10">
+                <Briefcase className="h-3 w-3" /> Company
+              </a>
+              <a href={companyLinks.recruiter} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] bg-foreground/[0.04] ring-1 ring-foreground/10 hover:bg-foreground/10">
+                <Briefcase className="h-3 w-3" /> Recruiters
+              </a>
+              <a href={companyLinks.glassdoor} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] bg-foreground/[0.04] ring-1 ring-foreground/10 hover:bg-foreground/10">
+                <Building2 className="h-3 w-3" /> Glassdoor
+              </a>
+            </div>
+          </div>
+        )}
 
         {(j.fit_has_reqs || (j.req_languages ?? []).length > 0 || (j.req_other ?? []).length > 0 || j.req_seniority || j.req_onsite_city || j.req_years_min != null) && (
           <div>
@@ -547,7 +673,7 @@ function JobsPageInner() {
   const data = fresh ?? cached ?? undefined;
   const isLoading = fresh === undefined && cached === null;
 
-  const { appliedIds, apply, applications, setStatus } = useApplications();
+  const { appliedIds, apply, applications, setStatus, setNotes } = useApplications();
   const { hiddenIds, savedIds, setAction } = useJobActions();
   const handleSetAction = useCallback(async (jobId: string, action: JobActionKind) => {
     const ok = await setAction(jobId, action);
@@ -853,6 +979,7 @@ function JobsPageInner() {
               onTailor={handleTailor}
               onPickSkill={handlePickSkill}
               onSetStatus={setStatus}
+              onSetNotes={setNotes}
               application={applications.find((a) => a.job_id === (selectedId ?? (data?.items ?? [])[0]?.id))}
               items={data?.items ?? []}
             />

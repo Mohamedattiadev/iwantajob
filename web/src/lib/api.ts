@@ -36,6 +36,7 @@ export type JobItem = {
   req_onsite_city?: string | null;
   req_years_min?: number | null;
   req_other?: string[] | null;
+  tldr?: string | null;
 };
 
 export type JobsResponse = {

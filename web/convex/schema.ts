@@ -41,6 +41,9 @@ export default defineSchema({
     req_extracted_at: v.optional(v.number()),
     req_model: v.optional(v.string()),
     req_description_hash: v.optional(v.string()),
+    // AI 2-line summary (Gemini), persisted so we never re-pay per view.
+    tldr: v.optional(v.string()),
+    tldr_at: v.optional(v.number()),
   })
     .index("by_source_and_id", ["source", "source_id"])
     .index("by_posted_at", ["posted_at"])

@@ -22,6 +22,7 @@ import type * as jobActions from "../jobActions.js";
 import type * as jobFit from "../jobFit.js";
 import type * as jobs from "../jobs.js";
 import type * as learn from "../learn.js";
+import type * as maintenance from "../maintenance.js";
 import type * as milestones from "../milestones.js";
 import type * as notes from "../notes.js";
 import type * as plans from "../plans.js";
@@ -55,6 +56,7 @@ declare const fullApi: ApiFromModules<{
   jobFit: typeof jobFit;
   jobs: typeof jobs;
   learn: typeof learn;
+  maintenance: typeof maintenance;
   milestones: typeof milestones;
   notes: typeof notes;
   plans: typeof plans;
