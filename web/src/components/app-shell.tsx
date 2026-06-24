@@ -34,8 +34,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {showAuthChrome && (
           <>
             <ChatWidget />
-            <TodoDrawer />
-            <ScratchFab />
+            {/* FAB cluster: Excalidraw (left) + Tasks (right), sits to left of chat bubble (right-5). */}
+            <div className="fixed bottom-5 right-20 z-30 flex flex-row-reverse items-center gap-2">
+              <TodoDrawer />
+              <ScratchFab />
+            </div>
             <CommandPalette />
           </>
         )}

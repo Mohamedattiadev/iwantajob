@@ -245,6 +245,14 @@ export default function LearnPage() {
                         >
                           <Plus className="h-3 w-3" /> add to plan
                         </button>
+                        <button
+                          onClick={() => { setGoalDraft(row.skill); void rerankByGoal(row.skill); }}
+                          disabled={aiLoading}
+                          className="text-muted-foreground hover:text-primary inline-flex items-center gap-1 disabled:opacity-50"
+                          title="Set as goal — rerank Top 5 around this skill"
+                        >
+                          <Target className="h-3 w-3" /> add to goal
+                        </button>
                       </div>
                     </div>
                   </div>

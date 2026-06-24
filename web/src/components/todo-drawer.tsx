@@ -34,7 +34,7 @@ export function TodoDrawer() {
         onClick={() => setOpen(true)}
         title="Open weekly focus"
         aria-label="Open weekly focus"
-        className="tasks-launcher fixed bottom-5 right-20 z-30 group inline-flex items-center gap-2 h-10 pl-3 pr-3.5 rounded-full bg-background/80 backdrop-blur-md text-foreground/90 hover:text-foreground border border-border/60 hover:border-primary/40 shadow-md shadow-black/10 hover:shadow-lg hover:-translate-y-0.5 transition-all"
+        className="tasks-launcher group inline-flex items-center gap-2 h-10 pl-3 pr-3.5 rounded-full bg-background/80 backdrop-blur-md text-foreground/90 hover:text-foreground border border-border/60 hover:border-primary/40 shadow-md shadow-black/10 hover:shadow-lg hover:-translate-y-0.5 transition-all"
       >
         <ListChecks className="h-4 w-4 text-primary" />
         <span className="text-[12px] font-medium tracking-tight">Tasks</span>
