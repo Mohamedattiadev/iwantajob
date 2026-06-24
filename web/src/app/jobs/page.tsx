@@ -23,7 +23,7 @@ import { ScrapeButton } from "@/components/scrape-button";
 import { ScoreBreakdown } from "@/components/score-breakdown";
 import { TailorCvModal } from "@/components/tailor-cv-modal";
 import { Sparkles } from "lucide-react";
-import type { Profile } from "@/lib/api";
+import type { Application, Profile } from "@/lib/api";
 import { PageHeader } from "@/components/page-header";
 import { PageTabs, JOBS_TABS } from "@/components/page-tabs";
 import { Pagination } from "@/components/pagination";
@@ -217,17 +217,26 @@ type JobDetailAsideProps = {
   isHidden: boolean;
   tgAvailable: boolean;
   isTgSending: boolean;
+  application: Application | undefined;
   onSetAction: (jobId: string, action: JobActionKind) => void;
   onMarkApplied: (job: JobItem) => void;
   onTelegramApply: (jobId: string) => void;
   onTailor: (job: JobItem) => void;
   onPickSkill: (skill: string) => void;
+  onSetStatus: (appId: string, status: Application["status"]) => void;
 };
+
+const STAGES: { key: Application["status"]; label: string; idx: number; color: string }[] = [
+  { key: "applied",      label: "1 · Applied",      idx: 1, color: "bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30" },
+  { key: "interviewing", label: "2 · Interview",    idx: 2, color: "bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 ring-indigo-500/30" },
+  { key: "offer",        label: "3 · Offer",        idx: 3, color: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30" },
+  { key: "rejected",     label: "3 · Rejected",     idx: 3, color: "bg-rose-500/15 text-rose-700 dark:text-rose-300 ring-rose-500/30" },
+];
 
 function JobDetailAside({
   jobId, fallback, items, isApplied, isSaved, isHidden,
-  tgAvailable, isTgSending,
-  onSetAction, onMarkApplied, onTelegramApply, onTailor, onPickSkill,
+  tgAvailable, isTgSending, application,
+  onSetAction, onMarkApplied, onTelegramApply, onTailor, onPickSkill, onSetStatus,
 }: JobDetailAsideProps) {
   const j = (jobId ? items.find((x) => x.id === jobId) : null) ?? fallback;
   const full = useQuery(
@@ -306,6 +315,85 @@ function JobDetailAside({
         )}
       </div>
       <div className="flex-1 min-h-0 overflow-auto p-5 space-y-4 text-sm">
+        {application && (() => {
+          const stageIdx = STAGES.find((s) => s.key === application.status)?.idx ?? 1;
+          const daysSince = Math.floor((Date.now() - new Date(application.applied_at).getTime()) / 86400000);
+          return (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Application stage</div>
+              <div className="flex flex-wrap gap-1.5">
+                {STAGES.map((s) => {
+                  const active = s.key === application.status;
+                  const passed = s.idx < stageIdx && !active;
+                  return (
+                    <button
+                      key={s.key}
+                      type="button"
+                      onClick={() => onSetStatus(application.id, s.key)}
+                      className={`px-2 py-0.5 rounded-md text-[10px] font-medium ring-1 transition-colors whitespace-nowrap ${
+                        active
+                          ? s.color
+                          : passed
+                            ? "bg-foreground/[0.04] text-foreground/70 ring-foreground/10"
+                            : "bg-muted text-muted-foreground ring-transparent hover:text-foreground"
+                      }`}
+                    >
+                      {s.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {application.status === "applied" && daysSince > 0 && (
+                <div className="text-[11px] text-muted-foreground mt-1.5">Waiting · {daysSince}d since applied</div>
+              )}
+            </div>
+          );
+        })()}
+
+        {(j.fit_has_reqs || (j.req_languages ?? []).length > 0 || (j.req_other ?? []).length > 0 || j.req_seniority || j.req_onsite_city || j.req_years_min != null) && (
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Requirements</div>
+            <div className="space-y-1.5 text-xs">
+              {(j.req_languages ?? []).length > 0 && (
+                <div className="flex items-start gap-2">
+                  <span className="text-muted-foreground shrink-0 w-16">Languages</span>
+                  <div className="flex flex-wrap gap-1">
+                    {(j.req_languages ?? []).map((l, i) => (
+                      <span key={i} className="px-1.5 py-0 rounded text-[10px] bg-foreground/[0.05] ring-1 ring-foreground/10 uppercase">{l.code} {l.level}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {j.req_seniority && (
+                <div className="flex items-start gap-2">
+                  <span className="text-muted-foreground shrink-0 w-16">Seniority</span>
+                  <span className="capitalize">{j.req_seniority}</span>
+                </div>
+              )}
+              {j.req_onsite_city && (
+                <div className="flex items-start gap-2">
+                  <span className="text-muted-foreground shrink-0 w-16">Onsite</span>
+                  <span>{j.req_onsite_city}</span>
+                </div>
+              )}
+              {j.req_years_min != null && (
+                <div className="flex items-start gap-2">
+                  <span className="text-muted-foreground shrink-0 w-16">Experience</span>
+                  <span>{j.req_years_min}+ years</span>
+                </div>
+              )}
+              {(j.req_other ?? []).length > 0 && (
+                <div className="flex items-start gap-2">
+                  <span className="text-muted-foreground shrink-0 w-16">Other</span>
+                  <ul className="space-y-0.5 flex-1">
+                    {(j.req_other ?? []).map((o, i) => (<li key={i}>· {o}</li>))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {j.skills.length > 0 && (
           <div>
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Matched skills</div>
@@ -327,24 +415,6 @@ function JobDetailAside({
                 <span key={sk.skill} className="px-2 py-0.5 rounded-md text-[10px] bg-muted text-muted-foreground">{sk.skill}</span>
               ))}
             </div>
-          </div>
-        )}
-        {(j.req_languages ?? []).length > 0 && (
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Required languages</div>
-            <div className="flex flex-wrap gap-1.5">
-              {(j.req_languages ?? []).map((l, i) => (
-                <span key={i} className="px-2 py-0.5 rounded-md text-[10px] bg-foreground/[0.05] ring-1 ring-foreground/10 uppercase">{l.code} {l.level}</span>
-              ))}
-            </div>
-          </div>
-        )}
-        {(j.req_other ?? []).length > 0 && (
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Other requirements</div>
-            <ul className="text-xs space-y-1">
-              {(j.req_other ?? []).map((o, i) => (<li key={i} className="text-muted-foreground">· {o}</li>))}
-            </ul>
           </div>
         )}
         <div>
@@ -392,12 +462,12 @@ function JobDetailAside({
           </span>
         ) : tgAvailable ? (
           <button type="button" disabled={isTgSending} onClick={() => onTelegramApply(j.id)}
-            className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-sky-600 text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50">
+            className="inline-flex items-center justify-center gap-1.5 h-9 px-4 rounded-lg bg-sky-600 text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50 whitespace-nowrap">
             <Send className="h-3.5 w-3.5" /> {isTgSending ? "Sending..." : "Apply via TG"}
           </button>
         ) : (
           <button type="button" onClick={() => onMarkApplied(j)}
-            className="inline-flex h-9 px-4 rounded-lg bg-foreground text-background text-xs font-semibold hover:opacity-90">
+            className="inline-flex items-center justify-center h-9 px-4 rounded-lg bg-foreground text-background text-xs font-semibold hover:opacity-90 whitespace-nowrap">
             Mark applied
           </button>
         )}
@@ -477,7 +547,7 @@ function JobsPageInner() {
   const data = fresh ?? cached ?? undefined;
   const isLoading = fresh === undefined && cached === null;
 
-  const { appliedIds, apply } = useApplications();
+  const { appliedIds, apply, applications, setStatus } = useApplications();
   const { hiddenIds, savedIds, setAction } = useJobActions();
   const handleSetAction = useCallback(async (jobId: string, action: JobActionKind) => {
     const ok = await setAction(jobId, action);
@@ -782,6 +852,8 @@ function JobsPageInner() {
               onTelegramApply={telegramApply}
               onTailor={handleTailor}
               onPickSkill={handlePickSkill}
+              onSetStatus={setStatus}
+              application={applications.find((a) => a.job_id === (selectedId ?? (data?.items ?? [])[0]?.id))}
               items={data?.items ?? []}
             />
           </aside>
