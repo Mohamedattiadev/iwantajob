@@ -25,6 +25,6 @@ export default convexAuthNextjsMiddleware(async (request, { convexAuth }) => {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|icon-.*\\.png|apple-touch-icon\\.png|manifest\\.webmanifest|.*\\.png$|.*\\.jpg$|.*\\.svg$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|robots\\.txt|sitemap\\.xml|icon-.*\\.png|apple-touch-icon\\.png|manifest\\.webmanifest|.*\\.png$|.*\\.jpg$|.*\\.svg$).*)",
   ],
 };

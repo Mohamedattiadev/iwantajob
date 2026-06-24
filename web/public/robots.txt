@@ -1,0 +1,13 @@
+User-agent: *
+Disallow: /jobs
+Disallow: /cv
+Disallow: /learn
+Disallow: /apply
+Disallow: /assistant
+Disallow: /interview
+Disallow: /settings
+Disallow: /sketch
+Disallow: /excalidraw
+Allow: /
+
+Sitemap: https://iwantajob-rho.vercel.app/sitemap.xml

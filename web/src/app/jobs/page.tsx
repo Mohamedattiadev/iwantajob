@@ -446,6 +446,18 @@ function JobsPageInner() {
     if (qs !== cur) router.replace(qs ? `/jobs?${qs}` : "/jobs", { scroll: false });
   }, [deferredQ, source, seniority, minScore, skill, view, hideMisfits, hideSkills, router, sp]);
 
+  // Snapshot the last jobs.list response in localStorage so the next visit
+  // (and tab restore) paints instantly with stale data while Convex
+  // reactively refreshes in the background. Cuts perceived load + lets
+  // the user keep working when offline.
+  const [cached, setCached] = useState<JobsResponse | null>(null);
+  useEffect(() => {
+    try {
+      const r = localStorage.getItem("jobs:list:v1");
+      if (r) setCached(JSON.parse(r) as JobsResponse);
+    } catch { /* ignore */ }
+  }, []);
+
   const raw = useQuery(convexApi.jobs.list, {
     q: q || undefined,
     source: source !== "all" ? source : undefined,
@@ -457,8 +469,13 @@ function JobsPageInner() {
     hide_skills: hideSkills.length > 0 ? hideSkills : undefined,
     limit: 100,
   });
-  const data = raw as JobsResponse | undefined;
-  const isLoading = raw === undefined;
+  const fresh = raw as JobsResponse | undefined;
+  useEffect(() => {
+    if (!fresh) return;
+    try { localStorage.setItem("jobs:list:v1", JSON.stringify(fresh)); } catch { /* ignore quota */ }
+  }, [fresh]);
+  const data = fresh ?? cached ?? undefined;
+  const isLoading = fresh === undefined && cached === null;
 
   const { appliedIds, apply } = useApplications();
   const { hiddenIds, savedIds, setAction } = useJobActions();

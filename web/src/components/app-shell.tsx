@@ -1,13 +1,17 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import { useConvexAuth } from "convex/react";
 import { Nav } from "@/components/nav";
-import { ChatWidget } from "@/components/chat-widget";
-import { FabCluster } from "@/components/fab-cluster";
-import { CommandPalette } from "@/components/command-palette";
 import { AmbientBackground } from "@/components/ambient-bg";
 import { OnboardingGate } from "@/components/onboarding-gate";
+
+// Heavy / interactive-only chrome — code-split so the initial JS bundle
+// stays small. None of these are needed before first paint.
+const ChatWidget = dynamic(() => import("@/components/chat-widget").then((m) => m.ChatWidget), { ssr: false });
+const FabCluster = dynamic(() => import("@/components/fab-cluster").then((m) => m.FabCluster), { ssr: false });
+const CommandPalette = dynamic(() => import("@/components/command-palette").then((m) => m.CommandPalette), { ssr: false });
 
 const LEAN_PREFIXES = ["/excalidraw", "/scratch", "/draw"];
 const LEAN_SUBROUTES = ["/sketch/"];
