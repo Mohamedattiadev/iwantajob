@@ -4,8 +4,7 @@ import { usePathname } from "next/navigation";
 import { useConvexAuth } from "convex/react";
 import { Nav } from "@/components/nav";
 import { ChatWidget } from "@/components/chat-widget";
-import { TodoDrawer } from "@/components/todo-drawer";
-import { ScratchFab } from "@/components/scratch-fab";
+import { FabCluster } from "@/components/fab-cluster";
 import { CommandPalette } from "@/components/command-palette";
 import { AmbientBackground } from "@/components/ambient-bg";
 import { OnboardingGate } from "@/components/onboarding-gate";
@@ -34,11 +33,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {showAuthChrome && (
           <>
             <ChatWidget />
-            {/* FAB cluster: Excalidraw (left) + Tasks (right), sits to left of chat bubble (right-5). */}
-            <div className="fixed bottom-5 right-20 z-30 flex flex-row-reverse items-center gap-2">
-              <TodoDrawer />
-              <ScratchFab />
-            </div>
+            <FabCluster />
             <CommandPalette />
           </>
         )}

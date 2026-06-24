@@ -1,8 +1,8 @@
 "use client";
 
-import { Suspense, memo, useCallback, useDeferredValue, useEffect, useState } from "react";
+import { Suspense, memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowRight, Filter, X, EyeOff, Bookmark, BookmarkCheck, Undo2 } from "lucide-react";
+import { ArrowRight, Filter, X, EyeOff, Bookmark, BookmarkCheck, Undo2, Languages, Loader2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -234,7 +234,43 @@ function JobDetailAside({
       </div>
     );
   }
-  const desc = full?.description ?? j.description_excerpt;
+  const rawDesc = full?.description ?? j.description_excerpt;
+  const looksNonEnglish = useMemo(() => {
+    const sample = rawDesc.slice(0, 600).toLowerCase();
+    // Heuristic: presence of common German/French/Spanish stop-words OR
+    // German umlauts/eszett. Cheap and good enough to decide whether to
+    // surface the Translate button.
+    if (/[äöüß]/.test(sample)) return true;
+    return /\b(und|oder|nicht|mit|für|sind|werden|deine|deutsch|qualifikation|aufgaben|kenntnisse|notre|votre|vous|nuestro|nuestra)\b/.test(sample);
+  }, [rawDesc]);
+  const translateAction = useAction(convexApi.chat.translate);
+  const [translated, setTranslated] = useState<string | null>(null);
+  const [showTranslated, setShowTranslated] = useState(false);
+  const [translating, setTranslating] = useState(false);
+  // Reset when job changes.
+  useEffect(() => {
+    setTranslated(null);
+    setShowTranslated(false);
+  }, [j?.id]);
+  const onTranslate = async () => {
+    if (translating) return;
+    if (translated) {
+      setShowTranslated((v) => !v);
+      return;
+    }
+    setTranslating(true);
+    try {
+      const res = await translateAction({ text: rawDesc, target: "English" });
+      if (res.error) throw new Error(res.error);
+      setTranslated(res.text);
+      setShowTranslated(true);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Translate failed");
+    } finally {
+      setTranslating(false);
+    }
+  };
+  const desc = showTranslated && translated ? translated : rawDesc;
   return (
     <div className="rounded-2xl border bg-card shadow-sm overflow-hidden flex flex-col max-h-[calc(100vh-6rem)]">
       <div className="p-5 pb-3 border-b space-y-2">
@@ -305,7 +341,21 @@ function JobDetailAside({
           </div>
         )}
         <div>
-          <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Description</div>
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Description</div>
+            {(looksNonEnglish || translated) && (
+              <button
+                type="button"
+                onClick={onTranslate}
+                disabled={translating}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] text-primary hover:bg-primary/10 disabled:opacity-50"
+                title="Translate description to English (Gemini)"
+              >
+                {translating ? <Loader2 className="h-3 w-3 animate-spin" /> : <Languages className="h-3 w-3" />}
+                {translating ? "Translating…" : translated ? (showTranslated ? "Show original" : "Show translation") : "Translate to EN"}
+              </button>
+            )}
+          </div>
           <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">{desc}</p>
         </div>
       </div>

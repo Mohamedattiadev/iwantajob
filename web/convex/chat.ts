@@ -428,6 +428,47 @@ export const improveSearch = action({
   },
 });
 
+export const translate = action({
+  args: { text: v.string(), target: v.optional(v.string()) },
+  handler: async (
+    ctx,
+    { text, target },
+  ): Promise<{ text: string; error?: string }> => {
+    const src = text.trim();
+    if (!src) return { text: "" };
+    const targetLang = (target || "English").trim();
+    const key = await resolveGeminiKey(ctx);
+    if (!key) return { text: "", error: "GEMINI_API_KEY not set in Convex env." };
+    const system =
+      `You translate text to ${targetLang}. Output ONLY the translation — no preamble, no quotes, no notes. ` +
+      `Preserve line breaks, bullet markers, and inline punctuation. If the input is already in ${targetLang}, return it unchanged.`;
+    const r = await fetch(ENDPOINT(key), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: src.slice(0, 8000) }] }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 4000,
+          thinkingConfig: { thinkingBudget: 0 },
+        },
+      }),
+    });
+    if (!r.ok) {
+      const body = await r.text();
+      return { text: "", error: `Gemini ${r.status}: ${body.slice(0, 200)}` };
+    }
+    const data = await r.json();
+    const parts = (data.candidates ?? [{}])[0]?.content?.parts ?? [];
+    let out = "";
+    for (const p of parts as Array<Record<string, unknown>>) {
+      if (typeof p.text === "string") out += p.text;
+    }
+    return { text: out.trim() };
+  },
+});
+
 export const rerankSkills = action({
   args: {
     goal: v.string(),
