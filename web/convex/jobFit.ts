@@ -3,7 +3,7 @@ import { action, internalAction, internalMutation, internalQuery } from "./_gene
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { getAuthUserId } from "@convex-dev/auth/server";
-import { resolveGeminiKey } from "./userSettings";
+import { aiText } from "./aiClient";
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 const ENDPOINT = (key: string) =>
@@ -115,40 +115,21 @@ export const extractRequirements = internalAction({
     if (!force && job.req_description_hash === hash) {
       return { ok: true, skipped: true };
     }
-    const key = await resolveGeminiKey(ctx);
-    if (!key) return { ok: false, error: "GEMINI_API_KEY not set" };
     const userPrompt = `JOB TITLE: ${job.title}
 COMPANY: ${job.company ?? "n/a"}
 LOCATION: ${job.location ?? "n/a"}
 
 DESCRIPTION:
 ${desc.slice(0, 6000)}`;
-    const r = await fetch(ENDPOINT(key), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [
-          { role: "user", parts: [{ text: SYSTEM_PROMPT + "\n\n" + userPrompt }] },
-        ],
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 400,
-          responseMimeType: "application/json",
-          thinkingConfig: { thinkingBudget: 0 },
-        },
-      }),
+    const ai = await aiText(ctx, {
+      system: SYSTEM_PROMPT,
+      user: userPrompt,
+      temperature: 0.1,
+      maxTokens: 400,
+      json: true,
     });
-    if (!r.ok) {
-      const body = await r.text();
-      return { ok: false, error: `Gemini ${r.status}: ${body.slice(0, 200)}` };
-    }
-    const data = await r.json();
-    const parts = (data.candidates ?? [{}])[0]?.content?.parts ?? [];
-    let text = "";
-    for (const p of parts as Array<Record<string, unknown>>) {
-      if (typeof p.text === "string") text += p.text;
-    }
-    const parsed = parseModelJson(text);
+    if (!ai.text) return { ok: false, error: ai.error || "extractor failed" };
+    const parsed = parseModelJson(ai.text);
     if (!parsed) return { ok: false, error: "non-JSON model response" };
 
     const langs = Array.isArray(parsed.languages)
@@ -185,7 +166,7 @@ ${desc.slice(0, 6000)}`;
       req_years_min: yearsMin,
       req_other: other,
       req_extracted_at: Date.now(),
-      req_model: MODEL,
+      req_model: ai.provider ?? MODEL,
       req_description_hash: hash,
     });
     return { ok: true };
@@ -214,46 +195,16 @@ export const summarize = action({
     const desc = (job.description || "").slice(0, 5000);
     if (desc.length < 60) return { tldr: "", error: "description too short" };
     const userPrompt = `TITLE: ${job.title}\nCOMPANY: ${job.company ?? "n/a"}\n\n${desc}`;
-    const key = await resolveGeminiKey(ctx);
-    let lastErr = "";
-    if (key) {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const r = await fetch(ENDPOINT(key), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: SUMMARY_PROMPT }] },
-            contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-            generationConfig: {
-              temperature: 0.2,
-              maxOutputTokens: 120,
-              thinkingConfig: { thinkingBudget: 0 },
-            },
-          }),
-        });
-        if (r.ok) {
-          const data = await r.json();
-          const parts = (data.candidates ?? [{}])[0]?.content?.parts ?? [];
-          let text = "";
-          for (const p of parts as Array<Record<string, unknown>>) {
-            if (typeof p.text === "string") text += p.text;
-          }
-          const tldr = text.trim().slice(0, 280);
-          if (tldr) {
-            await ctx.runMutation(internal.jobFit._patchTldr, { jobId, tldr });
-            return { tldr };
-          }
-        }
-        const body = r.ok ? "" : await r.text();
-        lastErr = `Gemini ${r.status}: ${body.slice(0, 160)}`;
-        if (r.status === 503 || r.status === 429 || r.status === 500) {
-          await new Promise((res) => setTimeout(res, 600 * (attempt + 1)));
-          continue;
-        }
-        break;
-      }
-    }
-    return { tldr: "", error: lastErr || "summarize failed" };
+    const ai = await aiText(ctx, {
+      system: SUMMARY_PROMPT,
+      user: userPrompt,
+      temperature: 0.2,
+      maxTokens: 120,
+    });
+    const tldr = ai.text.slice(0, 280);
+    if (!tldr) return { tldr: "", error: ai.error || "summarize failed" };
+    await ctx.runMutation(internal.jobFit._patchTldr, { jobId, tldr });
+    return { tldr };
   },
 });
 

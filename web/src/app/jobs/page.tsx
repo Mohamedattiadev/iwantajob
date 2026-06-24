@@ -611,8 +611,9 @@ function JobsPageInner() {
   const [seniority, setSeniority] = useState(sp.get("seniority") ?? "junior_or_unknown");
   const [minScore, setMinScore] = useState(sp.get("min_score") ?? "50");
   const [skill, setSkill] = useState(sp.get("skill") ?? "all");
-  const initView = (sp.get("view") ?? "all") as "all" | "saved" | "hidden";
-  const [view, setView] = useState<"all" | "saved" | "hidden">(initView);
+  type ViewKey = "all" | "saved" | "hidden" | "applied" | "interviewing" | "offer" | "rejected";
+  const initView = (sp.get("view") ?? "all") as ViewKey;
+  const [view, setView] = useState<ViewKey>(initView);
   const [hideMisfits, setHideMisfits] = useState(sp.get("hide_misfits") === "1");
   const [hideSkills, setHideSkills] = useState<string[]>(() => {
     const raw = sp.get("hide_skills") ?? "";
@@ -654,13 +655,14 @@ function JobsPageInner() {
     } catch { /* ignore */ }
   }, []);
 
+  const backendView: "all" | "saved" | "hidden" = view === "saved" || view === "hidden" ? view : "all";
   const raw = useQuery(convexApi.jobs.list, {
     q: q || undefined,
     source: source !== "all" ? source : undefined,
     seniority: seniority || undefined,
     skill: skill !== "all" ? skill : undefined,
     min_score: Number(minScore) || 0,
-    view,
+    view: backendView,
     hide_misfits: hideMisfits || undefined,
     hide_skills: hideSkills.length > 0 ? hideSkills : undefined,
     limit: 100,
@@ -670,10 +672,22 @@ function JobsPageInner() {
     if (!fresh) return;
     try { localStorage.setItem("jobs:list:v1", JSON.stringify(fresh)); } catch { /* ignore quota */ }
   }, [fresh]);
-  const data = fresh ?? cached ?? undefined;
+  const { appliedIds, apply, applications, setStatus, setNotes } = useApplications();
+  const appStatusByJobId = useMemo(() => {
+    const m = new Map<string, Application["status"]>();
+    for (const a of applications) m.set(a.job_id, a.status);
+    return m;
+  }, [applications]);
+  const data: JobsResponse | undefined = useMemo(() => {
+    const base = fresh ?? cached ?? undefined;
+    if (!base) return base;
+    if (view === "all" || view === "saved" || view === "hidden") return base;
+    const target = view;
+    const items = base.items.filter((j) => appStatusByJobId.get(j.id) === target);
+    return { ...base, items, total: items.length };
+  }, [fresh, cached, view, appStatusByJobId]);
   const isLoading = fresh === undefined && cached === null;
 
-  const { appliedIds, apply, applications, setStatus, setNotes } = useApplications();
   const { hiddenIds, savedIds, setAction } = useJobActions();
   const handleSetAction = useCallback(async (jobId: string, action: JobActionKind) => {
     const ok = await setAction(jobId, action);
@@ -785,23 +799,35 @@ function JobsPageInner() {
             Filters{activeFilters.length > 0 ? ` · ${activeFilters.length}` : ""}
           </Button>
         </div>
-        <div className="flex items-center gap-1.5">
-          {(["all", "saved", "hidden"] as const).map((v) => (
-            <button
-              key={v}
-              type="button"
-              onClick={() => { setView(v); setPage(1); }}
-              className={`px-3 h-8 rounded-full text-xs font-medium capitalize transition-colors ${
-                view === v
-                  ? "bg-foreground text-background"
-                  : "bg-muted text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {v === "saved" && <Bookmark className="inline h-3 w-3 mr-1" />}
-              {v === "hidden" && <EyeOff className="inline h-3 w-3 mr-1" />}
-              {v} {v === "saved" && savedIds.size > 0 ? `· ${savedIds.size}` : ""}{v === "hidden" && hiddenIds.size > 0 ? `· ${hiddenIds.size}` : ""}
-            </button>
-          ))}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {(["all", "saved", "hidden", "applied", "interviewing", "offer", "rejected"] as const).map((v) => {
+            const counts = {
+              saved: savedIds.size,
+              hidden: hiddenIds.size,
+              applied: applications.filter((a) => a.status === "applied").length,
+              interviewing: applications.filter((a) => a.status === "interviewing").length,
+              offer: applications.filter((a) => a.status === "offer").length,
+              rejected: applications.filter((a) => a.status === "rejected").length,
+            } as Record<string, number>;
+            const n = counts[v] ?? 0;
+            return (
+              <button
+                key={v}
+                type="button"
+                onClick={() => { setView(v); setPage(1); }}
+                className={`px-3 h-8 rounded-full text-xs font-medium capitalize transition-colors ${
+                  view === v
+                    ? "bg-foreground text-background"
+                    : "bg-muted text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {v === "saved" && <Bookmark className="inline h-3 w-3 mr-1" />}
+                {v === "hidden" && <EyeOff className="inline h-3 w-3 mr-1" />}
+                {v}
+                {v !== "all" && n > 0 ? ` · ${n}` : ""}
+              </button>
+            );
+          })}
           <button
             type="button"
             onClick={() => { setHideMisfits((x) => !x); setPage(1); }}

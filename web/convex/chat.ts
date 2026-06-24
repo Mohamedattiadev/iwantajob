@@ -3,6 +3,7 @@ import { action, query } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
 import { api } from "./_generated/api";
 import { resolveGeminiKey, resolveOpenrouter } from "./userSettings";
+import { aiText } from "./aiClient";
 
 async function openrouterText(
   ctx: ActionCtx,
@@ -440,61 +441,14 @@ export const translate = action({
     const system =
       `You translate text to ${targetLang}. Output ONLY the translation — no preamble, no quotes, no notes. ` +
       `Preserve line breaks, bullet markers, and inline punctuation. If the input is already in ${targetLang}, return it unchanged.`;
-    const truncated = src.slice(0, 8000);
-
-    // Try Gemini first with retries on transient 5xx / 429.
-    const key = await resolveGeminiKey(ctx);
-    let lastErr = "";
-    if (key) {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const r = await fetch(ENDPOINT(key), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              systemInstruction: { parts: [{ text: system }] },
-              contents: [{ role: "user", parts: [{ text: truncated }] }],
-              generationConfig: {
-                temperature: 0.1,
-                maxOutputTokens: 4000,
-                thinkingConfig: { thinkingBudget: 0 },
-              },
-            }),
-          });
-          if (r.ok) {
-            const data = await r.json();
-            const parts = (data.candidates ?? [{}])[0]?.content?.parts ?? [];
-            let out = "";
-            for (const p of parts as Array<Record<string, unknown>>) {
-              if (typeof p.text === "string") out += p.text;
-            }
-            if (out.trim()) return { text: out.trim(), provider: "gemini" };
-            lastErr = "empty response";
-          } else {
-            const body = await r.text();
-            lastErr = `Gemini ${r.status}: ${body.slice(0, 200)}`;
-            // Retry only on transient errors.
-            if (r.status === 503 || r.status === 429 || r.status === 500) {
-              await new Promise((res) => setTimeout(res, 600 * (attempt + 1)));
-              continue;
-            }
-            break;
-          }
-        } catch (e) {
-          lastErr = e instanceof Error ? e.message : String(e);
-        }
-      }
-    } else {
-      lastErr = "no Gemini key";
-    }
-
-    // Fallback to OpenRouter (free-tier llama-3.3 is decent for translation).
-    const or = await openrouterText(ctx, system, truncated, {
+    const ai = await aiText(ctx, {
+      system,
+      user: src.slice(0, 8000),
       temperature: 0.1,
       maxTokens: 4000,
     });
-    if (or.text) return { text: or.text, provider: "openrouter" };
-    return { text: "", error: lastErr || or.error || "translation failed" };
+    if (!ai.text) return { text: "", error: ai.error || "translate failed" };
+    return { text: ai.text, provider: ai.provider };
   },
 });
 
@@ -510,44 +464,22 @@ export const rerankSkills = action({
     const g = goal.trim();
     if (!g) return { ranked: [], error: "goal required" };
     if (!candidates.length) return { ranked: [], goal: g };
-    const key = await resolveGeminiKey(ctx);
-    if (!key) return { ranked: [], error: "GEMINI_API_KEY not set in Convex env." };
     const cands = candidates.slice(0, 40);
-    const prompt = `You rerank skills by relevance to a user's career goal.
-
-GOAL: ${g}
-CANDIDATE SKILLS (drawn from real junior job postings):
-${cands.join(", ")}
-
-Return STRICT JSON only — no prose, no markdown — in this exact shape:
+    const system = `You rerank skills by relevance to a user's career goal. Return STRICT JSON only — no prose, no markdown — in this exact shape:
 {"ranked": [{"skill": "<one from candidates>", "why": "<<=12 words>"}, ...]}
 - Pick the TOP 5 most relevant skills for the goal.
 - Use only skills from the candidate list (exact spelling).
 - 'why' must be concrete: how it serves the goal.`;
-    const r = await fetch(ENDPOINT(key), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 400,
-          responseMimeType: "application/json",
-          thinkingConfig: { thinkingBudget: 0 },
-        },
-      }),
+    const userMsg = `GOAL: ${g}\nCANDIDATE SKILLS:\n${cands.join(", ")}`;
+    const ai = await aiText(ctx, {
+      system,
+      user: userMsg,
+      temperature: 0.2,
+      maxTokens: 400,
+      json: true,
     });
-    if (!r.ok) {
-      const body = await r.text();
-      return { ranked: [], error: `Gemini API error: ${r.status} — ${body.slice(0, 300)}` };
-    }
-    const data = await r.json();
-    const parts = (data.candidates ?? [{}])[0]?.content?.parts ?? [];
-    let text = "";
-    for (const p of parts as Array<Record<string, unknown>>) {
-      if (typeof p.text === "string") text += p.text;
-    }
-    let stripped = text.trim();
+    if (!ai.text) return { ranked: [], error: ai.error || "rerank failed" };
+    let stripped = ai.text.trim();
     if (stripped.startsWith("```")) {
       stripped = stripped.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
     }

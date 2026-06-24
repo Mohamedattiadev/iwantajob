@@ -112,13 +112,17 @@ export default function ApplyPage() {
 
       <PageTabs tabs={JOBS_TABS} />
 
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-        <Stat label="Total" value={applications.length} color="slate" />
-        <Stat label="Applied" value={counts.applied ?? 0} color="sky" />
-        <Stat label="Interviewing" value={counts.interviewing ?? 0} color="amber" />
-        <Stat label="Offer" value={counts.offer ?? 0} color="emerald" />
-        <Stat label="Rejected" value={counts.rejected ?? 0} color="rose" />
-      </div>
+      {applications.length > 0 && (
+        <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 -mt-4">
+          <span className="font-mono uppercase tracking-wider text-[10px] text-foreground/70">Pipeline</span>
+          <span>{applications.length} total</span>
+          <span className="text-sky-600 dark:text-sky-400">{counts.applied ?? 0} applied</span>
+          <span className="text-amber-600 dark:text-amber-400">{counts.interviewing ?? 0} interview</span>
+          <span className="text-emerald-600 dark:text-emerald-400">{counts.offer ?? 0} offer</span>
+          <span className="text-rose-600 dark:text-rose-400">{counts.rejected ?? 0} rejected</span>
+          <span className="text-muted-foreground">{counts.ghost ?? 0} ghost</span>
+        </div>
+      )}
 
       {isLoading ? (
         <div className="space-y-2">
@@ -220,7 +224,7 @@ function Column({ id, label, count, children }: {
   return (
     <div
       ref={setNodeRef}
-      className={`rounded-xl border bg-muted/30 p-2 min-h-[300px] transition-colors ${
+      className={`min-w-0 rounded-xl border bg-muted/30 p-2.5 min-h-[300px] transition-colors ${
         isOver ? "bg-primary/10 ring-1 ring-primary/40" : ""
       }`}
     >
@@ -240,7 +244,7 @@ function DraggableCard({ app, onRemove }: { app: Application; onRemove: (id: str
       ref={setNodeRef}
       {...attributes}
       {...listeners}
-      className={`cursor-grab active:cursor-grabbing ${isDragging ? "opacity-30" : ""}`}
+      className={`w-full min-w-0 cursor-grab active:cursor-grabbing ${isDragging ? "opacity-30" : ""}`}
     >
       <CardBody app={app} onRemove={onRemove} />
     </div>
@@ -249,10 +253,10 @@ function DraggableCard({ app, onRemove }: { app: Application; onRemove: (id: str
 
 function CardBody({ app, onRemove, ghost }: { app: Application; onRemove?: (id: string) => void; ghost?: boolean }) {
   return (
-    <div className={`rounded-lg border bg-card p-3 shadow-sm ${ghost ? "ring-2 ring-primary/40 shadow-lg" : ""}`}>
-      <div className="flex items-start gap-2">
-        <div className="flex-1 min-w-0">
-          <div className="font-medium text-sm line-clamp-2">{app.job.title}</div>
+    <div className={`w-full min-w-0 overflow-hidden rounded-lg border bg-card p-2.5 shadow-sm ${ghost ? "ring-2 ring-primary/40 shadow-lg" : ""}`}>
+      <div className="flex items-start gap-2 min-w-0">
+        <div className="flex-1 min-w-0 overflow-hidden">
+          <div className="font-medium text-sm line-clamp-2 break-words">{app.job.title}</div>
           <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
             {app.job.company ?? "?"} · {app.job.source}
           </div>
