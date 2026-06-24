@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { action, internalMutation, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { getAuthUserId } from "@convex-dev/auth/server";
 
 // Alias map: canonical skill name -> additional spellings that should
@@ -62,6 +63,123 @@ function scoreJob(
   return Math.min(100, base + lvlBonus);
 }
 
+// ---- Fit checker ----------------------------------------------------------
+
+const LEVEL_RANK: Record<string, number> = {
+  a1: 1, a2: 2, b1: 3, b2: 4, c1: 5, c2: 6, native: 7, fluent: 5,
+};
+
+const LANG_NAME_TO_CODE: Record<string, string> = {
+  english: "en", englisch: "en",
+  german: "de", deutsch: "de", germany: "de",
+  french: "fr", französisch: "fr", francais: "fr",
+  spanish: "es", spanisch: "es", espanol: "es",
+  italian: "it", italienisch: "it",
+  portuguese: "pt", portugiesisch: "pt",
+  dutch: "nl", niederländisch: "nl",
+  russian: "ru", russisch: "ru",
+  chinese: "zh", mandarin: "zh",
+  japanese: "ja", japanisch: "ja",
+  arabic: "ar", arabisch: "ar",
+  polish: "pl", turkish: "tr", swedish: "sv", danish: "da", norwegian: "no",
+  finnish: "fi", greek: "el", hebrew: "he", korean: "ko", hindi: "hi",
+};
+
+function langToCode(name: string): string {
+  const n = name.trim().toLowerCase();
+  if (n.length === 2) return n;
+  return LANG_NAME_TO_CODE[n] ?? n.slice(0, 2);
+}
+
+function levelRank(level: string): number {
+  const k = level.trim().toLowerCase();
+  return LEVEL_RANK[k] ?? 0;
+}
+
+const SENIORITY_RANK: Record<string, number> = {
+  intern: 0, "working-student": 1, "working student": 1, werkstudent: 1,
+  junior: 2, mid: 3, senior: 4, any: 0,
+};
+
+type FitProfile = {
+  languages: Array<{ name: string; level: string }>;
+  workTypes: string[];
+  yearsExperience: number;
+  currentCity: string;
+  openToRelocation: boolean;
+  openToRemote: boolean;
+};
+
+type JobReqs = {
+  req_languages?: Array<{ code: string; level: string }>;
+  req_seniority?: string;
+  req_onsite_city?: string;
+  req_remote_ok?: boolean;
+  req_years_min?: number;
+  req_other?: string[];
+  req_extracted_at?: number;
+};
+
+export type FitResult = {
+  has_reqs: boolean;
+  fits: boolean;
+  reasons: string[];
+};
+
+function computeFit(job: JobReqs, profile: FitProfile): FitResult {
+  if (!job.req_extracted_at) return { has_reqs: false, fits: true, reasons: [] };
+  const reasons: string[] = [];
+
+  // Build user language lookup by code -> max rank.
+  const userLangs = new Map<string, number>();
+  for (const l of profile.languages) {
+    const code = langToCode(l.name);
+    const rank = levelRank(l.level);
+    const prev = userLangs.get(code) ?? 0;
+    if (rank > prev) userLangs.set(code, rank);
+  }
+  for (const req of job.req_languages ?? []) {
+    const code = req.code.toLowerCase();
+    const needed = levelRank(req.level);
+    const have = userLangs.get(code) ?? 0;
+    if (needed > have) {
+      const haveLabel = have
+        ? Object.entries(LEVEL_RANK).find(([, r]) => r === have)?.[0]?.toUpperCase() ?? "?"
+        : null;
+      reasons.push(
+        `needs ${code.toUpperCase()} ${req.level.toUpperCase()}${haveLabel ? ` (you ${haveLabel})` : " (missing)"}`,
+      );
+    }
+  }
+
+  // Seniority — only block if user explicitly listed workTypes that exclude
+  // this one. If workTypes empty, treat as no preference.
+  if (job.req_seniority && profile.workTypes.length > 0) {
+    const reqS = job.req_seniority.toLowerCase();
+    const userWants = new Set(profile.workTypes.map((s) => s.toLowerCase()));
+    if (!userWants.has(reqS) && reqS !== "any") {
+      reasons.push(`role is ${reqS}, you target ${[...userWants].join("/")}`);
+    }
+  }
+
+  // Onsite city — block if strict onsite city differs from user city AND
+  // user not open to relocation.
+  if (job.req_onsite_city && job.req_remote_ok === false) {
+    const userCity = profile.currentCity.toLowerCase();
+    const jobCity = job.req_onsite_city.toLowerCase();
+    if (!profile.openToRelocation && userCity && !userCity.includes(jobCity) && !jobCity.includes(userCity)) {
+      reasons.push(`onsite in ${job.req_onsite_city}`);
+    }
+  }
+
+  // Years of experience.
+  if (job.req_years_min != null && job.req_years_min > profile.yearsExperience) {
+    reasons.push(`needs ${job.req_years_min}y exp (you ${profile.yearsExperience}y)`);
+  }
+
+  return { has_reqs: true, fits: reasons.length === 0, reasons };
+}
+
 function seniorityBucket(title: string): "junior" | "senior" | "unknown" {
   const t = title.toLowerCase();
   if (/\b(senior|sr\.?|staff|principal|lead|architect|head of|director|vp )\b/.test(t)) return "senior";
@@ -80,6 +198,7 @@ export const list = query({
     // view: "all" excludes hidden, "saved" returns only saved,
     // "hidden" returns only hidden. Default "all".
     view: v.optional(v.union(v.literal("all"), v.literal("saved"), v.literal("hidden"))),
+    hide_misfits: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
@@ -98,6 +217,14 @@ export const list = query({
       }
     }
     const userSkills: Record<string, number> = {};
+    const fitProfile: FitProfile = {
+      languages: [],
+      workTypes: [],
+      yearsExperience: 0,
+      currentCity: "",
+      openToRelocation: false,
+      openToRemote: true,
+    };
     if (userId) {
       const profRows = await ctx.db
         .query("proficiency")
@@ -105,17 +232,42 @@ export const list = query({
         .collect();
       if (profRows.length > 0) {
         for (const r of profRows) userSkills[r.skill] = r.level;
-      } else {
-        const profile = await ctx.db
-          .query("profile")
-          .withIndex("by_user", (q) => q.eq("userId", userId))
-          .first();
-        if (profile) {
-          try {
-            const p = JSON.parse(profile.data_json);
+      }
+      const profile = await ctx.db
+        .query("profile")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .first();
+      if (profile) {
+        try {
+          const p = JSON.parse(profile.data_json);
+          if (profRows.length === 0) {
             Object.assign(userSkills, (p?.skills ?? {}) as Record<string, number>);
-          } catch { /* ignore */ }
-        }
+          }
+          if (Array.isArray(p?.languages)) {
+            fitProfile.languages = p.languages.filter(
+              (l: { name?: unknown; level?: unknown }) =>
+                typeof l?.name === "string" && typeof l?.level === "string",
+            );
+          }
+          const personal = p?.personal ?? {};
+          if (typeof personal.location === "string") {
+            fitProfile.currentCity = personal.location;
+          }
+          if (Array.isArray(personal.workTypes)) {
+            fitProfile.workTypes = personal.workTypes.filter(
+              (x: unknown) => typeof x === "string",
+            );
+          }
+          if (typeof personal.yearsExperience === "number") {
+            fitProfile.yearsExperience = personal.yearsExperience;
+          }
+          if (typeof personal.openToRelocation === "boolean") {
+            fitProfile.openToRelocation = personal.openToRelocation;
+          }
+          if (typeof personal.openToRemote === "boolean") {
+            fitProfile.openToRemote = personal.openToRemote;
+          }
+        } catch { /* ignore */ }
       }
     }
 
@@ -172,6 +324,8 @@ export const list = query({
           missedUserSkills.push({ skill: sk, level: lvl });
         }
       }
+      const fit = computeFit(r, fitProfile);
+      if (args.hide_misfits && fit.has_reqs && !fit.fits) continue;
       out.push({
         id: r._id as string,
         source: r.source,
@@ -189,6 +343,14 @@ export const list = query({
         missed_skills: missedUserSkills,
         description_excerpt: (r.description ?? "").slice(0, 240),
         score,
+        fit_has_reqs: fit.has_reqs,
+        fit_ok: fit.fits,
+        fit_reasons: fit.reasons,
+        req_languages: r.req_languages ?? null,
+        req_seniority: r.req_seniority ?? null,
+        req_onsite_city: r.req_onsite_city ?? null,
+        req_years_min: r.req_years_min ?? null,
+        req_other: r.req_other ?? null,
       });
       if (out.length >= limit) break;
     }
@@ -362,6 +524,11 @@ export const _upsertBatch = internalMutation({
     const now = Date.now();
     let inserted = 0;
     let updated = 0;
+    // Cap per-batch extractor scheduling so a 200-job upsert doesn't push
+    // 200 LLM calls into the queue at once. Excess get picked up by the
+    // backfill action later.
+    const SCHEDULE_CAP = 20;
+    let scheduled = 0;
     for (const j of jobs) {
       const existing = await ctx.db
         .query("jobs_pool")
@@ -369,15 +536,31 @@ export const _upsertBatch = internalMutation({
           q.eq("source", j.source).eq("source_id", j.source_id),
         )
         .first();
+      let jobId: Id<"jobs_pool">;
+      let needsExtract = false;
       if (existing) {
         await ctx.db.patch(existing._id, { ...j, fetched_at: now });
         updated += 1;
+        jobId = existing._id;
+        if (!existing.req_extracted_at && (j.description ?? "").length >= 80) {
+          needsExtract = true;
+        }
       } else {
-        await ctx.db.insert("jobs_pool", { ...j, fetched_at: now });
+        jobId = await ctx.db.insert("jobs_pool", { ...j, fetched_at: now });
         inserted += 1;
+        if ((j.description ?? "").length >= 80) needsExtract = true;
+      }
+      if (needsExtract && scheduled < SCHEDULE_CAP) {
+        // Stagger ~3s apart to stay under Gemini free-tier RPM.
+        await ctx.scheduler.runAfter(
+          scheduled * 3000,
+          internal.jobFit.extractRequirements,
+          { jobId },
+        );
+        scheduled += 1;
       }
     }
-    return { inserted, updated };
+    return { inserted, updated, scheduled };
   },
 });
 

@@ -537,6 +537,76 @@ export default function CvPage() {
                   >
                     <Textarea rows={4} value={draft.personal.summary} onChange={(e) => updatePersonal("summary", e.target.value)} placeholder="One paragraph: who you are, what you build." />
                   </Field>
+
+                  {/* Fit preferences — drives the "hide jobs I can't apply to" filter on /jobs. */}
+                  <div className="pt-4 mt-2 border-t border-border/60 space-y-3">
+                    <div className="text-xs uppercase tracking-wider text-muted-foreground">Fit preferences</div>
+                    <Field label="Target work types">
+                      <div className="flex flex-wrap gap-1.5">
+                        {(["intern", "working-student", "junior", "mid", "senior"] as const).map((wt) => {
+                          const cur = draft.personal.workTypes ?? [];
+                          const on = cur.includes(wt);
+                          return (
+                            <button
+                              key={wt}
+                              type="button"
+                              onClick={() => {
+                                const next = on ? cur.filter((x) => x !== wt) : [...cur, wt];
+                                setDraft({ ...draft, personal: { ...draft.personal, workTypes: next } });
+                              }}
+                              className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
+                                on
+                                  ? "bg-primary/15 text-primary border-primary/40"
+                                  : "bg-muted text-muted-foreground border-border hover:text-foreground"
+                              }`}
+                            >
+                              {wt}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </Field>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <Field label="Years of experience">
+                        <Input
+                          type="number"
+                          min={0}
+                          max={50}
+                          value={draft.personal.yearsExperience ?? 0}
+                          onChange={(e) => setDraft({
+                            ...draft,
+                            personal: { ...draft.personal, yearsExperience: Number(e.target.value) || 0 },
+                          })}
+                        />
+                      </Field>
+                      <Field label="Open to relocation">
+                        <label className="inline-flex items-center gap-2 h-9 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={draft.personal.openToRelocation ?? false}
+                            onChange={(e) => setDraft({
+                              ...draft,
+                              personal: { ...draft.personal, openToRelocation: e.target.checked },
+                            })}
+                          />
+                          <span className="text-muted-foreground">Yes, I'll move</span>
+                        </label>
+                      </Field>
+                      <Field label="Open to remote">
+                        <label className="inline-flex items-center gap-2 h-9 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={draft.personal.openToRemote ?? true}
+                            onChange={(e) => setDraft({
+                              ...draft,
+                              personal: { ...draft.personal, openToRemote: e.target.checked },
+                            })}
+                          />
+                          <span className="text-muted-foreground">Remote OK</span>
+                        </label>
+                      </Field>
+                    </div>
+                  </div>
                 </CardContent></Card>
               )}
 

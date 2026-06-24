@@ -28,6 +28,14 @@ export type JobItem = {
   skills: { skill: string; category: string; level?: number }[];
   missed_skills?: { skill: string; level: number }[];
   description_excerpt: string;
+  fit_has_reqs?: boolean;
+  fit_ok?: boolean;
+  fit_reasons?: string[];
+  req_languages?: { code: string; level: string }[] | null;
+  req_seniority?: string | null;
+  req_onsite_city?: string | null;
+  req_years_min?: number | null;
+  req_other?: string[] | null;
 };
 
 export type JobsResponse = {
@@ -54,6 +62,13 @@ type ProfilePersonal = {
   location: string;
   links: ProfileLink;
   summary: string;
+  // Optional fields used by /jobs fit checker. Existing profiles without
+  // them get sensible defaults at read time.
+  workTypes?: string[];
+  yearsExperience?: number;
+  openToRelocation?: boolean;
+  openToRemote?: boolean;
+  goal?: string;
 };
 type ProfileItem = { raw?: string } & Record<string, unknown>;
 export type Profile = {

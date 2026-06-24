@@ -74,13 +74,36 @@ const JobCard = memo(function JobCard({
         <div className="p-5 pb-3 flex-1 flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3">
             <h3 className="font-semibold text-base leading-snug line-clamp-2 flex-1">{j.title}</h3>
-            <ScoreBreakdown
-              score={j.score}
-              matched={j.skills}
-              missed={j.missed_skills ?? []}
-              toneClass={scoreTone}
-            />
+            <div className="flex items-center gap-1.5 shrink-0">
+              {j.fit_has_reqs && (
+                <span
+                  title={
+                    j.fit_ok
+                      ? "You match the hard requirements"
+                      : `Mismatch: ${(j.fit_reasons ?? []).join("; ")}`
+                  }
+                  className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md ring-1 ${
+                    j.fit_ok
+                      ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30"
+                      : "bg-rose-500/15 text-rose-700 dark:text-rose-300 ring-rose-500/30"
+                  }`}
+                >
+                  {j.fit_ok ? "Fit ✓" : "Fit ✗"}
+                </span>
+              )}
+              <ScoreBreakdown
+                score={j.score}
+                matched={j.skills}
+                missed={j.missed_skills ?? []}
+                toneClass={scoreTone}
+              />
+            </div>
           </div>
+          {j.fit_has_reqs && !j.fit_ok && (j.fit_reasons ?? []).length > 0 && (
+            <div className="text-[11px] text-rose-600 dark:text-rose-400 line-clamp-2" title={(j.fit_reasons ?? []).join("; ")}>
+              {(j.fit_reasons ?? []).join(" · ")}
+            </div>
+          )}
           <div className="text-sm text-foreground/80 font-medium line-clamp-1">{j.company ?? "Unknown company"}</div>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
             <span className="font-mono uppercase">{j.source}</span>
@@ -182,6 +205,7 @@ function JobsPageInner() {
   const [skill, setSkill] = useState(sp.get("skill") ?? "all");
   const initView = (sp.get("view") ?? "all") as "all" | "saved" | "hidden";
   const [view, setView] = useState<"all" | "saved" | "hidden">(initView);
+  const [hideMisfits, setHideMisfits] = useState(sp.get("hide_misfits") === "1");
   const [showFilters, setShowFilters] = useState(false);
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 12;
@@ -197,10 +221,11 @@ function JobsPageInner() {
     if (minScore !== "50") next.set("min_score", minScore);
     if (skill !== "all") next.set("skill", skill);
     if (view !== "all") next.set("view", view);
+    if (hideMisfits) next.set("hide_misfits", "1");
     const qs = next.toString();
     const cur = sp.toString();
     if (qs !== cur) router.replace(qs ? `/jobs?${qs}` : "/jobs", { scroll: false });
-  }, [deferredQ, source, seniority, minScore, skill, view, router, sp]);
+  }, [deferredQ, source, seniority, minScore, skill, view, hideMisfits, router, sp]);
 
   const raw = useQuery(convexApi.jobs.list, {
     q: q || undefined,
@@ -209,6 +234,7 @@ function JobsPageInner() {
     skill: skill !== "all" ? skill : undefined,
     min_score: Number(minScore) || 0,
     view,
+    hide_misfits: hideMisfits || undefined,
     limit: 100,
   });
   const data = raw as JobsResponse | undefined;
@@ -330,6 +356,18 @@ function JobsPageInner() {
               {v} {v === "saved" && savedIds.size > 0 ? `· ${savedIds.size}` : ""}{v === "hidden" && hiddenIds.size > 0 ? `· ${hiddenIds.size}` : ""}
             </button>
           ))}
+          <button
+            type="button"
+            onClick={() => { setHideMisfits((x) => !x); setPage(1); }}
+            title="Hide jobs whose hard requirements (language, seniority, onsite, years) you don't meet"
+            className={`ml-2 px-3 h-8 rounded-full text-xs font-medium transition-colors ${
+              hideMisfits
+                ? "bg-rose-500/15 text-rose-700 dark:text-rose-300 ring-1 ring-rose-500/30"
+                : "bg-muted text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {hideMisfits ? "Hiding misfits" : "Hide misfits"}
+          </button>
         </div>
         {activeFilters.length > 0 && (
           <div className="flex items-center gap-2 flex-wrap">

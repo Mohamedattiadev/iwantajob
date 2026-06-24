@@ -27,10 +27,25 @@ export default defineSchema({
     salary_max: v.optional(v.number()),
     currency: v.optional(v.string()),
     fetched_at: v.number(),
+    // Hard-requirement extraction (LLM, once per job). Used to filter out
+    // jobs the user cannot realistically apply to (wrong language, wrong
+    // seniority, strict onsite mismatch, etc.).
+    req_languages: v.optional(
+      v.array(v.object({ code: v.string(), level: v.string() })),
+    ),
+    req_seniority: v.optional(v.string()),
+    req_onsite_city: v.optional(v.string()),
+    req_remote_ok: v.optional(v.boolean()),
+    req_years_min: v.optional(v.number()),
+    req_other: v.optional(v.array(v.string())),
+    req_extracted_at: v.optional(v.number()),
+    req_model: v.optional(v.string()),
+    req_description_hash: v.optional(v.string()),
   })
     .index("by_source_and_id", ["source", "source_id"])
     .index("by_posted_at", ["posted_at"])
-    .index("by_source", ["source"]),
+    .index("by_source", ["source"])
+    .index("by_req_extracted_at", ["req_extracted_at"]),
 
   notes: defineTable({
     userId: v.id("users"),

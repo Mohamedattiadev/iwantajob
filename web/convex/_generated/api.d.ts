@@ -19,6 +19,7 @@ import type * as cv_drafts from "../cv_drafts.js";
 import type * as http from "../http.js";
 import type * as interview from "../interview.js";
 import type * as jobActions from "../jobActions.js";
+import type * as jobFit from "../jobFit.js";
 import type * as jobs from "../jobs.js";
 import type * as learn from "../learn.js";
 import type * as milestones from "../milestones.js";
@@ -51,6 +52,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   interview: typeof interview;
   jobActions: typeof jobActions;
+  jobFit: typeof jobFit;
   jobs: typeof jobs;
   learn: typeof learn;
   milestones: typeof milestones;
