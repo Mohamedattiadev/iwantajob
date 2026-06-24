@@ -47,6 +47,7 @@ type JobCardProps = {
   isTgSending: boolean;
   onSelect: (jobId: string) => void;
   onPickSkill: (skill: string) => void;
+  onHideSkill: (skill: string) => void;
   onTelegramApply: (jobId: string) => void;
   onMarkApplied: (job: JobItem) => void;
   onSetAction: (jobId: string, action: JobActionKind) => void;
@@ -63,6 +64,7 @@ const JobCard = memo(function JobCard({
   isTgSending,
   onSelect,
   onPickSkill,
+  onHideSkill,
   onTelegramApply,
   onMarkApplied,
   onSetAction,
@@ -123,7 +125,12 @@ const JobCard = memo(function JobCard({
                 <button
                   key={sk.skill}
                   type="button"
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPickSkill(sk.skill); }}
+                  onClick={(e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    if (e.shiftKey || e.altKey) onHideSkill(sk.skill);
+                    else onPickSkill(sk.skill);
+                  }}
+                  title="Click to filter to this skill · Shift+Click to hide jobs with this skill"
                   className="px-2 py-0.5 rounded-md text-[10px] bg-foreground/[0.04] border border-foreground/10 text-muted-foreground hover:bg-foreground/10 hover:text-foreground transition-colors"
                 >
                   {sk.skill}
@@ -180,7 +187,7 @@ const JobCard = memo(function JobCard({
               type="button"
               disabled={isTgSending}
               onClick={(e) => { e.preventDefault(); onTelegramApply(j.id); }}
-              className="inline-flex items-center justify-center gap-1.5 h-9 px-4 rounded-lg bg-sky-600 text-white text-xs font-semibold hover:opacity-90 shadow-sm disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-1.5 h-9 px-4 rounded-lg bg-sky-600 text-white text-xs font-semibold hover:opacity-90 shadow-sm disabled:opacity-50 whitespace-nowrap"
               title="Send brief to Telegram + record as applied"
             >
               <Send className="h-3.5 w-3.5" />
@@ -190,7 +197,7 @@ const JobCard = memo(function JobCard({
             <button
               type="button"
               onClick={(e) => { e.preventDefault(); onMarkApplied(j); }}
-              className="inline-flex items-center justify-center h-9 px-4 rounded-lg bg-foreground text-background text-xs font-semibold hover:opacity-90 shadow-sm"
+              className="inline-flex items-center justify-center h-9 px-4 rounded-lg bg-foreground text-background text-xs font-semibold hover:opacity-90 shadow-sm whitespace-nowrap"
             >
               Mark applied
             </button>
@@ -411,6 +418,11 @@ function JobsPageInner() {
   const initView = (sp.get("view") ?? "all") as "all" | "saved" | "hidden";
   const [view, setView] = useState<"all" | "saved" | "hidden">(initView);
   const [hideMisfits, setHideMisfits] = useState(sp.get("hide_misfits") === "1");
+  const [hideSkills, setHideSkills] = useState<string[]>(() => {
+    const raw = sp.get("hide_skills") ?? "";
+    return raw.split(",").map((s) => s.trim()).filter(Boolean);
+  });
+  const [hideSkillDraft, setHideSkillDraft] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [page, setPage] = useState(1);
@@ -428,10 +440,11 @@ function JobsPageInner() {
     if (skill !== "all") next.set("skill", skill);
     if (view !== "all") next.set("view", view);
     if (hideMisfits) next.set("hide_misfits", "1");
+    if (hideSkills.length > 0) next.set("hide_skills", hideSkills.join(","));
     const qs = next.toString();
     const cur = sp.toString();
     if (qs !== cur) router.replace(qs ? `/jobs?${qs}` : "/jobs", { scroll: false });
-  }, [deferredQ, source, seniority, minScore, skill, view, hideMisfits, router, sp]);
+  }, [deferredQ, source, seniority, minScore, skill, view, hideMisfits, hideSkills, router, sp]);
 
   const raw = useQuery(convexApi.jobs.list, {
     q: q || undefined,
@@ -441,6 +454,7 @@ function JobsPageInner() {
     min_score: Number(minScore) || 0,
     view,
     hide_misfits: hideMisfits || undefined,
+    hide_skills: hideSkills.length > 0 ? hideSkills : undefined,
     limit: 100,
   });
   const data = raw as JobsResponse | undefined;
@@ -498,6 +512,16 @@ function JobsPageInner() {
   const setMinScore_ = withReset(setMinScore);
   const setSkill_ = withReset(setSkill);
 
+  const addHideSkill = useCallback((s: string) => {
+    const v = s.trim();
+    if (!v) return;
+    setHideSkills((prev) => (prev.some((x) => x.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]));
+    setPage(1);
+  }, []);
+  const removeHideSkill = useCallback((s: string) => {
+    setHideSkills((prev) => prev.filter((x) => x.toLowerCase() !== s.toLowerCase()));
+  }, []);
+
   const reset = () => {
     setQ("");
     setSource("all");
@@ -505,6 +529,8 @@ function JobsPageInner() {
     setMinScore("50");
     setSkill("all");
     setView("all");
+    setHideMisfits(false);
+    setHideSkills([]);
     setPage(1);
   };
 
@@ -513,6 +539,7 @@ function JobsPageInner() {
     skill !== "all" && { label: skill, clear: () => setSkill("all") },
     seniority !== "junior_or_unknown" && { label: seniority, clear: () => setSeniority("junior_or_unknown") },
     minScore !== "50" && { label: `score ≥ ${minScore}`, clear: () => setMinScore("50") },
+    ...hideSkills.map((s) => ({ label: `✗ ${s}`, clear: () => removeHideSkill(s) })),
   ].filter(Boolean) as { label: string; clear: () => void }[];
 
   return (
@@ -589,7 +616,7 @@ function JobsPageInner() {
 
         <Collapsible open={showFilters} onOpenChange={setShowFilters}>
           <CollapsibleContent>
-            <Card><CardContent className="p-4 grid grid-cols-1 md:grid-cols-4 gap-3">
+            <Card><CardContent className="p-4 grid grid-cols-1 md:grid-cols-4 gap-3 [&>*:last-child]:md:col-span-4">
               <div>
                 <label className="text-xs text-muted-foreground mb-1.5 block">Source</label>
                 <Select value={source} onValueChange={(v) => setSource_(v ?? "all")}>
@@ -638,6 +665,42 @@ function JobsPageInner() {
                   </SelectContent>
                 </Select>
               </div>
+              <div>
+                <label className="text-xs text-muted-foreground mb-1.5 block">Hide skills (exclude jobs containing any of these)</label>
+                <div className="flex gap-2">
+                  <Input
+                    value={hideSkillDraft}
+                    onChange={(e) => setHideSkillDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        hideSkillDraft.split(",").forEach((s) => addHideSkill(s));
+                        setHideSkillDraft("");
+                      }
+                    }}
+                    placeholder="e.g. Java, PHP, .NET"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      hideSkillDraft.split(",").forEach((s) => addHideSkill(s));
+                      setHideSkillDraft("");
+                    }}
+                  >
+                    Add
+                  </Button>
+                </div>
+                {hideSkills.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {hideSkills.map((s) => (
+                      <Badge key={s} variant="secondary" className="gap-1 cursor-pointer" onClick={() => removeHideSkill(s)}>
+                        ✗ {s} <X className="h-3 w-3" />
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
             </CardContent></Card>
           </CollapsibleContent>
         </Collapsible>
@@ -670,6 +733,7 @@ function JobsPageInner() {
                     isTgSending={tgLoading === j.id}
                     onSelect={setSelectedId}
                     onPickSkill={handlePickSkill}
+                    onHideSkill={addHideSkill}
                     onTelegramApply={telegramApply}
                     onMarkApplied={handleMarkApplied}
                     onSetAction={handleSetAction}

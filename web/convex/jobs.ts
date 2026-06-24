@@ -199,6 +199,7 @@ export const list = query({
     // "hidden" returns only hidden. Default "all".
     view: v.optional(v.union(v.literal("all"), v.literal("saved"), v.literal("hidden"))),
     hide_misfits: v.optional(v.boolean()),
+    hide_skills: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
@@ -277,6 +278,9 @@ export const list = query({
     const wantSource = (args.source ?? "").trim();
     const wantSkill = (args.skill ?? "").trim().toLowerCase();
     const wantSeniority = (args.seniority ?? "any").trim();
+    const hideSkills = (args.hide_skills ?? [])
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
 
     const rows = wantSource
       ? await ctx.db
@@ -305,6 +309,10 @@ export const list = query({
       if (wantSkill) {
         const hay = `${r.title} ${r.description ?? ""}`;
         if (!skillMatches(hay, wantSkill)) continue;
+      }
+      if (hideSkills.length > 0) {
+        const hay = `${r.title} ${r.description ?? ""}`;
+        if (hideSkills.some((s) => skillMatches(hay, s))) continue;
       }
       if (wantSeniority && wantSeniority !== "any") {
         const bucket = seniorityBucket(r.title);
