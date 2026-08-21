@@ -142,7 +142,7 @@ export default function Home() {
           >
             <MagicCard glow="violet" className="h-full glass press hover:-translate-y-0.5 transition-transform">
               <CardContent className="p-5 sm:p-6 h-full flex flex-col gap-3">
-                <Sparkles className="h-5 w-5 text-violet-400" />
+                <Sparkles className="h-5 w-5 text-foreground/70" />
                 <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground mt-1">06 · chat</div>
                 <div className="font-serif text-2xl sm:text-3xl leading-tight tracking-tight">Career coach</div>
                 <p className="text-sm text-muted-foreground leading-relaxed line-clamp-2">
@@ -210,11 +210,8 @@ export default function Home() {
   );
 }
 
-function Stat({ label, value, accent }: { label: string; value: number | undefined; accent?: "emerald" | "indigo" }) {
-  const cls =
-    accent === "emerald" ? "text-emerald-500"
-    : accent === "indigo" ? "text-indigo-400"
-    : "text-foreground";
+function Stat({ label, value }: { label: string; value: number | undefined; accent?: "emerald" | "indigo" }) {
+  const cls = "text-foreground";
   return (
     <div>
       <div className="font-serif text-3xl leading-none">

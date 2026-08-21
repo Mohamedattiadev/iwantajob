@@ -51,13 +51,13 @@ export function MagicCard({
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
 
   const colors: Record<string, string> = {
-    indigo:  "oklch(0.65 0.22 264 / 0.45)",
-    emerald: "oklch(0.7 0.17 162 / 0.4)",
-    amber:   "oklch(0.78 0.16 70 / 0.4)",
-    rose:    "oklch(0.72 0.2 16 / 0.4)",
-    violet:  "oklch(0.7 0.18 295 / 0.4)",
-    sky:     "oklch(0.7 0.15 230 / 0.4)",
-    slate:   "oklch(0.65 0.03 240 / 0.3)",
+    indigo:  "oklch(0.7 0 0 / 0.35)",
+    emerald: "oklch(0.7 0 0 / 0.35)",
+    amber:   "oklch(0.7 0 0 / 0.35)",
+    rose:    "oklch(0.7 0 0 / 0.35)",
+    violet:  "oklch(0.7 0 0 / 0.35)",
+    sky:     "oklch(0.7 0 0 / 0.35)",
+    slate:   "oklch(0.65 0 0 / 0.3)",
   };
 
   return (
@@ -95,7 +95,7 @@ export function Gradient({
   return (
     <span
       className={cn(
-        "bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 via-fuchsia-400 to-emerald-400",
+        "bg-clip-text text-transparent bg-gradient-to-r from-foreground to-foreground/50",
         className,
       )}
     >

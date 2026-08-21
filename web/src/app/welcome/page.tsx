@@ -149,7 +149,7 @@ export default function Welcome() {
 
         {step === 0 && (
           <Card accentColor="violet" showAccentLine showCornerGlow><CardContent className="p-8 space-y-5">
-            <Sparkles className="h-8 w-8 text-indigo-400" />
+            <Sparkles className="h-8 w-8 text-foreground/70" />
             <h2 className="text-2xl font-semibold">Hi. I&apos;ll do 3 things for you.</h2>
             <ul className="space-y-2 text-sm text-muted-foreground list-disc pl-5">
               <li>Read your existing CV and extract everything I can.</li>

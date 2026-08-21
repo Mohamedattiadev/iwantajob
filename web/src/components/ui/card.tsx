@@ -3,40 +3,43 @@ import { cn } from "@/lib/utils"
 
 type AccentColor = "violet" | "emerald" | "amber" | "sky" | "slate" | "rose"
 
+// All keys map to the same neutral tone — accentColor is kept as an API
+// (some callers still pass semantic-sounding values) but the mono-dark
+// palette has no per-section brand color, only foreground/muted-foreground.
 const accentRing: Record<AccentColor, string> = {
-  violet:  "ring-1 ring-violet-500/25",
-  emerald: "ring-1 ring-emerald-500/25",
-  amber:   "ring-1 ring-amber-500/25",
-  sky:     "ring-1 ring-sky-500/25",
-  slate:   "ring-1 ring-slate-500/20",
-  rose:    "ring-1 ring-rose-500/25",
+  violet:  "ring-1 ring-foreground/15",
+  emerald: "ring-1 ring-foreground/15",
+  amber:   "ring-1 ring-foreground/15",
+  sky:     "ring-1 ring-foreground/15",
+  slate:   "ring-1 ring-foreground/15",
+  rose:    "ring-1 ring-foreground/15",
 }
 
 const accentGlow: Record<AccentColor, string> = {
-  violet:  "shadow-violet-500/20",
-  emerald: "shadow-emerald-500/20",
-  amber:   "shadow-amber-500/20",
-  sky:     "shadow-sky-500/20",
-  slate:   "shadow-slate-500/15",
-  rose:    "shadow-rose-500/20",
+  violet:  "shadow-foreground/10",
+  emerald: "shadow-foreground/10",
+  amber:   "shadow-foreground/10",
+  sky:     "shadow-foreground/10",
+  slate:   "shadow-foreground/10",
+  rose:    "shadow-foreground/10",
 }
 
 const accentLine: Record<AccentColor, string> = {
-  violet:  "bg-violet-500/70",
-  emerald: "bg-emerald-500/70",
-  amber:   "bg-amber-400/70",
-  sky:     "bg-sky-500/70",
-  slate:   "bg-slate-400/60",
-  rose:    "bg-rose-500/70",
+  violet:  "bg-foreground/25",
+  emerald: "bg-foreground/25",
+  amber:   "bg-foreground/25",
+  sky:     "bg-foreground/25",
+  slate:   "bg-foreground/25",
+  rose:    "bg-foreground/25",
 }
 
 const cornerGlowColor: Record<AccentColor, string> = {
-  violet:  "bg-violet-500",
-  emerald: "bg-emerald-500",
-  amber:   "bg-amber-400",
-  sky:     "bg-sky-500",
-  slate:   "bg-slate-400",
-  rose:    "bg-rose-500",
+  violet:  "bg-foreground/40",
+  emerald: "bg-foreground/40",
+  amber:   "bg-foreground/40",
+  sky:     "bg-foreground/40",
+  slate:   "bg-foreground/40",
+  rose:    "bg-foreground/40",
 }
 
 type CardProps = React.ComponentProps<"div"> & {

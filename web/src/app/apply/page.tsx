@@ -187,7 +187,7 @@ export default function ApplyPage() {
                 {a.status === "interviewing" && (
                   <Link
                     href={`/interview?jobId=${a.job.id}`}
-                    className="inline-flex items-center gap-1 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline"
                   >
                     <Mic className="h-3 w-3" /> Practice for this interview
                   </Link>
@@ -453,7 +453,7 @@ function CardBody({ app, onRemove, ghost }: { app: Application; onRemove?: (id: 
             <Link
               href={`/interview?jobId=${app.job.id}`}
               onClick={(e) => e.stopPropagation()}
-              className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-medium text-indigo-600 dark:text-indigo-400 hover:underline"
+              className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-medium text-foreground hover:underline"
             >
               <Mic className="h-3 w-3" /> Practice for this interview
             </Link>

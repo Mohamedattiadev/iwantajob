@@ -62,7 +62,7 @@ export default function LoginPage() {
             </div>
             <h1 className="font-serif text-3xl sm:text-4xl lg:text-5xl leading-[1.05] tracking-tight">
               From theory <em className="text-muted-foreground not-italic">to</em>{" "}
-              <span className="bg-gradient-to-r from-primary via-fuchsia-400 to-primary bg-clip-text text-transparent">hired.</span>
+              <em className="text-muted-foreground not-italic">hired.</em>
             </h1>
             <p className="text-sm text-muted-foreground max-w-2xl leading-relaxed">
               One workspace for the whole job hunt. Your CV, your skill notes, the real listings worth applying to,
