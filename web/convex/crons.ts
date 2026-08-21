@@ -10,6 +10,16 @@ crons.interval(
   {},
 );
 
+// JSearch has a tight free-tier request quota, so it runs once/day
+// instead of riding the hourly collector sweep. No-ops if RAPIDAPI_KEY
+// isn't set.
+crons.cron(
+  "jsearch collector daily",
+  "0 5 * * *",
+  internal.jobs.runJSearchCollector,
+  {},
+);
+
 // Daily 08:00 UTC: nudge users about applications still in `applied`
 // status after 7 days. Routes through their Telegram bot if configured.
 crons.cron(

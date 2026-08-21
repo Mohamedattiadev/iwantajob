@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/collapsible";
 import { ScrapeButton } from "@/components/scrape-button";
 import { ScoreBreakdown } from "@/components/score-breakdown";
-import { TailorCvModal } from "@/components/tailor-cv-modal";
+import { ApplyReviewModal } from "@/components/apply-review-modal";
 import { Sparkles } from "lucide-react";
 import type { Application, Profile } from "@/lib/api";
 import { PageHeader } from "@/components/page-header";
@@ -32,7 +32,7 @@ import { AiSearchInput } from "@/components/ai-search-input";
 import { type JobsResponse, type JobItem } from "@/lib/api";
 import { useApplications } from "@/lib/applications";
 import { useJobActions, type JobActionKind } from "@/lib/job-actions";
-import { CheckCircle2, Send } from "lucide-react";
+import { CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 import { useAction, useQuery } from "convex/react";
 import { api as convexApi } from "../../../convex/_generated/api";
@@ -44,15 +44,11 @@ type JobCardProps = {
   isHidden: boolean;
   isSaved: boolean;
   isSelected: boolean;
-  tgAvailable: boolean;
-  isTgSending: boolean;
   onSelect: (jobId: string) => void;
   onPickSkill: (skill: string) => void;
   onHideSkill: (skill: string) => void;
-  onTelegramApply: (jobId: string) => void;
-  onMarkApplied: (job: JobItem) => void;
   onSetAction: (jobId: string, action: JobActionKind) => void;
-  onTailor: (job: JobItem) => void;
+  onReview: (job: JobItem) => void;
 };
 
 const JobCard = memo(function JobCard({
@@ -61,15 +57,11 @@ const JobCard = memo(function JobCard({
   isHidden,
   isSaved,
   isSelected,
-  tgAvailable,
-  isTgSending,
   onSelect,
   onPickSkill,
   onHideSkill,
-  onTelegramApply,
-  onMarkApplied,
   onSetAction,
-  onTailor,
+  onReview,
 }: JobCardProps) {
   const scoreTone =
     j.score >= 80 ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30"
@@ -169,38 +161,20 @@ const JobCard = memo(function JobCard({
           >
             {isHidden ? <Undo2 className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
           </button>
-          <button
-            type="button"
-            onClick={(e) => { e.preventDefault(); onTailor(j); }}
-            className="inline-flex items-center justify-center gap-1 h-9 px-2.5 rounded-lg text-xs text-muted-foreground hover:text-foreground hover:bg-background transition-colors"
-            title="Tailor CV for this role"
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Tailor</span>
-          </button>
           <div className="flex-1" />
           {isApplied ? (
             <span className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-xs font-semibold">
               <CheckCircle2 className="h-3.5 w-3.5" /> Applied
             </span>
-          ) : tgAvailable ? (
-            <button
-              type="button"
-              disabled={isTgSending}
-              onClick={(e) => { e.preventDefault(); onTelegramApply(j.id); }}
-              className="inline-flex items-center justify-center gap-1.5 h-9 px-4 rounded-lg bg-sky-600 text-white text-xs font-semibold hover:opacity-90 shadow-sm disabled:opacity-50 whitespace-nowrap"
-              title="Send brief to Telegram + record as applied"
-            >
-              <Send className="h-3.5 w-3.5" />
-              {isTgSending ? "Sending..." : "Apply via TG"}
-            </button>
           ) : (
             <button
               type="button"
-              onClick={(e) => { e.preventDefault(); onMarkApplied(j); }}
-              className="inline-flex items-center justify-center h-9 px-4 rounded-lg bg-foreground text-background text-xs font-semibold hover:opacity-90 shadow-sm whitespace-nowrap"
+              onClick={(e) => { e.preventDefault(); onReview(j); }}
+              className="inline-flex items-center justify-center gap-1.5 h-9 px-4 rounded-lg bg-foreground text-background text-xs font-semibold hover:opacity-90 shadow-sm whitespace-nowrap"
+              title="Tailor CV, draft cover note, review, then apply"
             >
-              Mark applied
+              <Sparkles className="h-3.5 w-3.5" />
+              Review &amp; apply
             </button>
           )}
         </div>
@@ -216,13 +190,9 @@ type JobDetailAsideProps = {
   isApplied: boolean;
   isSaved: boolean;
   isHidden: boolean;
-  tgAvailable: boolean;
-  isTgSending: boolean;
   application: Application | undefined;
   onSetAction: (jobId: string, action: JobActionKind) => void;
-  onMarkApplied: (job: JobItem) => void;
-  onTelegramApply: (jobId: string) => void;
-  onTailor: (job: JobItem) => void;
+  onReview: (job: JobItem) => void;
   onPickSkill: (skill: string) => void;
   onSetStatus: (appId: string, status: Application["status"]) => void;
   onSetNotes: (appId: string, notes: string) => void;
@@ -237,8 +207,8 @@ const STAGES: { key: Application["status"]; label: string; idx: number; color: s
 
 function JobDetailAside({
   jobId, fallback, items, isApplied, isSaved, isHidden,
-  tgAvailable, isTgSending, application,
-  onSetAction, onMarkApplied, onTelegramApply, onTailor, onPickSkill, onSetStatus, onSetNotes,
+  application,
+  onSetAction, onReview, onPickSkill, onSetStatus, onSetNotes,
 }: JobDetailAsideProps) {
   const j = (jobId ? items.find((x) => x.id === jobId) : null) ?? fallback;
   const full = useQuery(
@@ -577,24 +547,16 @@ function JobDetailAside({
           title={isHidden ? "Unhide" : "Hide"}>
           {isHidden ? <Undo2 className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
         </button>
-        <button type="button" onClick={() => onTailor(j)}
-          className="inline-flex items-center gap-1 h-9 px-2.5 rounded-lg text-xs text-muted-foreground hover:text-foreground hover:bg-background">
-          <Sparkles className="h-3.5 w-3.5" /> Tailor
-        </button>
         <div className="flex-1" />
         {isApplied ? (
           <span className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-xs font-semibold">
             <CheckCircle2 className="h-3.5 w-3.5" /> Applied
           </span>
-        ) : tgAvailable ? (
-          <button type="button" disabled={isTgSending} onClick={() => onTelegramApply(j.id)}
-            className="inline-flex items-center justify-center gap-1.5 h-9 px-4 rounded-lg bg-sky-600 text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50 whitespace-nowrap">
-            <Send className="h-3.5 w-3.5" /> {isTgSending ? "Sending..." : "Apply via TG"}
-          </button>
         ) : (
-          <button type="button" onClick={() => onMarkApplied(j)}
-            className="inline-flex items-center justify-center h-9 px-4 rounded-lg bg-foreground text-background text-xs font-semibold hover:opacity-90 whitespace-nowrap">
-            Mark applied
+          <button type="button" onClick={() => onReview(j)}
+            title="Tailor CV, draft cover note, review, then apply"
+            className="inline-flex items-center justify-center gap-1.5 h-9 px-4 rounded-lg bg-foreground text-background text-xs font-semibold hover:opacity-90 whitespace-nowrap">
+            <Sparkles className="h-3.5 w-3.5" /> Review &amp; apply
           </button>
         )}
       </div>
@@ -716,19 +678,14 @@ function JobsPageInner() {
     setPage(1);
   }, []);
 
-  const handleMarkApplied = useCallback(async (j: JobItem) => {
-    const ok = await apply(j);
-    if (ok) toast.success("Marked applied");
-  }, [apply]);
-
   const profile = useQuery(convexApi.profile.get) as Profile | undefined;
-  const [tailorJob, setTailorJob] = useState<JobItem | null>(null);
-  const handleTailor = useCallback((j: JobItem) => {
+  const [reviewJob, setReviewJob] = useState<JobItem | null>(null);
+  const handleReview = useCallback((j: JobItem) => {
     if (!profile) {
       toast.error("Profile loading. Try again in a moment.");
       return;
     }
-    setTailorJob(j);
+    setReviewJob(j);
   }, [profile]);
 
   // Filter-setter wrappers that also reset to page 1
@@ -968,15 +925,11 @@ function JobsPageInner() {
                     isHidden={hiddenIds.has(j.id)}
                     isSaved={savedIds.has(j.id)}
                     isSelected={selectedId === j.id}
-                    tgAvailable={!!tgStatus?.available}
-                    isTgSending={tgLoading === j.id}
                     onSelect={setSelectedId}
                     onPickSkill={handlePickSkill}
                     onHideSkill={addHideSkill}
-                    onTelegramApply={telegramApply}
-                    onMarkApplied={handleMarkApplied}
                     onSetAction={handleSetAction}
-                    onTailor={handleTailor}
+                    onReview={handleReview}
                   />
                 ))}
             </ul>
@@ -997,12 +950,8 @@ function JobsPageInner() {
               isApplied={selectedId ? appliedIds.has(selectedId) : false}
               isSaved={selectedId ? savedIds.has(selectedId) : false}
               isHidden={selectedId ? hiddenIds.has(selectedId) : false}
-              tgAvailable={!!tgStatus?.available}
-              isTgSending={selectedId !== null && tgLoading === selectedId}
               onSetAction={handleSetAction}
-              onMarkApplied={handleMarkApplied}
-              onTelegramApply={telegramApply}
-              onTailor={handleTailor}
+              onReview={handleReview}
               onPickSkill={handlePickSkill}
               onSetStatus={setStatus}
               onSetNotes={setNotes}
@@ -1013,13 +962,15 @@ function JobsPageInner() {
         </div>
       )}
 
-      {tailorJob && profile && (
-        <TailorCvModal
-          jobId={tailorJob.id as Id<"jobs_pool">}
-          jobTitle={tailorJob.title}
-          jobCompany={tailorJob.company}
+      {reviewJob && profile && (
+        <ApplyReviewModal
+          job={reviewJob}
           profile={profile}
-          onClose={() => setTailorJob(null)}
+          tgAvailable={!!tgStatus?.available}
+          isTgSending={tgLoading === reviewJob.id}
+          onTelegramApply={telegramApply}
+          onApply={apply}
+          onClose={() => setReviewJob(null)}
         />
       )}
     </div>

@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as aiClient from "../aiClient.js";
 import type * as applications from "../applications.js";
 import type * as auth from "../auth.js";
 import type * as auth_ResendOTP from "../auth/ResendOTP.js";
@@ -42,6 +43,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  aiClient: typeof aiClient;
   applications: typeof applications;
   auth: typeof auth;
   "auth/ResendOTP": typeof auth_ResendOTP;

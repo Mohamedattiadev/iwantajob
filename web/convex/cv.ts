@@ -5,6 +5,7 @@ import { action, type ActionCtx } from "./_generated/server";
 import { api } from "./_generated/api";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { resolveGeminiKey } from "./userSettings";
+import { aiText } from "./aiClient";
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 const ENDPOINT = (key: string) =>
@@ -453,5 +454,62 @@ export const tailor = action({
       })),
       job: { id: jobId, title: job.title, company: job.company ?? null },
     };
+  },
+});
+
+const COVER_NOTE_SYSTEM = `You draft a short cover note for a job application.
+Rules:
+- 3 short paragraphs max, under 180 words total.
+- Paragraph 1: why this role/company specifically (reference something concrete from the posting).
+- Paragraph 2: 1-2 real, truthful pieces of evidence from the candidate's background that match the posting's top requirements.
+- Paragraph 3: brief, confident close — no cliches like "I am confident I would be a great fit."
+- Never invent employers, dates, metrics, or skills not present in the candidate's background.
+- No greeting/salutation line, no sign-off — the app inserts those separately.
+- Plain text only, no markdown.`;
+
+export const coverNote = action({
+  args: { jobId: v.id("jobs_pool") },
+  handler: async (
+    ctx,
+    { jobId },
+  ): Promise<{ text: string; provider?: string; error?: string }> => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("UNAUTHENTICATED");
+    const job = await ctx.runQuery(api.jobs._getById, { id: jobId });
+    if (!job) throw new Error("job not found");
+    const profile = (await ctx.runQuery(api.profile.get)) as Profile;
+    const expRaw = ((profile.experience ?? []) as Array<{ raw?: string }>)
+      .map((e) => e.raw ?? "")
+      .filter(Boolean);
+    const projRaw = ((profile.projects ?? []) as Array<{ raw?: string }>)
+      .map((p) => p.raw ?? "")
+      .filter(Boolean);
+    const skills = Object.keys(profile.skills ?? {}).slice(0, 25);
+    const desc = (job.description ?? "").slice(0, 5000);
+    const user = `JOB
+Title: ${job.title}
+Company: ${job.company ?? "(unknown)"}
+Description:
+${desc}
+
+CANDIDATE SUMMARY
+${profile.personal?.summary ?? ""}
+
+CANDIDATE SKILLS
+${skills.join(", ")}
+
+CANDIDATE EXPERIENCE
+${expRaw.join("\n")}
+
+CANDIDATE PROJECTS
+${projRaw.join("\n")}`;
+    const ai = await aiText(ctx, {
+      system: COVER_NOTE_SYSTEM,
+      user,
+      temperature: 0.5,
+      maxTokens: 500,
+    });
+    if (!ai.text) return { text: "", error: ai.error || "cover note generation failed" };
+    return { text: ai.text, provider: ai.provider };
   },
 });

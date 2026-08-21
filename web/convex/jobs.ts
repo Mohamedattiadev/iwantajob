@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { action, internalMutation, mutation, query } from "./_generated/server";
+import { action, internalAction, internalMutation, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { getAuthUserId } from "@convex-dev/auth/server";
@@ -802,6 +802,122 @@ async function collectWeWantRecruits(): Promise<CollectedJob[]> {
   return out;
 }
 
+// Adzuna — free tier, keyed. Targets the plan's Türkiye + UK focus.
+// Skips silently (returns []) when ADZUNA_APP_ID/ADZUNA_APP_KEY aren't set,
+// so it's safe to always list in runAllCollectors.
+const ADZUNA_COUNTRIES = ["tr", "gb"];
+const ADZUNA_CURRENCY: Record<string, string> = { tr: "TRY", gb: "GBP" };
+
+async function collectAdzuna(): Promise<CollectedJob[]> {
+  const appId = process.env.ADZUNA_APP_ID;
+  const appKey = process.env.ADZUNA_APP_KEY;
+  if (!appId || !appKey) return [];
+  const out: CollectedJob[] = [];
+  for (const country of ADZUNA_COUNTRIES) {
+    for (let page = 1; page <= 2; page++) {
+      const url =
+        `https://api.adzuna.com/v1/api/jobs/${country}/search/${page}` +
+        `?app_id=${appId}&app_key=${appKey}&results_per_page=50` +
+        `&what=developer&content-type=application/json`;
+      let r: Response;
+      try {
+        r = await fetch(url);
+      } catch {
+        break;
+      }
+      if (!r.ok) break;
+      const payload = (await r.json()) as { results?: Array<Record<string, unknown>> };
+      const results = payload.results ?? [];
+      if (results.length === 0) break;
+      for (const it of results) {
+        const id = it.id != null ? String(it.id) : undefined;
+        if (!id) continue;
+        let posted: number | undefined;
+        if (typeof it.created === "string") {
+          const t = Date.parse(it.created);
+          if (!Number.isNaN(t)) posted = t;
+        }
+        const company = (it.company as { display_name?: string } | undefined)?.display_name;
+        const location = (it.location as { display_name?: string } | undefined)?.display_name;
+        const title = String(it.title ?? "(no title)");
+        out.push({
+          source: "adzuna",
+          source_id: id,
+          source_url: String(it.redirect_url ?? ""),
+          title,
+          company,
+          location,
+          remote: /remote/i.test(`${title} ${location ?? ""}`),
+          posted_at: posted,
+          description: stripHtml(String(it.description ?? "")),
+          employment_type:
+            typeof it.contract_time === "string" ? it.contract_time : undefined,
+          salary_min: typeof it.salary_min === "number" ? it.salary_min : undefined,
+          salary_max: typeof it.salary_max === "number" ? it.salary_max : undefined,
+          currency: ADZUNA_CURRENCY[country],
+        });
+      }
+    }
+  }
+  return out;
+}
+
+// JSearch (RapidAPI) — free tier is small (order of a few hundred
+// requests/month), so this is deliberately NOT part of the hourly
+// runAllCollectors. It runs once/day on its own cron (see crons.ts) via
+// runJSearchCollector. Skips silently when RAPIDAPI_KEY isn't set.
+const JSEARCH_QUERIES = ["junior software developer", "backend developer entry level"];
+
+async function collectJSearch(): Promise<CollectedJob[]> {
+  const key = process.env.RAPIDAPI_KEY;
+  if (!key) return [];
+  const out: CollectedJob[] = [];
+  for (const query of JSEARCH_QUERIES) {
+    const url = `https://jsearch.p.rapidapi.com/search?query=${encodeURIComponent(query)}&page=1&num_pages=1`;
+    let r: Response;
+    try {
+      r = await fetch(url, {
+        headers: {
+          "X-RapidAPI-Key": key,
+          "X-RapidAPI-Host": "jsearch.p.rapidapi.com",
+        },
+      });
+    } catch {
+      continue;
+    }
+    if (!r.ok) continue;
+    const payload = (await r.json()) as { data?: Array<Record<string, unknown>> };
+    for (const it of payload.data ?? []) {
+      const id = it.job_id != null ? String(it.job_id) : undefined;
+      if (!id) continue;
+      let posted: number | undefined;
+      if (typeof it.job_posted_at_timestamp === "number") {
+        posted = it.job_posted_at_timestamp * 1000;
+      }
+      const city = typeof it.job_city === "string" ? it.job_city : undefined;
+      const country = typeof it.job_country === "string" ? it.job_country : undefined;
+      const location = [city, country].filter(Boolean).join(", ") || undefined;
+      out.push({
+        source: "jsearch",
+        source_id: id,
+        source_url: String(it.job_apply_link ?? it.job_google_link ?? ""),
+        title: String(it.job_title ?? "(no title)"),
+        company: typeof it.employer_name === "string" ? it.employer_name : undefined,
+        location,
+        remote: Boolean(it.job_is_remote),
+        posted_at: posted,
+        description: String(it.job_description ?? ""),
+        employment_type:
+          typeof it.job_employment_type === "string" ? it.job_employment_type : undefined,
+        salary_min: typeof it.job_min_salary === "number" ? it.job_min_salary : undefined,
+        salary_max: typeof it.job_max_salary === "number" ? it.job_max_salary : undefined,
+        currency: typeof it.job_salary_currency === "string" ? it.job_salary_currency : undefined,
+      });
+    }
+  }
+  return out;
+}
+
 export const runAllCollectors = action({
   args: {},
   handler: async (ctx) => {
@@ -811,6 +927,7 @@ export const runAllCollectors = action({
       ["arbeitnow", collectArbeitnow],
       ["hn", collectHN],
       ["wwr", collectWeWantRecruits],
+      ["adzuna", collectAdzuna],
     ];
     for (const [name, fn] of collectors) {
       try {
@@ -832,5 +949,27 @@ export const runAllCollectors = action({
       }
     }
     return results;
+  },
+});
+
+// Separate from runAllCollectors — see collectJSearch comment. Wired to a
+// daily-only cron so a tight RapidAPI free-tier quota can't be burned by
+// the hourly job.
+export const runJSearchCollector = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    try {
+      const jobs = await collectJSearch();
+      if (jobs.length > 0) {
+        for (let i = 0; i < jobs.length; i += 200) {
+          await ctx.runMutation(internal.jobs._upsertBatch, {
+            jobs: jobs.slice(i, i + 200),
+          });
+        }
+      }
+      return { collected: jobs.length };
+    } catch (e) {
+      return { collected: 0, error: e instanceof Error ? e.message : String(e) };
+    }
   },
 });
