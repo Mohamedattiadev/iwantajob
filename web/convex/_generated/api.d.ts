@@ -29,6 +29,7 @@ import type * as notes from "../notes.js";
 import type * as plans from "../plans.js";
 import type * as proficiency from "../proficiency.js";
 import type * as profile from "../profile.js";
+import type * as reliability from "../reliability.js";
 import type * as resources from "../resources.js";
 import type * as sketches from "../sketches.js";
 import type * as skills from "../skills.js";
@@ -64,6 +65,7 @@ declare const fullApi: ApiFromModules<{
   plans: typeof plans;
   proficiency: typeof proficiency;
   profile: typeof profile;
+  reliability: typeof reliability;
   resources: typeof resources;
   sketches: typeof sketches;
   skills: typeof skills;

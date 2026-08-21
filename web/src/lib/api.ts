@@ -37,6 +37,9 @@ export type JobItem = {
   req_years_min?: number | null;
   req_other?: string[] | null;
   tldr?: string | null;
+  days_open?: number;
+  likely_stale?: boolean;
+  company_openings?: number;
 };
 
 export type JobsResponse = {

@@ -187,6 +187,13 @@ function seniorityBucket(title: string): "junior" | "senior" | "unknown" {
   return "unknown";
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+// A listing still in the pool this long after we first saw it is either
+// genuinely long-running or an evergreen req that never closes. There's no
+// external signal to tell the two apart, so this is a caution flag, not a
+// hard filter, unless the caller opts into hide_stale.
+const STALE_DAYS = 45;
+
 export const list = query({
   args: {
     q: v.optional(v.string()),
@@ -200,6 +207,7 @@ export const list = query({
     view: v.optional(v.union(v.literal("all"), v.literal("saved"), v.literal("hidden"))),
     hide_misfits: v.optional(v.boolean()),
     hide_skills: v.optional(v.array(v.string())),
+    hide_stale: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
@@ -294,8 +302,27 @@ export const list = query({
           .order("desc")
           .take(2000);
 
+    // "Actively hiring juniors" signal: how many other junior/unknown-
+    // seniority listings this company has open right now. Cheap — same
+    // `rows` scan, no extra reads.
+    const companyOpenings = new Map<string, number>();
+    for (const r of rows) {
+      if (seniorityBucket(r.title) === "senior") continue;
+      const key = (r.company ?? "").trim().toLowerCase();
+      if (!key) continue;
+      companyOpenings.set(key, (companyOpenings.get(key) ?? 0) + 1);
+    }
+
     const out = [];
     for (const r of rows) {
+      // Ghost/evergreen-listing signal: `_creationTime` is Convex's
+      // immutable first-seen timestamp — unlike `posted_at`, it can't be
+      // refreshed by a source re-announcing the same posting. A listing
+      // we've had in the pool a long time is either genuinely long-running
+      // or an evergreen req that never actually closes.
+      const daysOpen = Math.floor((Date.now() - r._creationTime) / DAY_MS);
+      const likelyStale = daysOpen > STALE_DAYS;
+      if (args.hide_stale && likelyStale) continue;
       const rid = r._id as string;
       if (view === "all" && hiddenSet.has(rid)) continue;
       if (view === "saved" && !savedSet.has(rid)) continue;
@@ -360,6 +387,9 @@ export const list = query({
         req_years_min: r.req_years_min ?? null,
         req_other: r.req_other ?? null,
         tldr: r.tldr ?? null,
+        days_open: daysOpen,
+        likely_stale: likelyStale,
+        company_openings: companyOpenings.get((r.company ?? "").trim().toLowerCase()) ?? 0,
       });
       if (out.length >= limit) break;
     }
@@ -441,6 +471,7 @@ export const stats = query({
     const skillOrig: Record<string, string> = {};
     let targetCount = 0;
     let realCount = 0;
+    let staleCount = 0;
 
     for (const j of sample) {
       bySource[j.source] = (bySource[j.source] ?? 0) + 1;
@@ -449,6 +480,7 @@ export const stats = query({
       if (bucket !== "senior") {
         bySeniority[senKey] = (bySeniority[senKey] ?? 0) + 1;
         targetCount += 1;
+        if ((Date.now() - j._creationTime) / DAY_MS > STALE_DAYS) staleCount += 1;
         const score = scoreJob(j, userSkills);
         if (score >= REAL_THRESHOLD) {
           realCount += 1;
@@ -484,6 +516,7 @@ export const stats = query({
       total: sample.length,
       target: targetCount,
       real: realCount,
+      stale: staleCount,
       by_source,
       by_seniority,
       top_skills,

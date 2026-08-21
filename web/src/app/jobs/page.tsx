@@ -49,6 +49,7 @@ type JobCardProps = {
   onHideSkill: (skill: string) => void;
   onSetAction: (jobId: string, action: JobActionKind) => void;
   onReview: (job: JobItem) => void;
+  companyWarning?: { applied: number; sample_size: number };
 };
 
 const JobCard = memo(function JobCard({
@@ -62,6 +63,7 @@ const JobCard = memo(function JobCard({
   onHideSkill,
   onSetAction,
   onReview,
+  companyWarning,
 }: JobCardProps) {
   const scoreTone =
     j.score >= 80 ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30"
@@ -112,6 +114,34 @@ const JobCard = memo(function JobCard({
             {j.posted_at && (<><span>·</span><span>{j.posted_at.slice(0, 10)}</span></>)}
             {j.seniority && (<><span>·</span><span className="capitalize">{j.seniority.replace(/_/g, " ")}</span></>)}
           </div>
+          {(j.likely_stale || (j.company_openings ?? 0) > 1 || companyWarning) && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {j.likely_stale && (
+                <span
+                  title={`First seen ${j.days_open}d ago — may be an evergreen req rather than an active opening`}
+                  className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-1 ring-amber-500/30"
+                >
+                  Open {j.days_open}d+
+                </span>
+              )}
+              {(j.company_openings ?? 0) > 1 && (
+                <span
+                  title="Other junior/unranked-seniority listings from this company right now"
+                  className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-1 ring-sky-500/30"
+                >
+                  +{(j.company_openings ?? 1) - 1} more here
+                </span>
+              )}
+              {companyWarning && (
+                <span
+                  title={`You applied to ${companyWarning.applied} role(s) at this company before with no response`}
+                  className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-rose-500/15 text-rose-700 dark:text-rose-300 ring-1 ring-rose-500/30"
+                >
+                  0/{companyWarning.sample_size} responded before
+                </span>
+              )}
+            </div>
+          )}
           {j.skills.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mt-1">
               {j.skills.slice(0, 6).map((sk) => (
@@ -196,6 +226,7 @@ type JobDetailAsideProps = {
   onPickSkill: (skill: string) => void;
   onSetStatus: (appId: string, status: Application["status"]) => void;
   onSetNotes: (appId: string, notes: string) => void;
+  companyWarnings: Map<string, { applied: number; sample_size: number; response_rate: number | null }>;
 };
 
 const STAGES: { key: Application["status"]; label: string; idx: number; color: string }[] = [
@@ -208,9 +239,10 @@ const STAGES: { key: Application["status"]; label: string; idx: number; color: s
 function JobDetailAside({
   jobId, fallback, items, isApplied, isSaved, isHidden,
   application,
-  onSetAction, onReview, onPickSkill, onSetStatus, onSetNotes,
+  onSetAction, onReview, onPickSkill, onSetStatus, onSetNotes, companyWarnings,
 }: JobDetailAsideProps) {
   const j = (jobId ? items.find((x) => x.id === jobId) : null) ?? fallback;
+  const companyWarning = j?.company ? companyWarnings.get(j.company.toLowerCase()) : undefined;
   const full = useQuery(
     convexApi.jobs._getById,
     j ? { id: j.id as Id<"jobs_pool"> } : "skip",
@@ -330,6 +362,34 @@ function JobDetailAside({
           {j.posted_at && (<><span>·</span><span>{j.posted_at.slice(0, 10)}</span></>)}
           {j.seniority && (<><span>·</span><span className="capitalize">{j.seniority.replace(/_/g, " ")}</span></>)}
         </div>
+        {(j.likely_stale || (j.company_openings ?? 0) > 1 || companyWarning) && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {j.likely_stale && (
+              <span
+                title={`First seen ${j.days_open}d ago — may be an evergreen req rather than an active opening`}
+                className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-1 ring-amber-500/30"
+              >
+                Open {j.days_open}d+
+              </span>
+            )}
+            {(j.company_openings ?? 0) > 1 && (
+              <span
+                title="Other junior/unranked-seniority listings from this company right now"
+                className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-1 ring-sky-500/30"
+              >
+                +{(j.company_openings ?? 1) - 1} more here
+              </span>
+            )}
+            {companyWarning && (
+              <span
+                title={`You applied to ${companyWarning.applied} role(s) at this company before with no response`}
+                className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-rose-500/15 text-rose-700 dark:text-rose-300 ring-1 ring-rose-500/30"
+              >
+                0/{companyWarning.sample_size} responded before
+              </span>
+            )}
+          </div>
+        )}
         {salaryConv && (
           <div className="text-[11px] text-muted-foreground space-y-0.5">
             <div>
@@ -577,6 +637,7 @@ function JobsPageInner() {
   const initView = (sp.get("view") ?? "all") as ViewKey;
   const [view, setView] = useState<ViewKey>(initView);
   const [hideMisfits, setHideMisfits] = useState(sp.get("hide_misfits") === "1");
+  const [hideStale, setHideStale] = useState(sp.get("hide_stale") === "1");
   const [hideSkills, setHideSkills] = useState<string[]>(() => {
     const raw = sp.get("hide_skills") ?? "";
     return raw.split(",").map((s) => s.trim()).filter(Boolean);
@@ -599,11 +660,12 @@ function JobsPageInner() {
     if (skill !== "all") next.set("skill", skill);
     if (view !== "all") next.set("view", view);
     if (hideMisfits) next.set("hide_misfits", "1");
+    if (hideStale) next.set("hide_stale", "1");
     if (hideSkills.length > 0) next.set("hide_skills", hideSkills.join(","));
     const qs = next.toString();
     const cur = sp.toString();
     if (qs !== cur) router.replace(qs ? `/jobs?${qs}` : "/jobs", { scroll: false });
-  }, [deferredQ, source, seniority, minScore, skill, view, hideMisfits, hideSkills, router, sp]);
+  }, [deferredQ, source, seniority, minScore, skill, view, hideMisfits, hideStale, hideSkills, router, sp]);
 
   // Snapshot the last jobs.list response in localStorage so the next visit
   // (and tab restore) paints instantly with stale data while Convex
@@ -626,6 +688,7 @@ function JobsPageInner() {
     min_score: Number(minScore) || 0,
     view: backendView,
     hide_misfits: hideMisfits || undefined,
+    hide_stale: hideStale || undefined,
     hide_skills: hideSkills.length > 0 ? hideSkills : undefined,
     limit: 100,
   });
@@ -659,6 +722,21 @@ function JobsPageInner() {
   const tgStatus = useQuery(convexApi.telegram.status);
   const sendBrief = useAction(convexApi.telegram.sendApplyBrief);
   const [tgLoading, setTgLoading] = useState<string | null>(null);
+
+  // Response-rate history from the user's own past applications, keyed by
+  // lowercased company name. Only flags companies with >=2 judged
+  // (non-pending) applications and a 0% response rate — small samples or
+  // still-pending applications aren't a signal either way.
+  const reliability = useQuery(convexApi.reliability.companyStats);
+  const companyWarnings = useMemo(() => {
+    const m = new Map<string, { applied: number; sample_size: number; response_rate: number | null }>();
+    for (const c of reliability?.by_company ?? []) {
+      if (c.sample_size >= 2 && c.response_rate === 0) {
+        m.set(c.name.toLowerCase(), c);
+      }
+    }
+    return m;
+  }, [reliability]);
 
   const telegramApply = useCallback(async (jobId: string) => {
     setTgLoading(jobId);
@@ -797,6 +875,18 @@ function JobsPageInner() {
           >
             {hideMisfits ? "Hiding misfits" : "Hide misfits"}
           </button>
+          <button
+            type="button"
+            onClick={() => { setHideStale((x) => !x); setPage(1); }}
+            title="Hide listings open 45+ days — likely an evergreen req rather than an active opening"
+            className={`px-3 h-8 rounded-full text-xs font-medium transition-colors ${
+              hideStale
+                ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-1 ring-amber-500/30"
+                : "bg-muted text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {hideStale ? "Hiding stale" : "Hide stale"}
+          </button>
         </div>
         {activeFilters.length > 0 && (
           <div className="flex items-center gap-2 flex-wrap">
@@ -930,6 +1020,7 @@ function JobsPageInner() {
                     onHideSkill={addHideSkill}
                     onSetAction={handleSetAction}
                     onReview={handleReview}
+                    companyWarning={j.company ? companyWarnings.get(j.company.toLowerCase()) : undefined}
                   />
                 ))}
             </ul>
@@ -955,6 +1046,7 @@ function JobsPageInner() {
               onPickSkill={handlePickSkill}
               onSetStatus={setStatus}
               onSetNotes={setNotes}
+              companyWarnings={companyWarnings}
               application={applications.find((a) => a.job_id === (selectedId ?? (data?.items ?? [])[0]?.id))}
               items={data?.items ?? []}
             />

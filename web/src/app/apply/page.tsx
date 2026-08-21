@@ -2,7 +2,9 @@
 
 import { useState, useMemo } from "react";
 import Link from "next/link";
-import { ExternalLink, Trash2, LayoutGrid, List } from "lucide-react";
+import { useQuery } from "convex/react";
+import { api as convexApi } from "../../../convex/_generated/api";
+import { ExternalLink, Trash2, LayoutGrid, List, ChevronDown, ChevronUp } from "lucide-react";
 import {
   DndContext,
   DragOverlay,
@@ -124,6 +126,8 @@ export default function ApplyPage() {
         </div>
       )}
 
+      {applications.length > 0 && <ReliabilityPanel />}
+
       {isLoading ? (
         <div className="space-y-2">
           {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-20 rounded-xl" />)}
@@ -211,6 +215,85 @@ export default function ApplyPage() {
         />
       )}
     </div>
+  );
+}
+
+type ReliabilityRow = {
+  name: string;
+  applied: number;
+  responded: number;
+  ghosted: number;
+  pending: number;
+  sample_size: number;
+  response_rate: number | null;
+};
+
+function rateTone(rate: number | null): string {
+  if (rate === null) return "text-muted-foreground";
+  if (rate >= 0.5) return "text-emerald-600 dark:text-emerald-400";
+  if (rate > 0) return "text-amber-600 dark:text-amber-400";
+  return "text-rose-600 dark:text-rose-400";
+}
+
+function ReliabilityList({ rows }: { rows: ReliabilityRow[] }) {
+  const shown = rows.filter((r) => r.applied > 0).slice(0, 8);
+  if (shown.length === 0) {
+    return <div className="text-xs text-muted-foreground py-2">No data yet.</div>;
+  }
+  return (
+    <ul className="space-y-1">
+      {shown.map((r) => (
+        <li key={r.name} className="flex items-center justify-between gap-2 text-xs">
+          <span className="truncate">{r.name}</span>
+          <span className="shrink-0 tabular-nums">
+            <span className={rateTone(r.response_rate)}>
+              {r.response_rate === null ? "pending" : `${Math.round(r.response_rate * 100)}%`}
+            </span>
+            <span className="text-muted-foreground"> · {r.applied}</span>
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// Response-rate tracking per source/company, computed from the user's own
+// application history (Phase 3 — no new data source, closes the loop on
+// data the tracker already has). "Responded" = interviewing/offer/rejected;
+// still-"applied" rows are excluded from the rate as too early to judge.
+function ReliabilityPanel() {
+  const [open, setOpen] = useState(true);
+  const stats = useQuery(convexApi.reliability.companyStats);
+  const hasData =
+    (stats?.by_company.some((r) => r.applied > 0) || stats?.by_source.some((r) => r.applied > 0)) ?? false;
+  if (!hasData) return null;
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="w-full flex items-center justify-between text-left"
+        >
+          <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+            Response rate — where it&apos;s worth applying again
+          </span>
+          {open ? <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />}
+        </button>
+        {open && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3">
+            <div>
+              <div className="text-[10px] font-mono uppercase text-muted-foreground mb-1.5">By source</div>
+              <ReliabilityList rows={stats?.by_source ?? []} />
+            </div>
+            <div>
+              <div className="text-[10px] font-mono uppercase text-muted-foreground mb-1.5">By company</div>
+              <ReliabilityList rows={stats?.by_company ?? []} />
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
