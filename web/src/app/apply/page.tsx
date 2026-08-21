@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import Link from "next/link";
 import { useQuery } from "convex/react";
 import { api as convexApi } from "../../../convex/_generated/api";
-import { ExternalLink, Trash2, LayoutGrid, List, ChevronDown, ChevronUp } from "lucide-react";
+import { ExternalLink, Trash2, LayoutGrid, List, ChevronDown, ChevronUp, Mic } from "lucide-react";
 import {
   DndContext,
   DragOverlay,
@@ -114,6 +114,8 @@ export default function ApplyPage() {
 
       <PageTabs tabs={JOBS_TABS} />
 
+      <WeeklyTargetWidget applications={applications} />
+
       {applications.length > 0 && (
         <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 -mt-4">
           <span className="font-mono uppercase tracking-wider text-[10px] text-foreground/70">Pipeline</span>
@@ -182,6 +184,14 @@ export default function ApplyPage() {
                     Open <ExternalLink className="h-3 w-3" />
                   </a>
                 </div>
+                {a.status === "interviewing" && (
+                  <Link
+                    href={`/interview?jobId=${a.job.id}`}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline"
+                  >
+                    <Mic className="h-3 w-3" /> Practice for this interview
+                  </Link>
+                )}
                 <div className="flex items-center gap-2">
                   <Select value={a.status} onValueChange={(v) => v && setStatus(a.id, v as Application["status"])}>
                     <SelectTrigger className={`h-8 text-xs w-40 ${STATUS_TONE[a.status]}`}>
@@ -215,6 +225,99 @@ export default function ApplyPage() {
         />
       )}
     </div>
+  );
+}
+
+const WEEKLY_TARGET_KEY = "apply:weekly_target";
+const DEFAULT_WEEKLY_TARGET = 15;
+
+function startOfWeek(d: Date): Date {
+  // Monday-start week, local time — matches the plan's Mon–Sun cadence.
+  const out = new Date(d);
+  const day = out.getDay(); // 0=Sun..6=Sat
+  const diff = (day === 0 ? -6 : 1) - day;
+  out.setDate(out.getDate() + diff);
+  out.setHours(0, 0, 0, 0);
+  return out;
+}
+
+// Weekly application-cadence target (plan.md: 15-20 tailored applications/
+// week). Computed client-side from applications already in memory — no new
+// query — and the target itself is a per-browser preference, not synced
+// data, so it lives in localStorage like the CV template choice does.
+function WeeklyTargetWidget({ applications }: { applications: Application[] }) {
+  const [target, setTarget] = useState(DEFAULT_WEEKLY_TARGET);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(String(DEFAULT_WEEKLY_TARGET));
+
+  useEffect(() => {
+    queueMicrotask(() => {
+      try {
+        const raw = localStorage.getItem(WEEKLY_TARGET_KEY);
+        const n = raw ? Number(raw) : NaN;
+        if (Number.isFinite(n) && n > 0) setTarget(n);
+      } catch { /* ignore */ }
+    });
+  }, []);
+
+  const count = useMemo(() => {
+    const cutoff = startOfWeek(new Date()).getTime();
+    return applications.filter((a) => new Date(a.applied_at).getTime() >= cutoff).length;
+  }, [applications]);
+
+  const pct = Math.min(100, Math.round((count / target) * 100));
+  const barColor = pct >= 100 ? "bg-emerald-500" : pct >= 50 ? "bg-amber-500" : "bg-sky-500";
+
+  const saveTarget = () => {
+    const n = Number(draft);
+    if (Number.isFinite(n) && n > 0) {
+      const clamped = Math.round(Math.min(100, n));
+      setTarget(clamped);
+      try { localStorage.setItem(WEEKLY_TARGET_KEY, String(clamped)); } catch { /* ignore */ }
+    }
+    setEditing(false);
+  };
+
+  return (
+    <Card>
+      <CardContent className="p-4 space-y-2">
+        <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+          <span>This week</span>
+          {editing ? (
+            <span className="inline-flex items-center gap-1 normal-case">
+              <input
+                autoFocus
+                type="number"
+                min={1}
+                max={100}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") saveTarget(); if (e.key === "Escape") setEditing(false); }}
+                onBlur={saveTarget}
+                className="w-14 h-6 px-1.5 rounded border bg-background text-xs text-foreground"
+              />
+              <span>/ week target</span>
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => { setDraft(String(target)); setEditing(true); }}
+              className="normal-case hover:text-foreground"
+              title="Click to change your weekly target"
+            >
+              target: {target}/week
+            </button>
+          )}
+        </div>
+        <div className="flex items-baseline gap-1.5">
+          <span className="font-serif text-2xl tabular-nums">{count}</span>
+          <span className="text-sm text-muted-foreground">/ {target} applications</span>
+        </div>
+        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+          <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -346,6 +449,15 @@ function CardBody({ app, onRemove, ghost }: { app: Application; onRemove?: (id: 
           <div className="text-[10px] text-muted-foreground mt-0.5 font-mono">
             {app.applied_at.slice(0, 10)}
           </div>
+          {app.status === "interviewing" && (
+            <Link
+              href={`/interview?jobId=${app.job.id}`}
+              onClick={(e) => e.stopPropagation()}
+              className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-medium text-indigo-600 dark:text-indigo-400 hover:underline"
+            >
+              <Mic className="h-3 w-3" /> Practice for this interview
+            </Link>
+          )}
         </div>
         {onRemove && (
           <div className="flex flex-col gap-1 shrink-0">

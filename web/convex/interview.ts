@@ -47,19 +47,24 @@ export const status = query({
   }),
 });
 
+type JobContext = { title: string; company?: string; description?: string };
+
 function buildSystem(args: {
   topic: string;
   mode: string;
   lang: string;
   profile: Record<string, unknown>;
+  job?: JobContext;
 }): string {
-  const { topic, mode, lang, profile } = args;
+  const { topic, mode, lang, profile, job } = args;
   const skills = (profile.skills ?? {}) as Record<string, number>;
   const userLevel = skills[topic.toLowerCase()] ?? 0;
   const role =
     mode === "teach"
       ? "You play a CURIOUS LEARNER. The user is explaining a topic to you to practice their teaching. Ask clarifying questions, point out where the explanation jumped ahead, request concrete examples. At natural breakpoints (every 4-5 turns) give a SHORT feedback block: what was clear, what was vague, one suggestion. Keep your turns SHORT (1-3 sentences) so the user does most of the talking."
-      : "You play a TECHNICAL INTERVIEWER for an internship candidate. Ask one focused question at a time. After each answer: brief 1-line reaction (correct/partial/wrong), then either a follow-up probe or move to a new sub-topic. Increase difficulty as answers strengthen. Every 5-6 questions give a SHORT scorecard (strengths, gaps, what to study). Keep your turns SHORT — interviewers don't lecture.";
+      : job
+        ? `You play the TECHNICAL INTERVIEWER for the specific role of "${job.title}"${job.company ? ` at ${job.company}` : ""}. Ask questions that a real interviewer for THIS role would ask, grounded in the posting's actual requirements below — not generic trivia. Ask one focused question at a time. After each answer: brief 1-line reaction (correct/partial/wrong), then either a follow-up probe or move to a new requirement from the posting. Every 5-6 questions give a SHORT scorecard (strengths, gaps vs this role's requirements, what to study before the real interview). Keep your turns SHORT — interviewers don't lecture.`
+        : "You play a TECHNICAL INTERVIEWER for an internship candidate. Ask one focused question at a time. After each answer: brief 1-line reaction (correct/partial/wrong), then either a follow-up probe or move to a new sub-topic. Increase difficulty as answers strengthen. Every 5-6 questions give a SHORT scorecard (strengths, gaps, what to study). Keep your turns SHORT — interviewers don't lecture.";
   const langHint =
     lang === "tr"
       ? "Reply in Turkish."
@@ -73,11 +78,14 @@ function buildSystem(args: {
     null,
     2,
   ).slice(0, 800);
+  const jobBlock = job
+    ? `\nTARGET ROLE POSTING (the real job this practice session is for — base your questions on it):\nTitle: ${job.title}\nCompany: ${job.company ?? "(unknown)"}\n${(job.description ?? "").slice(0, 3000)}\n`
+    : "";
   return `You are conducting a live VOICE session, so write like SPEECH: short, plain, no markdown, no bullet points unless absolutely needed. Use natural conversational flow.
 
 ROLE: ${role}
-
-TOPIC: ${topic || "general software engineering for juniors"}
+${jobBlock}
+TOPIC: ${job ? job.title : topic || "general software engineering for juniors"}
 USER'S SELF-RATED LEVEL on this topic: ${userLevel}/5
 
 LANGUAGE: ${langHint}
@@ -87,7 +95,7 @@ ${snap}
 
 RULES:
 - THIS IS A LIVE VOICE CALL. Reply in <=2 short sentences (max 25 words). NEVER more.
-- Start with ONE sentence greeting + ONE first question (interview) OR "Tell me about ${topic}" (teach).
+- Start with ONE sentence greeting + ONE first question${job ? ` about the ${job.title} role` : " (interview)"} OR "Tell me about ${topic}" (teach).
 - No lists, no markdown, no bullet points.
 - If user types "next", move to new question. If "score", give 3-line scorecard.`;
 }
@@ -103,16 +111,20 @@ export const send = action({
         content: v.string(),
       }),
     ),
+    jobTitle: v.optional(v.string()),
+    jobCompany: v.optional(v.string()),
+    jobDescription: v.optional(v.string()),
   },
   handler: async (
     ctx,
-    { topic, mode, lang, messages },
+    { topic, mode, lang, messages, jobTitle, jobCompany, jobDescription },
   ): Promise<{ text?: string; error?: string }> => {
     const key = await resolveGeminiKey(ctx);
     if (!key) return { error: "GEMINI_API_KEY not set. Add one in Settings or set in Convex env." };
 
     const profile = await ctx.runQuery(api.profile.get, {});
-    const system = buildSystem({ topic, mode, lang, profile });
+    const job = jobTitle ? { title: jobTitle, company: jobCompany, description: jobDescription } : undefined;
+    const system = buildSystem({ topic, mode, lang, profile, job });
 
     let userPrompt = "Start the session now. One sentence only.";
     if (messages.length > 0) {

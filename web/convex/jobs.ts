@@ -302,19 +302,26 @@ export const list = query({
           .order("desc")
           .take(2000);
 
+    // Seniority bucket was previously recomputed 2-3x per row (filter check,
+    // output field, and now the company-openings pass below) — with the
+    // pool at 1000+ rows that adds up. Compute once, reuse everywhere.
+    const buckets = rows.map((r) => seniorityBucket(r.title));
+
     // "Actively hiring juniors" signal: how many other junior/unknown-
     // seniority listings this company has open right now. Cheap — same
     // `rows` scan, no extra reads.
     const companyOpenings = new Map<string, number>();
-    for (const r of rows) {
-      if (seniorityBucket(r.title) === "senior") continue;
-      const key = (r.company ?? "").trim().toLowerCase();
+    for (let i = 0; i < rows.length; i++) {
+      if (buckets[i] === "senior") continue;
+      const key = (rows[i].company ?? "").trim().toLowerCase();
       if (!key) continue;
       companyOpenings.set(key, (companyOpenings.get(key) ?? 0) + 1);
     }
 
     const out = [];
-    for (const r of rows) {
+    for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+      const r = rows[rowIdx];
+      const bucket = buckets[rowIdx];
       // Ghost/evergreen-listing signal: `_creationTime` is Convex's
       // immutable first-seen timestamp — unlike `posted_at`, it can't be
       // refreshed by a source re-announcing the same posting. A listing
@@ -342,7 +349,6 @@ export const list = query({
         if (hideSkills.some((s) => skillMatches(hay, s))) continue;
       }
       if (wantSeniority && wantSeniority !== "any") {
-        const bucket = seniorityBucket(r.title);
         if (wantSeniority === "junior_or_unknown") {
           if (bucket === "senior") continue;
         } else if (bucket !== wantSeniority) {
@@ -370,7 +376,7 @@ export const list = query({
         location: r.location ?? null,
         remote: r.remote ?? false,
         posted_at: r.posted_at ? new Date(r.posted_at).toISOString() : null,
-        seniority: seniorityBucket(r.title),
+        seniority: bucket,
         salary_min: r.salary_min ?? null,
         salary_max: r.salary_max ?? null,
         currency: r.currency ?? null,

@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Mic, MicOff, Power, RotateCcw, Send, Volume2, VolumeX, MessageSquare, GraduationCap, AlertTriangle, MessageSquarePlus, Trash2, Pencil } from "lucide-react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Mic, MicOff, Power, RotateCcw, Send, Volume2, VolumeX, MessageSquare, GraduationCap, AlertTriangle, MessageSquarePlus, Trash2, Pencil, Briefcase } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAction, useMutation, useQuery } from "convex/react";
@@ -26,7 +27,23 @@ const POLL_MS = 50;
 const MAX_TURN_MS = 45000;        // hard cap: auto-send after this much continuous recording
 const MIN_WORDS_TO_SEND = 3;      // shorter transcripts buffer to next turn
 
-export default function InterviewPage() {
+function InterviewPageInner() {
+  const sp = useSearchParams();
+  const jobIdParam = sp.get("jobId");
+  const jobFromPool = useQuery(
+    convexApi.jobs._getById,
+    jobIdParam ? { id: jobIdParam as Id<"jobs_pool"> } : "skip",
+  );
+  const [jobCtx, setJobCtx] = useState<{ title: string; company: string | null; description: string } | null>(null);
+  useEffect(() => {
+    if (!jobFromPool) return;
+    // Deferred: jobFromPool is itself query-reactive, and setting jobCtx
+    // synchronously here would fire on every render of this effect.
+    queueMicrotask(() => {
+      setJobCtx({ title: jobFromPool.title, company: jobFromPool.company, description: jobFromPool.description });
+    });
+  }, [jobFromPool]);
+
   const [topic, setTopic] = useState("");
   const [mode, setMode] = useState<Mode>("interview");
   const [lang, setLang] = useState<Lang>("en");
@@ -292,7 +309,10 @@ export default function InterviewPage() {
     setMsgs(next);
     setState("thinking");
     try {
-      const d = await interviewAction({ topic, mode, lang, messages: next });
+      const d = await interviewAction({
+        topic, mode, lang, messages: next,
+        jobTitle: jobCtx?.title, jobCompany: jobCtx?.company ?? undefined, jobDescription: jobCtx?.description,
+      });
       if (d.error) {
         setError(d.error);
         setState(sessionAlive.current ? "listening" : "idle"); return;
@@ -304,7 +324,7 @@ export default function InterviewPage() {
       setError(`AI net: ${e instanceof Error ? e.message : e}`);
       setState(sessionAlive.current ? "listening" : "idle");
     }
-  }, [topic, mode, lang]);
+  }, [topic, mode, lang, jobCtx]);
 
   // Split AI text into speakable chunks (sentences). Short chunks = first
   // audible byte arrives faster. Edge TTS prosody stays natural per sentence.
@@ -427,10 +447,14 @@ export default function InterviewPage() {
     }));
     setMsgs(loaded);
     lastPersistedLen.current = loaded.length;
-    const meta = activeSession.meta as { topic?: string; mode?: Mode; lang?: Lang };
+    const meta = activeSession.meta as {
+      topic?: string; mode?: Mode; lang?: Lang;
+      jobCtx?: { title: string; company: string | null; description: string } | null;
+    };
     if (meta?.topic) setTopic(meta.topic);
     if (meta?.mode) setMode(meta.mode);
     if (meta?.lang) setLang(meta.lang);
+    setJobCtx(meta?.jobCtx ?? null);
   }, [activeSession]);
 
   const deleteSession = async (id: ConvId) => {
@@ -453,8 +477,10 @@ export default function InterviewPage() {
       try {
         const d = await createConv({
           type: "interview",
-          title: `${mode === "interview" ? "Interview" : "Teach"} — ${topic || "general"} (${lang})`,
-          meta: JSON.stringify({ topic, mode, lang }),
+          title: jobCtx
+            ? `Interview prep — ${jobCtx.title}${jobCtx.company ? ` @ ${jobCtx.company}` : ""}`
+            : `${mode === "interview" ? "Interview" : "Teach"} — ${topic || "general"} (${lang})`,
+          meta: JSON.stringify({ topic, mode, lang, jobCtx }),
         });
         setConvId(d.id as ConvId); lastPersistedLen.current = 0;
       } catch {}
@@ -464,7 +490,10 @@ export default function InterviewPage() {
     setState("thinking");
     // Greet: send empty user → backend gives first line.
     try {
-      const d = await interviewAction({ topic, mode, lang, messages: [] });
+      const d = await interviewAction({
+        topic, mode, lang, messages: [],
+        jobTitle: jobCtx?.title, jobCompany: jobCtx?.company ?? undefined, jobDescription: jobCtx?.description,
+      });
       if (d.error) { setError(d.error); endSession(); return; }
       const text: string = d.text || "Hello.";
       setMsgs([{ role: "assistant", content: text }]);
@@ -558,20 +587,38 @@ export default function InterviewPage() {
         <PageTabs tabs={ASSISTANT_TABS} />
       </header>
 
+      {jobCtx && (
+        <div className="mt-3 mb-1 flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
+          <Briefcase className="h-3.5 w-3.5 text-primary shrink-0" />
+          <span className="text-foreground">
+            Practicing for <span className="font-semibold">{jobCtx.title}</span>
+            {jobCtx.company ? ` @ ${jobCtx.company}` : ""}
+          </span>
+          <button
+            type="button"
+            onClick={() => setJobCtx(null)}
+            className="ml-auto text-muted-foreground hover:text-foreground"
+          >
+            Switch to generic practice
+          </button>
+        </div>
+      )}
       <div className="py-3 flex flex-wrap items-center gap-2 border-b">
-        <Input
-          placeholder="Topic (optional)"
-          value={topic}
-          onChange={(e) => setTopic(e.target.value)}
-          className="flex-1 min-w-[200px]"
-          disabled={state !== "idle"}
-        />
+        {!jobCtx && (
+          <Input
+            placeholder="Topic (optional)"
+            value={topic}
+            onChange={(e) => setTopic(e.target.value)}
+            className="flex-1 min-w-[200px]"
+            disabled={state !== "idle"}
+          />
+        )}
         <div className="inline-flex rounded-md border p-0.5 bg-muted/30">
           {(["interview", "teach"] as Mode[]).map((m) => (
             <button
               key={m}
               onClick={() => setMode(m)}
-              disabled={state !== "idle"}
+              disabled={state !== "idle" || !!jobCtx}
               className={`h-8 px-3 rounded-sm text-xs inline-flex items-center gap-1.5 ${
                 mode === m ? "bg-background shadow-sm font-medium" : "text-muted-foreground"
               }`}
@@ -739,6 +786,14 @@ function SessionRow({ s, active, onPick, onRename, onDelete }: {
         <Trash2 className="h-3 w-3" />
       </button>
     </div>
+  );
+}
+
+export default function InterviewPage() {
+  return (
+    <Suspense fallback={<div className="text-muted-foreground">Loading…</div>}>
+      <InterviewPageInner />
+    </Suspense>
   );
 }
 
